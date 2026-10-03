@@ -326,7 +326,7 @@ class App:
                   font=(self.ui_font, 15, "bold")).pack(side="left")
         ttk.Label(row1, text="管理面板", foreground="#888").pack(
             side="left", padx=(8, 0))
-        ttk.Label(title_col, text="by DeepSeek and Authentic",
+        ttk.Label(title_col, text="by DeepSeek and Authentic3096",
                   foreground="#999", font=(self.ui_font, 8)).pack(
             anchor="w", pady=(1, 0))
 

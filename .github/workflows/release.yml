@@ -63,24 +63,33 @@ jobs:
       - name: 生成 updates.json
         run: python tools/make_updates_json.py --tag "${{ steps.t.outputs.tag }}"
 
+      # 发布说明的取法，按优先级两档：
+      #   ① 打了**带附注**的 tag（git tag -a -m "…"）→ 直接用那句附注。
+      #      小改动（只动版本号最后一位那种）就靠这个：写一行"统一作者署名"即可，
+      #      不必为一次补丁版编排一份正式说明。
+      #   ② 没写附注 → 回退到"两个 tag 之间的提交列表"。
       # ⚠ 不用 `gh release create --generate-notes`：它只列**合并的 PR 和贡献者**，
-      #   而本项目是直接往 main 提交、没有 PR —— 实测生成的说明只剩一行 compare 链接。
-      #   这里改成把两个 tag 之间的提交列出来。
+      #   而本项目直接往 main 提交、没有 PR —— 实测生成的说明只剩一行 compare 链接。
       - name: 生成发布说明
         run: |
           set -euo pipefail
           TAG="${{ steps.t.outputs.tag }}"
           git fetch --tags --force
+          TAGMSG="$(git for-each-ref "refs/tags/$TAG" --format='%(contents)' | sed '/^[[:space:]]*$/d' || true)"
           PREV="$(git tag --sort=-v:refname | grep -vx "$TAG" | head -n1 || true)"
           {
+            if [ -n "$TAGMSG" ]; then
+              echo "$TAGMSG"
+              echo
+            fi
             if [ -n "$PREV" ] && git merge-base --is-ancestor "$PREV" "$TAG" 2>/dev/null; then
               echo "**完整对比**：https://github.com/${{ github.repository }}/compare/$PREV...$TAG"
-              echo
-              echo "### 提交"
-              echo
-              git log --pretty='- %s' "$PREV..$TAG"
-            else
-              echo "首个发布。"
+              if [ -z "$TAGMSG" ]; then
+                echo
+                echo "### 提交"
+                echo
+                git log --pretty='- %s' "$PREV..$TAG"
+              fi
             fi
           } > /tmp/notes.md
           cat /tmp/notes.md

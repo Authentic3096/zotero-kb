@@ -39,7 +39,11 @@ DEFAULT_REPO = os.environ.get("GITHUB_REPOSITORY", "Authentic3096/zotero-kb")
 
 
 def read_manifest() -> dict:
-    with open(MANIFEST, encoding="utf-8") as fh:
+    # 用 utf-8-sig 读：万一 manifest 被写进了 BOM，这里也读得下去。
+    # ⚠ 但**读得下去不等于没问题** —— manifest 带 BOM 可能让 Zotero 拒绝加载，
+    #   所以 BOM 由 tools/check_plugin.py 专门查并报错，这里只是别让它以
+    #   "Unexpected UTF-8 BOM" 这种没头没尾的报错形式冒出来。
+    with open(MANIFEST, encoding="utf-8-sig") as fh:
         return json.load(fh)
 
 

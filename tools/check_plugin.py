@@ -24,7 +24,14 @@ ROOT = os.path.dirname(HERE)
 PLUGIN = os.path.join(ROOT, "zotero-plugin")
 # 版本号从 manifest 读，避免两处各写一份、升级时忘改一处
 def _manifest() -> dict:
-    return json.load(open(os.path.join(PLUGIN, "manifest.json"), encoding="utf-8"))
+    # ⚠ 必须用 utf-8-sig：这一句在**模块加载时**就会执行（下面的 VERSION），
+    #   而 manifest 万一被写进 UTF-8 BOM，`encoding="utf-8"` 会当场抛
+    #   "Unexpected UTF-8 BOM" —— 于是整个自检脚本**崩在 import 阶段**，
+    #   什么都没查就退出，报错还看不出是 BOM 的问题。
+    #   本机就是这么踩的（用 PowerShell 的 Set-Content -Encoding UTF8 改版本号）。
+    #   这里读得下去，BOM 该不该存在由下面的正式检查去判、去报。
+    return json.load(open(os.path.join(PLUGIN, "manifest.json"),
+                          encoding="utf-8-sig"))
 
 
 VERSION = _manifest().get("version", "0.0.0")
@@ -109,6 +116,20 @@ def main() -> int:
 
     # ---------------------------------------------------------- manifest
     mpath = os.path.join(PLUGIN, "manifest.json")
+    # ⚠ BOM 检查放在最前：带 UTF-8 BOM 的 manifest.json 会让 `json.load` 直接抛
+    #   "Unexpected UTF-8 BOM"，而 Zotero 那边的表现可能又是一句没有线索的
+    #   "可能无法与该版本的 Zotero 兼容"（本项目在 error=-3 上吃过这种亏）。
+    #   本机就是被这个坑到的：用 PowerShell 的 `Set-Content -Encoding UTF8`
+    #   改版本号，它默认写 BOM —— 所以这条必须自动查，不能靠人记得。
+    with open(mpath, "rb") as fh:
+        head = fh.read(3)
+    if head == b"\xef\xbb\xbf":
+        print("  [XX] manifest.json 带 UTF-8 BOM —— 必须先去掉"
+              "（用编辑器另存为「UTF-8 无 BOM」，别用 PowerShell 的 "
+              "Set-Content -Encoding UTF8）")
+        problems.append("manifest.json 带 UTF-8 BOM")
+    else:
+        print("  [OK] manifest.json 无 BOM")
     try:
         m = json.load(open(mpath, encoding="utf-8"))
         print("  [OK] manifest.json 可解析")

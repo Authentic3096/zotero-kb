@@ -232,13 +232,23 @@
 
 ### ④ 发版：改个版本号、打个 tag，剩下的自动做
 
+**版本号怎么定**（约定）：
+
+| 改动 | 动哪一位 | 发布说明 |
+|---|---|---|
+| 小改动：改文案、改署名、调面板措辞、修个小 bug —— **不动功能** | **只动最后一位**（0.25.1 → 0.25.2） | 一句话就够，写在 tag 附注里 |
+| 加功能、行为有变化、用户需要知道怎么用 | 动中间位（0.25.x → 0.26.0） | 写清"多了什么、怎么用" |
+| 破坏性变更（配置格式、数据迁移） | 动第一位 | 必须写清怎么迁移 |
+
+小改动的说明**不必**编排成正式文档 —— tag 附注写一行，发布链会拿它当说明：
+
 ```bash
-# 1. 改 zotero-plugin/manifest.json 里的 version
+# 1. 改 zotero-plugin/manifest.json 里的 version（小改动只动最后一位）
 # 2. 同步更新清单，和上一步**同一次提交**（否则 CI 的 --check 会红）
 python tools/make_updates_json.py --tag v0.25.2
-git commit -am "发布 v0.25.2" && git push origin main
-# 3. 打 tag 推上去，触发发布链
-git tag v0.25.2 && git push origin v0.25.2
+git commit -am "统一作者署名" && git push origin main
+# 3. 打**带附注**的 tag 推上去 —— 附注就是发布说明
+git tag -a v0.25.2 -m "统一作者署名为 DeepSeek and Authentic3096" && git push origin v0.25.2
 ```
 
 第 2 步不能省。`updates.json` 本该在发版后才更新，但 CI 有一条「它与 manifest
@@ -254,10 +264,11 @@ git tag v0.25.2 && git push origin v0.25.2
 
 发布中途失败可以直接重跑：Release 已存在时会覆盖附件，不会卡在"已存在"上报错。
 
-> ⚠ 发布说明由**两个 tag 之间的提交**生成，不是 `gh release create --generate-notes`
-> —— 后者只列合并的 PR 和贡献者，本项目直接往 main 提交、没有 PR，
-> 实测生成出来的说明只剩一行 compare 链接。想写更好的说明就事后
-> `gh release edit <tag> --notes-file <文件>`。
+> **发布说明怎么来的**：优先取 tag 的**附注**（`git tag -a -m "…"`）；
+> 没写附注才回退到"两个 tag 之间的提交列表"。
+> ⚠ 不用 `gh release create --generate-notes` —— 它只列合并的 PR 和贡献者，
+> 本项目直接往 main 提交、没有 PR，实测生成的说明只剩一行 compare 链接。
+> 事后想改说明：`gh release edit <tag> --notes-file <文件>`。
 
 > ⚠ **一个不会告警的坑**：`.gitattributes` 只对**新检出**生效。如果你在加它之前就已经
 > 有工作区，那些文件会一直保持旧行尾（本地 CRLF），而 `git status` **永远是干净的** ——
