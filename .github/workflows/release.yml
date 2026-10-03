@@ -63,14 +63,24 @@ jobs:
       - name: 生成 updates.json
         run: python tools/make_updates_json.py --tag "${{ steps.t.outputs.tag }}"
 
+      # 幂等：Release 已存在就只覆盖附件。为什么需要 —— 发布中途失败（比如
+      # 上传到一半网络断了）时，重跑必须能接着走完，而不是卡在"已存在"上报错。
       - name: 发 Release（xpi 作为附件）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ steps.t.outputs.tag }}" \
-            zotero-plugin/zotero-kb-*.xpi \
-            --title "${{ steps.t.outputs.tag }}" \
-            --generate-notes
+          set -euo pipefail
+          TAG="${{ steps.t.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在 —— 覆盖附件"
+            gh release upload "$TAG" zotero-plugin/zotero-kb-*.xpi --clobber
+          else
+            echo "新建 Release $TAG"
+            gh release create "$TAG" \
+              zotero-plugin/zotero-kb-*.xpi \
+              --title "$TAG" \
+              --generate-notes
+          fi
 
       # 清单必须落在 main 上：manifest 里的 update_url 指向
       # raw.githubusercontent.com/<repo>/main/updates.json
