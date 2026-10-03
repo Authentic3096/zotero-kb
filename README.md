@@ -374,10 +374,12 @@ kb_acquire(dois="10.xxxx/yyyy", dry_run=True)
                          （不再写死 <项目>\kb\logs）
     5-sideload.cmd       侧载插件（Zotero 10 上不可靠，优先用 UI 安装）
     sync-skill.ps1       把 skills\ 下所有技能同步到 DSH 技能目录
-  tests\                 单测与自检（11 个文件 / 约 550 项断言；
+  tests\                 单测与自检（13 个 test_*.py / 约 600 项断言；
                          **逐个** `python tests\test_*.py` 跑，退出码 0 = 通过 ——
                          不要用 unittest discover，这些脚本是独立进程自检。
-                         `test_matching.py` 随机抽样，项数会在 13~18 间浮动，属正常）
+                         ⚠ 断言**条数不是固定值**：`test_matching.py` 抽样真实库，
+                         项数在 13~18 间浮动，属正常。所以别把某个总数写进文档，
+                         判据是"每个文件退出码 0 / 失败 0"。)
   .venv\                 Python 依赖（见 requirements.txt）
 ```
 

@@ -211,13 +211,6 @@ import schemas as _S  # noqa: E402
 
 _known = {n.rstrip("\\/").lower()
           for n, _w, _k, _s in gui.KB_FILE_SPEC if _k != "glob"}
-# kind == "db" 的条目在设计上就是「连 -wal/-shm 一起算」（见 gui.py 的 KB_FILE_SPEC
-# 顶部注释）：这两个 SQLite 边车文件**只在服务运行时才存在**，面板把它们并进
-# index.db 那一行显示，所以它们算「已有说明」。
-# ⚠ 这里原来漏了这层，于是「服务开着跑测试」就假失败（2026-10-04 修）。
-_db_base = [n.rstrip("\\/").lower()
-            for n, _w, _k, _s in gui.KB_FILE_SPEC if _k == "db"]
-_known |= {f"{b}-{suf}" for b in _db_base for suf in ("wal", "shm")}
 _patterns = [n.lower() for n, _w, _k, _s in gui.KB_FILE_SPEC if _k == "glob"]
 try:
     _kb_entries = os.listdir(_S.KB_DIR)

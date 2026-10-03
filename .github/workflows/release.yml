@@ -1,0 +1,91 @@
+name: Release
+
+# 打一个 tag，剩下的全自动：自检 → 打包 xpi → 生成 updates.json → 发 Release
+#                        → 把 updates.json 提交回 main（Zotero 靠它发现新版本）
+#
+# 为什么要自动化：手工发版要做四件事，其中「更新 updates.json」最容易被忘 ——
+# 忘了的后果是**用户永远停在旧版，而且没有任何报错**。这条链把它钉死。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（形如 v0.26.0；不存在则由 GitHub 按默认分支创建）"
+        required: true
+        type: string
+
+# 需要写权限：建 Release + 把 updates.json 推回 main
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 后面要把 updates.json 提交回 main，需要完整历史与分支
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 确定本次发布的 tag
+        id: t
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "本次发布：$TAG"
+
+      # ── 自检 ────────────────────────────────────────────────────────────
+      # node 在 ubuntu-latest 上自带；check_js_syntax 用它构造 AsyncFunction
+      # 做权威语法校验（插件里的 JS 是按 async 函数体执行的，node --check 会误报）。
+      - name: JS 语法检查
+        run: python tools/check_js_syntax.py
+
+      # check_plugin.py 会**顺带打包 xpi**，并检查包内有没有写死的本机路径
+      - name: 插件自检 + 打包 xpi
+        run: python tools/check_plugin.py
+
+      # 放在打包之后：这一步会检查 xpi 内容，没打包就没得查
+      - name: 发布前综合审计（隐私 / 写死路径 / 安装可用性）
+        run: python tools/audit_release.py
+
+      # tag 与 manifest 版本必须一致 —— 不一致直接失败，宁可发不出去，
+      # 也不要发一个 update_link 指向不存在附件的清单
+      - name: 生成 updates.json
+        run: python tools/make_updates_json.py --tag "${{ steps.t.outputs.tag }}"
+
+      - name: 发 Release（xpi 作为附件）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.t.outputs.tag }}" \
+            zotero-plugin/zotero-kb-*.xpi \
+            --title "${{ steps.t.outputs.tag }}" \
+            --generate-notes
+
+      # 清单必须落在 main 上：manifest 里的 update_url 指向
+      # raw.githubusercontent.com/<repo>/main/updates.json
+      - name: 把 updates.json 提交回 main
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          python tools/make_updates_json.py --tag "${{ steps.t.outputs.tag }}"
+          if git diff --quiet -- updates.json; then
+            echo "updates.json 无变化，跳过提交"
+          else
+            git add updates.json
+            git commit -m "chore(release): updates.json → ${{ steps.t.outputs.tag }}"
+            git push origin main
+          fi

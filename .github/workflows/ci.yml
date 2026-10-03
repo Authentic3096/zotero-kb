@@ -1,0 +1,39 @@
+name: CI
+
+# 每次推到 main / 每个 PR 都跑一遍能在无知识库、无 Zotero 环境下运行的自检。
+#
+# ⚠ 这里**故意不跑** tests/test_*.py：13 个测试文件里有 10 个要连真实知识库
+#   （index.db / Zotero 数据目录），CI 上没有。硬跑只会变成"永远是红的"，
+#   而永远红的 CI 等于没有 CI。那些测试在本机跑（见 README「测试」一节）。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: JS 语法检查
+        run: python tools/check_js_syntax.py
+
+      - name: 插件自检 + 打包 xpi
+        run: python tools/check_plugin.py
+
+      - name: 发布前综合审计（隐私 / 写死路径 / 安装可用性）
+        run: python tools/audit_release.py
+
+      # 守住最隐蔽的一种发版事故：改了版本号却没更新 updates.json
+      - name: updates.json 与 manifest 版本是否一致
+        run: python tools/make_updates_json.py --check

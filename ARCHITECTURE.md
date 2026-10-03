@@ -618,7 +618,7 @@ provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
 | 4 | 用 bundle 接入 DSH：`dsh plugin --profile <p> add "link:<...>/bundle"` | DSH 里出现 `mcp__zotero-kb__*` 工具 |
 | 5 | 装 Zotero 插件（**必须完全重启 Zotero**） | 文献列表出现「知识库权重」列 |
 | 6 | 跑 `4-service.vbs` 起本地服务 | `http://127.0.0.1:8765/health` |
-| 7 | 跑 `tools\test_task_bridge.py` 等测试 | 152 项全过 |
+| 7 | 跑 `tools\test_task_bridge.py` 等测试 | 各测试退出码 0 |
 | 8 | （可选）装 DSH 侧收件箱 bundle | 往信箱丢个 json，看 results 出结果 |
 
 **易错点（本机都踩过）**：
@@ -656,7 +656,7 @@ provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
 | 分类重整 | ✅ 6 个顶层分类，中英重复已消除 | `zotero_sync.py verify` |
 | Zotero 插件 | ✅ 自动切片 + 分类建议 + 权重列 + 抓取 | 插件验证 30/30；实测分类置信度 0.98 |
 | 本地服务 | ✅ 67 项自检 | `localserver.py --test` |
-| 测试 | ✅ **604 项断言** + 本地服务 67 项，0 失败 | `tests\test_*.py`（13 个文件） |
+| 测试 | ✅ 13 个测试文件全过（0 失败）+ 本地服务 67 项自检。⚠ 断言**条数不固定**（约 600）：`test_matching.py` 抽样真实库，13~18 间浮动 | `tests\test_*.py` |
 | DSH 侧收件箱 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
 | **获取文献（需求 9）** | ✅ **真机多轮验收** | 见链路 5；本地模型分类打标签实测可用 |
 
