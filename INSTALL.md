@@ -3,7 +3,8 @@
 一份把「Zotero 文献知识库」从零装到能用的完整说明。
 
 > 这份文档假设你**从没装过**。每一步都写了"应该看到什么"，
-> 卡住时能对上号。技术原理与设计取舍见 [`README.md`](README.md)。
+> 卡住时能对上号。**技术原理与设计取舍**见 [`ARCHITECTURE.md`](ARCHITECTURE.md)，
+> 各功能的**详细用法与"为什么这么做"**见 [`docs/DESIGN.md`](docs/DESIGN.md)。
 
 ---
 
@@ -419,6 +420,33 @@ kb_figures(query="Ragone")       → Fig. 1. Ragone plot ...
 
 ---
 
+### 文献清单 INDEX.md
+
+知识库根目录有一份 **`INDEX.md`**，是**给人看的**目录：
+
+```markdown
+| 文献 | 类型 | 全文 | KEY |
+|:---|:---:|:---:|:---|
+| Zhang W. 2025 · 面向小样本的迁移学习方法研究 | 学位论文（1 笔记） | ✓ 82k | `<KEY>` |
+| Du C. 2025 · 基于对比学习的表征压缩方法 | 期刊 | ✓ 49k | `<KEY>` |
+```
+
+为什么需要它：知识库里的文件按 Zotero key 命名（`22X9PMR6.md`），唯一但
+**完全认不出是哪篇**。检索时靠 `kb_search` 就够了，但想"看看库里都有什么"
+时没有入口 —— `papers\` 目录点开是一堆 8 位代号。
+
+「更新索引」之后会自动重建，也可以手动 `python tools\make_index.py`。
+
+**检索结果和面板里也都显示可读名**（`作者 年份 · 短标题 [KEY]`），
+不用再对着 `22X9PMR6` 猜是哪篇。
+
+> ⚠ 为什么不干脆用可读名当**文件名**：库里已经有重名 —— 3 篇同名
+> 《X射线检测分析技术在文物保护修复中的应用》、2 篇同名
+> "Magnetic Dipole Moment Determination…"。用标题当文件名会互相覆盖，
+> **仍然必须靠 key 区分**。所以文件保持 key 命名（也保证迁移后路径可推算），
+
+---
+
 ## 6. 让 AI 直接检索你的文献（可选）
 
 装了 [DSH](https://github.com/deepseek-ai/deepseek-harness) 的话，可以用一条命令接进去：
@@ -532,7 +560,7 @@ AI 不会主动做这件事，知识库就只是个普通的全文检索。
 > ⚠ Zotero **自带的同步不能同步知识库** —— 它的文件同步只覆盖
 > "数据库里有附件条目的文件"。所以要么把知识库放在 Zotero 数据目录里
 > 让它跟着同步盘走，要么在设置里配「同步到目录 / 执行命令」。
-> 详见 README 的「关于把知识库同步到 Zotero 的同步」。
+> 详见 [`docs/DESIGN.md`](docs/DESIGN.md) 的「关于"把知识库同步到 Zotero 的同步"」。
 
 ### 备份
 
@@ -597,7 +625,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-env.ps1
 
 **检索不到某篇文献**
 → 那篇可能没有全文（扫描件没有文字层）。管理面板「知识库结构」页
-看 `MANIFEST.json` 里的"缺失"列表；README 的「排错」一节有 OCR 的说明。
+看 `MANIFEST.json` 里的"缺失"列表；[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) 的「排错」一节有 OCR 的说明。
 
 **面板打不开 / 报"找不到 Python 环境"**
 → 面板会告诉你**它找的是哪个路径**。到 Zotero 设置的「运行环境」里
