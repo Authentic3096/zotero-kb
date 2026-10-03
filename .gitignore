@@ -1,0 +1,61 @@
+
+# ---- 含密钥 / 本机状态，绝不能进版本库 ----
+kb/llm-config.json      # 模型 API Key 在这里
+kb/service-token.txt    # 本地服务 token
+kb/zotero-api-key.txt   # Zotero 本地 API key
+kb/bridge-token.txt
+
+# ---- 按本机路径生成的配置（模板在 bundle/cordis.patch.yml.tmpl）----
+# ⚠ DSH 的 bundle 配置里 command/args 必须是绝对路径，所以它只能"生成"，
+#   不能提交 —— 提交了就是开发机的路径（别人用不了 + 泄露目录结构）。
+bundle/cordis.patch.yml
+# 同理：知识库位置与运行环境也是各人不同的
+kb-location.json
+
+# ---- 本机数据（体积大、且各人不同）----
+kb/index.db*
+kb/fulltext/
+kb/papers/
+kb/logs/
+kb/profile-backup/
+kb/.cache/
+.venv/
+.tools/
+__pycache__/
+*.pyc
+
+# ---- 构建产物 ----
+zotero-plugin/*.xpi
+zotero-plugin/*.bak-iife
+
+# 插件"装不上"排查期的变体实验（8 个试装 xpi + 一个最小复现插件）。
+# 问题早已解决，留作本地记录，不进仓库（加起来 300+ KB，且含本机绝对路径）。
+zotero-plugin/variants/
+zotero-plugin/variants-min/
+
+# ---- 运行期日志与诊断输出 ----
+*.log
+settings-init.log
+plugin-status.json
+startup-crash.txt
+
+# ---- 备份 ----
+*.bak
+*.bak-*
+_kb-backup-*/
+
+# 图标验收图（tools/preview_icon.py 生成，不提交）
+zotero-plugin/_*_preview.png
+
+# 图标设计过程中的比对/预览图，以及用户手改的中间稿
+tools/_*.png
+tools/icon-design.user-*.pptx
+tools/icon-design-finetune.pptx
+
+# 面板图标：由 tools/make_panel_icon.py 从 icon.svg 渲染而来，属派生物
+tools/assets/icon.png
+tools/assets/icon.ico
+
+# 本机研究方向的脱敏词表（tools/scrub_domain_words.py 读它）——
+# ⚠ 词表本身就是泄漏，只能留在本机；公开版只带通用检查。
+tools/domain-words.local.txt

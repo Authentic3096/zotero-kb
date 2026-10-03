@@ -1,0 +1,17 @@
+{
+  "name": "dsh-bundle-zotero-kb",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "把本地 Zotero 文献知识库接入 DeepSeek Harness（dsh-mcp-client 的一条 stdio 配置）",
+  "license": "MIT",
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

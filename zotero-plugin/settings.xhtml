@@ -1,0 +1,296 @@
+<!--
+  插件的设置面板。由 bootstrap.js 用 Zotero.PreferencePanes.register() 注册。
+  Zotero 会把这个 fragment 插到 设置 窗口的右侧。
+
+  ⚠⚠ 这里**绝对不能**写 `<?xml version="1.0" encoding="UTF-8"?>` 声明！
+      Zotero 加载 pane 时是这样做的（preferences.js 的 _parseXHTMLToFragment）：
+          parser.parseFromSafeString(`<div xmlns="...">${str}</div>`, "application/xml")
+      也就是把文件内容**当成字符串嵌进一个 <div> 里**再用 XML 解析器解析。
+      而 XML 声明只能出现在文档的**最开头**，嵌进 <div> 内部就是非法 XML
+      → 解析失败 → 面板点进去**一片空白，什么反应都没有**。
+
+      实测对比：本机能正常显示设置面板的 4 个插件（pdf2zh / reading-list /
+      immersivetranslate / zoteropdftranslate），它们的 preferences.xhtml
+      **全部以 `<linkset>` 开头、没有 XML 声明**。
+      本插件就是因为多了这一行，用户报"设置里点击文献知识库没有反应"。
+
+  注意：内容用 XHTML 命名空间（html: 前缀），因为 Zotero 把 pane 当 HTML 解析
+  （要 XUL 得在 register 时显式传 defaultXUL: true）。
+-->
+<html:div xmlns:html="http://www.w3.org/1999/xhtml"
+          id="zotero-kb-settings"
+          style="padding: 12px 16px; font-size: 13px;">
+
+  <html:h1 style="font-size: 17px; margin: 0 0 4px;">文献知识库</html:h1>
+  <html:p style="color: #666; margin: 0 0 18px;">
+    把新加入的文献自动送进本地知识库，并用本地模型推荐分类与标签。
+  </html:p>
+
+  <html:div style="margin-bottom: 14px;">
+    <html:label style="display:block; font-weight:600; margin-bottom:4px;">
+      本地服务地址
+    </html:label>
+    <html:input type="text" data-pref="zotero-kb.server"
+                style="width: 320px; padding: 4px 6px;"
+                placeholder="http://127.0.0.1:8765"/>
+    <html:div style="color:#888; font-size:12px; margin-top:3px;">
+      默认 http://127.0.0.1:8765（由 scripts\4-service.vbs 启动）
+    </html:div>
+  </html:div>
+
+  <html:div style="margin-bottom: 14px;">
+    <html:label style="display:block; font-weight:600; margin-bottom:4px;">
+      访问 token
+    </html:label>
+    <html:input type="text" data-pref="zotero-kb.token"
+                style="width: 420px; padding: 4px 6px;"
+                placeholder="从 知识库目录\kb\service-token.txt 复制"/>
+    <html:div style="color:#888; font-size:12px; margin-top:3px;">
+      管理面板（scripts\0-panel.vbs）的「分类 / 标签」页有「复制 token」按钮
+    </html:div>
+  </html:div>
+
+
+  <!-- 模型：只用本机 Ollama。
+       ⚠ 外接 API 的 UI 已按用户要求去掉（"直接就用本地模型"）。
+         服务端**仍然支持**外接（judge.py 的 _generate_openai 与
+         KNOWN_BASE_URLS 都在），要开回来只需恢复这块界面 + 那个
+         「模型来源」下拉，不用重写后端。 -->
+  <html:div id="zotero-kb-group-ollama" style="margin-bottom: 14px;">
+    <html:label style="display:block; font-weight:600; margin-bottom:4px;">
+      用哪个本地模型
+    </html:label>
+    <html:div style="color:#666; font-size:12px; margin-bottom:6px;">
+      用本机的 Ollama 跑模型 —— 完全离线、不花钱、文献不出本机。
+    </html:div>
+    <!-- 下拉列表：选项由 settings.js 从本机 Ollama 拉（GET /models）。
+         ⚠ 用 select 而不是 input（用户要求"oll 的本地模型选择也用下拉列表"）：
+           原来是个空白输入框，用户得先自己 `ollama list` 看有哪些、再手打
+           模型名 —— 打错一个字就报"模型不存在"，而且不知道本机装了什么。 -->
+    <html:select id="zotero-kb-ollama-model" data-pref="zotero-kb.model"
+                 style="padding:4px 6px; min-width:300px;">
+    </html:select>
+    <html:button id="zotero-kb-refresh-models-btn"
+                 style="padding:4px 10px; margin-left:6px;">刷新列表</html:button>
+    <html:div id="zotero-kb-ollama-model-hint"
+              style="color:#888; font-size:12px; margin-top:4px;">
+      正在读本机已装的模型…
+    </html:div>
+  </html:div>
+
+
+  <!-- ================= 运行环境 =================
+       三个位置互相独立，谁也不能由谁推算（这是踩过的坑）：
+         项目目录  放代码（offline\ online\ tools\ .venv\）
+         Python    解释器，通常在 项目\.venv\Scripts\pythonw.exe
+         Ollama    本地模型程序，官方安装器在 %LOCALAPPDATA%\Programs\Ollama
+       知识库（数据）的位置在下一节，它默认跟着 Zotero 数据目录走。 -->
+  <html:div style="margin-bottom: 14px; padding:10px 12px;
+                   background:rgba(128,128,128,0.08); border-radius:6px;">
+    <html:div style="font-weight:600; margin-bottom:4px;">运行环境</html:div>
+    <html:div style="color:#888; font-size:12px; margin-bottom:10px;">
+      这三项是"代码和程序在哪"，跟下面「知识库位置」（数据在哪）是两回事。
+      留空 = 自动探测。填错了下面的「保存并检测」会告诉你。
+    </html:div>
+
+    <html:div style="margin-bottom:9px;">
+      <html:label style="display:block; margin-bottom:3px; font-weight:600;">
+        项目目录
+      </html:label>
+      <html:input type="text" id="zotero-kb-project-root"
+                  data-pref="zotero-kb.projectRoot"
+                  style="width: 420px; padding: 4px 6px;"
+                  placeholder="留空 = 自动探测（含 offline、online、.venv 的目录）"/>
+      <html:button id="zotero-kb-browse-root-btn"
+                   style="padding:4px 10px; margin-left:6px;">浏览…</html:button>
+    </html:div>
+
+    <html:div style="margin-bottom:9px;">
+      <html:label style="display:block; margin-bottom:3px; font-weight:600;">
+        Python 解释器
+      </html:label>
+      <html:input type="text" id="zotero-kb-python-exe"
+                  data-pref="zotero-kb.pythonExe"
+                  style="width: 420px; padding: 4px 6px;"
+                  placeholder="留空 = 用 项目目录\.venv\Scripts\pythonw.exe"/>
+      <html:button id="zotero-kb-browse-python-btn"
+                   style="padding:4px 10px; margin-left:6px;">浏览…</html:button>
+    </html:div>
+
+    <html:div style="margin-bottom:9px;">
+      <html:label style="display:block; margin-bottom:3px; font-weight:600;">
+        Ollama 程序
+        <html:span style="color:#888; font-weight:400;">（可选）</html:span>
+      </html:label>
+      <html:input type="text" id="zotero-kb-ollama-exe"
+                  data-pref="zotero-kb.ollamaExe"
+                  style="width: 420px; padding: 4px 6px;"
+                  placeholder="留空 = 自动探测（%LOCALAPPDATA%\Programs\Ollama）"/>
+      <html:button id="zotero-kb-browse-ollama-btn"
+                   style="padding:4px 10px; margin-left:6px;">浏览…</html:button>
+      <html:div style="color:#888; font-size:12px; margin-top:3px;">
+        不装 Ollama 也能用知识库（检索、经验、权重都不依赖模型），
+        只是「分类建议」和「打标签」用不了。
+      </html:div>
+    </html:div>
+
+    <html:div style="margin-top:10px;">
+      <html:button id="zotero-kb-env-save-btn" style="padding:4px 10px;">
+        保存并检测
+      </html:button>
+      <html:button id="zotero-kb-env-open-panel-btn"
+                   style="padding:4px 10px; margin-left:6px;">
+        打开管理面板
+      </html:button>
+      <html:span id="zotero-kb-env-status"
+                 style="margin-left:10px; color:#888;"></html:span>
+    </html:div>
+
+    <!-- 检测报告：逐项列"找到了什么 / 该改哪个框" -->
+    <html:div id="zotero-kb-env-report"
+              style="margin-top:8px; font-size:12px; line-height:1.7;
+                     font-family:Consolas,monospace; word-break:break-all;">
+    </html:div>
+  </html:div>
+
+  <!-- ================= 知识库位置 =================
+       位置由服务端决定（它可以跟随 Zotero 数据目录），插件只负责显示出来
+       —— 让用户一眼看到"我的知识库在哪"，而不是去猜或翻文档。 -->
+  <html:div style="margin-bottom: 14px; padding:10px 12px;
+                   background:rgba(128,128,128,0.08); border-radius:6px;">
+    <html:div style="font-weight:600; margin-bottom:6px;">知识库位置</html:div>
+    <html:div id="zotero-kb-kbdir"
+              style="font-family:Consolas,monospace; font-size:12px;
+                     word-break:break-all; color:#444;">
+      （点下方「刷新」从服务端读取）
+    </html:div>
+    <html:div style="margin-top:8px;">
+      <html:button id="zotero-kb-refresh-kbdir-btn" style="padding:4px 10px;">
+        刷新
+      </html:button>
+      <html:button id="zotero-kb-open-kbdir-btn" style="padding:4px 10px;
+                   margin-left:6px;">
+        打开这个目录
+      </html:button>
+      <html:button id="zotero-kb-migrate-btn" style="padding:4px 10px;
+                   margin-left:6px;">
+        迁移到 Zotero 数据目录
+      </html:button>
+      <html:span id="zotero-kb-kbdir-status"
+                 style="margin-left:10px; color:#888;"></html:span>
+    </html:div>
+    <html:div style="color:#888; font-size:12px; margin-top:6px;">
+      默认放在 Zotero 数据目录下的 <html:code>zotero-kb\</html:code>，
+      这样重装/换机只要同步 Zotero 那一份。
+      迁移是**复制**（旧目录会保留），并且会先备份。
+    </html:div>
+  </html:div>
+
+  <!-- ================= 知识库同步 =================
+       ⚠ 这里**没有**"同步到 Zotero 同步"这个开关，原因写在下面的说明里：
+         Zotero 的文件同步只针对"数据库里有附件条目的文件"
+         （源码里只走 Attachments.getStorageDirectoryByID），
+         知识库目录不在它的管辖范围。硬要做只能把每个 .md 挂成附件，
+         那会产生数千个条目、拖慢同步。 -->
+  <html:div style="margin-bottom: 14px; padding:10px 12px;
+                   background:rgba(128,128,128,0.08); border-radius:6px;">
+    <html:div style="font-weight:600; margin-bottom:6px;">
+      把知识库同步到别的机器（可选）
+    </html:div>
+    <html:label style="display:block; margin-bottom:6px;">
+      <html:input type="checkbox" data-pref="zotero-kb.syncEnabled"/>
+      <html:span>启用同步（默认关闭）</html:span>
+    </html:label>
+    <html:div style="margin-bottom:8px;">
+      <html:label style="margin-right:8px;">方式：</html:label>
+      <html:select id="zotero-kb-sync-mode"
+                   data-pref="zotero-kb.syncMode"
+                   style="padding:4px 6px; min-width:200px;">
+        <html:option value="none">不同步</html:option>
+        <html:option value="folder">同步到指定目录（坚果云/OneDrive）</html:option>
+        <html:option value="command">用命令同步（rclone / robocopy）</html:option>
+      </html:select>
+    </html:div>
+    <html:div id="zotero-kb-sync-target-wrap" style="margin-bottom:8px;">
+      <html:label style="display:block; margin-bottom:3px;">
+        同步目标（目录，或要执行的命令）
+      </html:label>
+      <html:input type="text" data-pref="zotero-kb.syncTarget"
+                  style="width: 460px; padding: 4px 6px;"
+                  placeholder="坚果云/OneDrive 的本地文件夹，或 rclone sync 命令"/>
+    </html:div>
+    <html:div>
+      <html:button id="zotero-kb-sync-now-btn" style="padding:4px 10px;">
+        立即同步一次
+      </html:button>
+      <html:span id="zotero-kb-sync-now-status"
+                 style="margin-left:10px; color:#888;"></html:span>
+    </html:div>
+    <html:div style="color:#888; font-size:12px; margin-top:6px;">
+      <html:strong>说明</html:strong>：Zotero 自带的同步**不能**用来同步知识库 ——
+      它的文件同步只覆盖"数据库里有附件条目的文件"（源码里只走
+      Attachments.getStorageDirectoryByID），知识库目录不在其中。
+      硬做只能把每个 .md 挂成附件，会产生数千个条目、拖慢同步。
+      所以这里走"同步到目录（交给坚果云/OneDrive 客户端）"或"执行命令"两条路。
+    </html:div>
+  </html:div>
+
+  <html:div style="margin-bottom: 14px;">
+    <html:label style="display:block; font-weight:600; margin-bottom:4px;">
+      分类列表（可选）
+    </html:label>
+    <html:input type="text" data-pref="zotero-kb.categories"
+                style="width: 540px; padding: 4px 6px;"
+                placeholder="留空 = 用知识库里现有的分类"/>
+    <html:div style="color:#888; font-size:12px; margin-top:3px;">
+      逗号分隔，例如：分类 B、分类 A、分类器
+    </html:div>
+  </html:div>
+
+  <html:div style="margin-bottom: 18px;">
+    <html:label>
+      <html:input type="checkbox" data-pref="zotero-kb.autoProcess"/>
+      <html:span style="font-weight:600;">新文献自动处理</html:span>
+      <html:span style="color:#888;">（自动切片 + 弹出分类建议）</html:span>
+    </html:label>
+  </html:div>
+
+  <!-- ================= 从 DSH 导入文献 =================
+       这是本插件**唯一**会由外部触发新建条目的路径（见 bootstrap.js 的
+       runAcquire）。确认框默认**关**：搜索、列候选、挑选都在 DSH 对话里
+       完成，再弹一个 Zotero 模态框会把连贯的对话中断成两个界面。
+       DSH 那边会在对话里把"要存哪几篇、存到哪个分类"讲清楚并等用户确认。 -->
+  <html:div style="margin-bottom: 18px; padding:10px 12px;
+                   background:rgba(128,128,128,0.08); border-radius:6px;">
+    <html:div style="font-weight:600; margin-bottom:6px;">从 DSH 导入文献</html:div>
+    <html:label style="display:block; margin-bottom:6px;">
+      <html:input type="checkbox" data-pref="zotero-kb.acquireConfirm"/>
+      <html:span>导入前先在 Zotero 弹确认框</html:span>
+      <html:span style="color:#888;">（默认关；确认在 DSH 对话里做）</html:span>
+    </html:label>
+    <html:div style="color:#888; font-size:12px;">
+      在 DSH 里说"帮我找几篇…的文献"时，搜索、候选表、挑哪几篇、结果
+      **全在对话里**；这里默认不再插一个弹窗。<html:br/>
+      抓取由 Zotero 自己完成，用**你这台机器当下的网络身份** ——
+      校园网出口 IP、机构订阅都算数；元数据走 Zotero 的翻译器，
+      PDF 走 Zotero 自带的"查找可用的 PDF"。<html:br/>
+      <html:strong>不做</html:strong>付费墙绕过（改 URL 骗计费、影子图书馆、盗用凭证）；
+      拿不到就如实告诉你，请在浏览器里用 Zotero 连接器抓。
+    </html:div>
+  </html:div>
+
+  <html:div>
+    <html:button id="zotero-kb-test-btn" style="padding: 4px 12px;">
+      测试连接
+    </html:button>
+    <html:span id="zotero-kb-test-status"
+               style="margin-left: 10px; color: #888;"></html:span>
+  </html:div>
+
+  <html:hr style="margin: 20px 0 12px; border:none; border-top:1px solid #ddd;"/>
+  <html:div style="color:#888; font-size:12px;">
+    <html:div>插件版本：<html:span id="zotero-kb-version">—</html:span></html:div>
+    <html:div id="zotero-kb-diag" style="margin-top:6px; white-space:pre-wrap;"></html:div>
+  </html:div>
+
+</html:div>

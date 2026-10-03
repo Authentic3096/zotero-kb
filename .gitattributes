@@ -1,0 +1,24 @@
+# 行尾统一：仓库里存 LF，检出时按平台转换。
+# 为什么必须显式写：本机是 Windows，不写的话 git 会把 CRLF 提交进去，
+# 别人 clone 下来 diff 全红、脚本里的 shebang 和正则也会出问题。
+* text=auto eol=lf
+
+# Windows 专用脚本必须保留 CRLF —— cmd.exe 对 LF 的 .cmd/.bat 处理不可靠
+# （带标签跳转的批处理会直接跑飞），VBScript 同理。
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.vbs  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制：不要做任何行尾/编码转换
+*.xpi   binary
+*.zip   binary
+*.png   binary
+*.ico   binary
+*.jpg   binary
+*.pptx  binary
+*.sqlite binary
+
+# 语言统计：把生成物和第三方目录排除掉，避免 GitHub 把它们算进占比
+.venv/**        linguist-vendored
+node_modules/** linguist-vendored

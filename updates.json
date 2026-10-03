@@ -1,0 +1,18 @@
+{
+  "addons": {
+    "zotero-kb@authentic3096.github.io": {
+      "updates": [
+        {
+          "version": "0.25.0",
+          "update_link": "https://github.com/Authentic3096/zotero-kb/releases/download/v0.25.0/zotero-kb-0.25.0.xpi",
+          "applications": {
+            "zotero": {
+              "strict_min_version": "6.999",
+              "strict_max_version": "10.*"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

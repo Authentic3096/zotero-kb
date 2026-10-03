@@ -1,0 +1,52 @@
+# ⚠ 这是**模板**，不要直接用它 —— 跑 `python tools\gen_bundle_config.py`
+#   会按本机实际路径生成 `cordis.patch.yml`（那个才是 DSH 读的，且在 .gitignore 里）。
+#
+#   为什么要生成：DSH 从 profile 解析本文件，command / args **必须是绝对路径**
+#   （相对路径它找不到解释器）。而绝对路径提交进仓库就是「开发机的路径」——
+#   别人克隆下来用不了，还泄露目录结构。
+#
+#   `scripts\install-env.cmd` 装完依赖会自动生成，普通用户不用管这一步。
+#
+# ⚠ 这个文件是**生成**的，不要手动改，也不要提交进版本库。
+#
+#   为什么要生成：DSH 从 profile 解析本文件，command / args **必须是绝对路径**
+#   （相对路径它找不到解释器）。而绝对路径提交进仓库就是「开发机的路径」——
+#   别人克隆下来用不了，还泄露目录结构。
+#
+#   所以：仓库里放的是 cordis.patch.yml.tmpl（带占位符），
+#   按本机实际情况生成这个文件。生成命令：
+#       python tools\gen_bundle_config.py
+#   （scripts\install-env.cmd 装完依赖会自动调它，普通用户不用管这一步。）
+#
+# 本 bundle 提供的 loader 条目。
+#
+# ⚠ 语法要点（实测踩过）：**新增**条目必须写在 `- insert:` 下面，
+#   直接写 `- id: xxx` 是"按 id 覆盖已有条目"的语法，会报
+#     patch: entry "mcp-zotero-kb" not found
+#   官方 bundle（@openviking/dsh-memory-plugin）用的就是 insert 形式。
+#
+# 另外，profile 自己的 cordis.patch.yml 同样是"覆盖"语义，
+# 所以新增插件不能写在那里 —— 必须做成 bundle，由 profile 的
+# dsh.profile.bundles 引入（`dsh plugin --profile <p> add <包>` 会自动加进去）。
+#
+# serverName 决定模型看到的工具名前缀：mcp__zotero-kb__kb_search。
+# 改名等于改名所有工具，会让历史会话与权限规则失效，所以定死不要动。
+- insert:
+    - id: mcp-zotero-kb
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: zotero-kb
+        transport: stdio
+        command: '__PROJECT_PYTHON__'
+        args: ['-X', 'utf8', '__PROJECT_SERVER__']
+        env:
+          # 绝对路径启动，不依赖 cwd；这几个变量名都不是凭据形状，
+          # DSH 只清洗匹配 /KEY|PASSWORD|SECRET|TOKEN/i 的名字与 DSH_* 前缀。
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+          HF_ENDPOINT: 'https://hf-mirror.com'
+          HF_HUB_DISABLE_SYMLINKS_WARNING: '1'
+        # 首次调用可能要算查询向量，给足时间；不设 failOnStartupError
+        # 是为了让知识库没建好时也不拖垮 DSH 启动。
+        toolCallTimeoutMs: 120000
+        failOnStartupError: false

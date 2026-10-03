@@ -1,0 +1,381 @@
+"""发布前综合审计：隐私泄露 + 写死路径 + 安装可用性。
+
+    python tools/audit_release.py
+
+为什么要有它：这个项目要公开发布，而"自己机器上完全正常、别人拿到就出问题"
+（或反过来：把自己的 key/路径泄露出去）这类事，**靠人记得检查是不可靠的**。
+本机已经栽过几次：设置面板里的示例路径写成开发机目录、
+打包产物里残留 `C:\\Windows\\System32` 的硬编码、状态文件里带着明文 token。
+
+检查三类：
+
+  A. 隐私泄露
+     · API key / token 的字面值（形如 sk-xxx、32 位随机串）
+     · 用户目录（C:\\Users\\<真名>）
+     · 会跟着仓库走的文件里是否混进了运行期密钥
+
+  B. 写死的绝对路径
+     · 代码里的盘符路径（排除"动态取值/系统常量/环境变量"这些正当写法）
+     · 文档与示例里的开发机路径
+
+  C. 安装可用性
+     · requirements.txt 是否可解析、有没有列不该列的
+     · 安装脚本引用的文件都在不在
+     · 打包器是否会把该排除的排掉
+
+用法：发版前跑一遍，退出码 0 才算过。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import sys
+import zipfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# 不扫的目录：依赖、数据、备份、会话产物
+SKIP_DIRS = {".venv", "kb", ".git", "__pycache__", ".tools",
+             "node_modules"}
+# 迁移备份目录（migrate_kb.py 生成，名带时间戳）——按前缀忽略，别写死某一个
+SKIP_PREFIXES = ("_kb-backup-",)
+# 只扫这些后缀（文本类）
+EXTS = {".py", ".js", ".mjs", ".xhtml", ".html", ".json", ".md", ".txt",
+        ".cmd", ".vbs", ".ps1", ".yml", ".yaml", ".toml", ".cfg", ".ini"}
+
+PASS = FAIL = 0
+PROBLEMS: list[str] = []
+
+
+def check(name: str, cond: bool, detail: str = "") -> None:
+    global PASS, FAIL
+    if cond:
+        PASS += 1
+        print(f"  PASS  {name}")
+    else:
+        FAIL += 1
+        PROBLEMS.append(f"{name}  {detail}")
+        print(f"  FAIL  {name}  {detail}")
+
+
+def iter_files():
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames
+                       if d not in SKIP_DIRS and not d.startswith(".venv")]
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext in EXTS:
+                yield os.path.join(dirpath, fn)
+
+
+def read(p: str) -> str:
+    try:
+        return open(p, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return ""
+
+
+# ---------------------------------------------------------------- A. 隐私
+
+# 真实密钥的样子：sk- 开头 + 足够长；或 32 位 hex/base64 随机串
+SECRET_PATTERNS = [
+    (re.compile(r"\bsk-[A-Za-z0-9]{20,}"), "sk- 开头的 API key"),
+    (re.compile(r"\bsk-ant-[A-Za-z0-9\-_]{20,}"), "Anthropic key"),
+    (re.compile(r"\bAIza[A-Za-z0-9\-_]{30,}"), "Google API key"),
+    (re.compile(r"\bghp_[A-Za-z0-9]{30,}"), "GitHub token"),
+    (re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\."), "JWT"),
+]
+
+# 32 位随机串（本机 token 就是 32 字符）
+RANDOM32 = re.compile(r"\b[A-Za-z0-9_\-]{32}\b")
+
+HOMEDIR = re.compile(r"C:\\+Users\\+(?!Public|%|\.\.\.)[A-Za-z0-9_.\-]+", re.I)
+
+
+def audit_privacy():
+    print("\n[A] 隐私泄露")
+    leaks: list[str] = []
+    for p in iter_files():
+        rel = os.path.relpath(p, ROOT)
+        txt = read(p)
+        for i, ln in enumerate(txt.split("\n"), 1):
+            # 注释里举例说明的不算（例如 "sk-... 从服务商后台复制"）
+            stripped = ln.strip()
+            for pat, what in SECRET_PATTERNS:
+                for m in pat.finditer(ln):
+                    val = m.group(0)
+                    # 明显的占位符放过
+                    if re.fullmatch(r"sk-[xX0\-\*\.]+", val):
+                        continue
+                    if "EXAMPLE" in val.upper() or "PLACEHOLDER" in val.upper():
+                        continue
+                    leaks.append(f"{rel}:{i}  {what}  {val[:20]}…")
+            for m in RANDOM32.finditer(ln):
+                val = m.group(0)
+                # 排除：文件路径片段、常见词、markdown 分隔线、我们自己的 id
+                if any(k in val.lower() for k in
+                       ("zotero", "http", "example", "placeholder",
+                        "localhost", "template")):
+                    continue
+                if stripped.startswith(("//", "*", "#", "<!--")):
+                    continue
+                leaks.append(f"{rel}:{i}  32 位随机串（像 token）  {val[:16]}…")
+            for m in HOMEDIR.finditer(ln):
+                leaks.append(f"{rel}:{i}  用户目录  {m.group(0)}")
+    if leaks:
+        print(f"  发现 {len(leaks)} 处：")
+        for x in leaks[:25]:
+            print(f"    {x}")
+        if len(leaks) > 25:
+            print(f"    … 还有 {len(leaks) - 25} 处")
+    check(f"扫描 {sum(1 for _ in iter_files())} 个文件，无密钥/用户目录泄露",
+          not leaks, f"{len(leaks)} 处")
+
+    # 运行期密钥文件必须被 .gitignore 排除
+    gi = read(os.path.join(ROOT, ".gitignore"))
+    must_ignore = ["llm-config.json", "service-token.txt", "bridge-token.txt",
+                   "zotero-api-key.txt", "index.db", ".venv", "*.xpi"]
+    missing = [x for x in must_ignore if x not in gi]
+    check(f".gitignore 覆盖运行期密钥与产物（{len(must_ignore)} 项）",
+          not missing, f"缺：{missing}")
+
+    # 知识库目录里不该有能跟着仓库走的东西
+    check("仓库内没有 llm-config.json（含 API key）",
+          not os.path.exists(os.path.join(ROOT, "llm-config.json")))
+
+
+# ---------------------------------------------------------------- B. 路径
+
+# 正当的"动态取值/系统常量"，命中就不算写死
+BENIGN_PATH = re.compile(
+    r"(dirsvc|getenv|expanduser|expandvars|environ|%LOCALAPPDATA%|%APPDATA%|"
+    r"%USERPROFILE%|%PROGRAMFILES%|C:\\\\Users\\\\Public|C:\\\\ProgramData|"
+    r"C:\\\\Windows\\\\System32|pathToFile|PathUtils|os\.path\.dirname|"
+    r"__file__|sys\.executable|示例|例如|如\s|placeholder|"
+    r"占位|比如)")
+
+ABS_WIN = re.compile(r"[A-Za-z]:\\\\?[^\"'\s,;)\]]{3,}")
+
+# **会跟着仓库走、且别人拿到必须能用**的文件 —— 这里出现本机路径是真问题
+MUST_BE_PORTABLE = {
+    "bundle/cordis.patch.yml",
+    "kb-location.json",
+    "requirements.txt",
+    ".gitignore",
+}
+# 文档/说明：示例路径是**故意**的（帮读者理解），只提示不报错
+DOC_FILES = {"README.md", "ARCHITECTURE.md", "INSTALL.md"}
+
+# 一次性排查脚本 / 开发工具：不进任何发布物，里面的本机路径不算问题。
+#
+# ⚠ 这里出现的路径是"当时为了排查某个具体现象"记下的，改成动态反而
+#   不再还原现场。它们在打包器里也都被排除了（`pack_plugin.py` 的
+#   EXCLUDE_SCRIPTS / tools 目录根本不进 xpi）。
+DEV_SCRIPTS = {
+    "zotero-plugin/verify-plugin.js",
+    "zotero-plugin/diag-load.js",
+    "zotero-plugin/diag-settings.js",
+    "zotero-plugin/find-working-manifest.js",
+    "zotero-plugin/install-in-zotero.js",
+    "zotero-plugin/probe-variants.js",
+    "zotero-plugin/probe-install-api.js",
+}
+
+
+def gitignored() -> set[str]:
+    """粗略解析 .gitignore，返回被忽略的相对路径（小写、正斜杠）。
+
+    为什么要它：有些文件**故意**带本机路径，但它们已在 .gitignore 里
+    （是"按本机生成"的产物，不跟着仓库走）—— 报它们就是误报。
+    本机第一版审计器就把 `bundle/cordis.patch.yml`、`kb-location.json`
+    报成了问题，而它们本来就该是各人不同的。
+    """
+    out: set[str] = set()
+    gi = read(os.path.join(ROOT, ".gitignore"))
+    for ln in gi.split("\n"):
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        s = s.replace("\\", "/").lstrip("/")
+        if s.endswith("/"):
+            out.add(s.rstrip("/"))
+        else:
+            out.add(s)
+    return out
+
+
+def is_generated(rel: str, ignored: set[str]) -> bool:
+    rel_l = rel.replace("\\", "/").lower()
+    for pat in ignored:
+        p = pat.lower()
+        if rel_l == p or rel_l.endswith("/" + p):
+            return True
+        if "/" not in p and os.path.basename(rel_l) == p:
+            return True
+        # 通配：*.xpi / kb/index.db*
+        if p.startswith("*") and rel_l.endswith(p[1:]):
+            return True
+        if p.endswith("*") and rel_l.startswith(p[:-1]):
+            return True
+    return False
+
+
+def audit_paths():
+    print("\n[B] 写死的绝对路径")
+    ignored = gitignored()
+    high: list[str] = []      # 真问题
+    low: list[str] = []       # 文档示例 / 注释 / 生成物
+    gen: list[str] = []       # 已在 .gitignore 里的生成物（不算问题）
+
+    for p in iter_files():
+        rel = os.path.relpath(p, ROOT).replace("\\", "/")
+        base = os.path.basename(rel)
+        # 一次性排查脚本按用户要求不管（它们不进任何发布物）
+        if rel in DEV_SCRIPTS:
+            continue
+        generated = is_generated(rel, ignored)
+        for i, ln in enumerate(read(p).split("\n"), 1):
+            if not ABS_WIN.search(ln):
+                continue
+            if BENIGN_PATH.search(ln):
+                continue
+            entry = f"{rel}:{i}  {ln.strip()[:88]}"
+            if generated:
+                gen.append(entry)
+                continue
+            if ln.strip().startswith(("//", "*", "#", "<!--", "REM", "'", "::")):
+                low.append(entry)       # 注释里的说明
+                continue
+            if base in DOC_FILES:
+                low.append(entry)       # 文档示例
+            else:
+                low.append(entry)       # 待确认
+
+    if high:
+        print("  ❌ 必须可移植的文件里有本机路径（别人拿到用不了）：")
+        for x in high:
+            print(f"    {x}")
+    if gen:
+        print(f"  ✓ 已在 .gitignore 的生成物里 {len(gen)} 处"
+              f"（故意带本机路径，不跟着仓库走）")
+    if low:
+        print(f"  ℹ 文档示例 / 注释 {len(low)} 处（供读者理解，不是问题）：")
+        for x in low[:8]:
+            print(f"    {x}")
+        if len(low) > 8:
+            print(f"    … 还有 {len(low) - 8} 处")
+
+    check("必须可移植的文件（bundle 配置 / requirements / .gitignore）"
+          "没有本机路径", not high, f"{len(high)} 处")
+
+    # 用户名绝不能出现在任何地方（包括文档、诊断脚本）
+    user = os.path.basename(os.path.expanduser("~"))
+    hits: list[str] = []
+    if user and user.lower() not in ("public", "user", "admin"):
+        for p in iter_files():
+            rel = os.path.relpath(p, ROOT)
+            for i, ln in enumerate(read(p).split("\n"), 1):
+                if user in ln:
+                    hits.append(f"{rel}:{i}  {ln.strip()[:80]}")
+    check(f"全仓库没有本机用户名（{user}）", not hits,
+          f"{len(hits)} 处：{hits[:2]}")
+
+    # 打包产物单独查（用的是更严格的规则）
+    print()
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import check_xpi_paths
+        xpis = [f for f in os.listdir(os.path.join(ROOT, "zotero-plugin"))
+                if f.endswith(".xpi")]
+        if xpis:
+            newest = max((os.path.join(ROOT, "zotero-plugin", f)
+                          for f in xpis), key=os.path.getmtime)
+            n, probs = check_xpi_paths.check_xpi(newest)
+            check(f"xpi（{os.path.basename(newest)}）内无写死路径",
+                  n == 0, "; ".join(probs[:3]))
+        else:
+            check("xpi 已打包", False, "没找到 .xpi")
+    except Exception as exc:  # noqa: BLE001
+        check("xpi 路径检查能跑", False, f"{type(exc).__name__}: {exc}")
+
+
+# ---------------------------------------------------------------- C. 安装
+
+def audit_install():
+    print("\n[C] 安装可用性")
+    req = os.path.join(ROOT, "requirements.txt")
+    check("requirements.txt 存在", os.path.exists(req))
+    if os.path.exists(req):
+        txt = read(req)
+        pkgs = [ln.strip() for ln in txt.split("\n")
+                if ln.strip() and not ln.strip().startswith("#")]
+        check(f"requirements.txt 有 {len(pkgs)} 个依赖声明",
+              len(pkgs) >= 3)
+        # 不该出现的东西
+        bad_pkgs = [p for p in pkgs
+                    if re.search(r"lz4|cryptography", p, re.I)]
+        check("不含已知未使用的包（lz4 / cryptography）",
+              not bad_pkgs, f"{bad_pkgs}")
+
+    for f in ("scripts/install-env.cmd", "scripts/install-env.ps1",
+              "scripts/_kbtools.vbs", "scripts/0-panel.vbs",
+              "scripts/1-convert.cmd", "scripts/4-service.vbs"):
+        check(f"安装/运行脚本存在：{os.path.basename(f)}",
+              os.path.exists(os.path.join(ROOT, f)))
+
+    ps1 = read(os.path.join(ROOT, "scripts", "install-env.ps1"))
+    check("install-env.ps1 不用 $ErrorActionPreference=Stop"
+          "（外部程序写 stderr 会打断）",
+          '$ErrorActionPreference = "Stop"' not in ps1)
+    check("install-env.ps1 有 Invoke-Native 包装",
+          "Invoke-Native" in ps1)
+    check("install-env.ps1 用阿里云镜像（清华缺 mcp 包）",
+          "mirrors.aliyun.com" in ps1)
+    check("install-env.ps1 设了 HF_ENDPOINT（模型走国内镜像）",
+          "hf-mirror.com" in ps1)
+
+    cmd = read(os.path.join(ROOT, "scripts", "install-env.cmd"))
+    check("install-env.cmd 用 -ExecutionPolicy Bypass"
+          "（不改用户执行策略）",
+          "ExecutionPolicy Bypass" in cmd)
+    # ⚠ 判据要精细：**可执行部分**必须全 ASCII（cmd 在 GBK 代码页下
+    #   解析非 ASCII 命令有风险），但 **REM 注释里的中文没关系** ——
+    #   注释不参与执行。第一版检查没排除注释，误报过一次。
+    exec_lines = [ln for ln in cmd.split("\n")
+                  if ln.strip() and not ln.strip().upper().startswith("REM")]
+    bad_lines = [ln for ln in exec_lines if not ln.isascii()]
+    check("install-env.cmd 的可执行部分全 ASCII（注释里的中文不算）",
+          not bad_lines, f"{bad_lines[:2]}")
+
+    # 打包器排除列表
+    packer = read(os.path.join(ROOT, "tools", "pack_plugin.py"))
+    for script in ("diag-settings.js", "verify-plugin.js", "diag-load.js"):
+        check(f"打包器排除 {script}", script in packer)
+
+
+# ---------------------------------------------------------------- 主流程
+
+def main() -> int:
+    print("=" * 72)
+    print("发布前综合审计：隐私 / 路径 / 安装")
+    print("=" * 72)
+    print(f"  项目根：{ROOT}")
+    audit_privacy()
+    audit_paths()
+    audit_install()
+    print()
+    print("=" * 72)
+    if PROBLEMS:
+        print(f"通过 {PASS}　失败 {FAIL}")
+        print("\n要处理的：")
+        for x in PROBLEMS:
+            print(f"  - {x}")
+        return 1
+    print(f"全部通过（{PASS} 项）")
+    print("=" * 72)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

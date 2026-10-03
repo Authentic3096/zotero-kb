@@ -1,0 +1,39 @@
+# 知识库的 Python 依赖。
+#
+# 装法一（推荐，脚本会自动做这套）：
+#     scripts\install-env.cmd
+#
+# 装法二手动：
+#     py -3 -m venv .venv
+#     .venv\Scripts\python.exe -m pip install -r requirements.txt ^
+#         -i https://mirrors.aliyun.com/pypi/simple/
+#
+# ⚠ 只列**直接依赖**，不锁传递依赖的版本：换成别人的 Python 版本或别的
+#   操作系统时，pip 才能挑到能装的二进制 wheel。要完全复现本机环境，
+#   用 `pip freeze > requirements.lock.txt` 另存一份。
+#
+# ⚠ 国内必须换源：实测清华源（TUNA）上找不到 mcp 包，阿里源可以。
+#   嵌入模型走 hf-mirror.com（convert.py 里已设 HF_ENDPOINT）。
+
+# 读 PDF 正文与提取文本（zreader.py）。带二进制 wheel，体积最大（约 53 MB）
+pymupdf>=1.24
+
+# 向量计算（searcher.py / converter.py 直接 import numpy）
+numpy>=1.26
+
+# 本地嵌入模型（BAAI/bge-small-zh-v1.5）。会带进 onnxruntime（约 200 MB）
+# —— 整个依赖里最重的一块，也是"语义检索"能力的来源
+fastembed>=0.4
+
+# MCP 服务器框架（online/server.py 的 MCPServer）。
+# 供 DSH 以 stdio 方式调用，暴露 kb_search / kb_item / kb_experience_add 等工具
+mcp>=1.2
+
+# 读 DSH 会话记录（learn.py 用它解压 zstd 转录，从对话里补经验）
+zstandard>=0.22
+
+# 管理面板显示头像（tools/gui.py 的 _load_avatar）。
+# ⚠ 它本来就随 fastembed 一起装进来，这里**显式声明**是因为 gui.py 直接
+#   import 了它 —— 靠传递依赖是脆的：哪天 fastembed 换了依赖树，
+#   面板就会莫名其妙少一张图（而且只是装饰，坏了不容易被发现）。
+pillow>=10
