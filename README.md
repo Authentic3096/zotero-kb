@@ -460,13 +460,20 @@ kb_acquire(dois="10.xxxx/yyyy", dry_run=True)
 · 无条件信任配置里的 `project_root` → 代码被复制到新目录后，
   仍然用**旧目录**的解释器（用 `os.path.samefile` 认项目身份才拦住）。
 
-### ④ 发版：打一个 tag，剩下的自动做
+### ④ 发版：改个版本号、打个 tag，剩下的自动做
 
 ```bash
-# 1. 改 zotero-plugin/manifest.json 里的 version（三处之一，另两处会自动跟）
-# 2. 打 tag 推上去
-git tag v0.25.1 && git push origin v0.25.1
+# 1. 改 zotero-plugin/manifest.json 里的 version
+# 2. 同步更新清单，和上一步**同一次提交**（否则 CI 的 --check 会红）
+python tools/make_updates_json.py --tag v0.25.2
+git commit -am "发布 v0.25.2" && git push origin main
+# 3. 打 tag 推上去，触发发布链
+git tag v0.25.2 && git push origin v0.25.2
 ```
+
+第 2 步不能省。`updates.json` 本该在发版后才更新，但 CI 有一条「它与 manifest
+版本必须一致」的守门员 —— 只改了版本号就推，CI 会红。两者一起提交最省事；
+发布链里也保留了「发现不一致就自动改并提交回 main」作为兜底。
 
 `.github/workflows/release.yml` 会依次：**跑自检 → 打包 xpi → 审计 →
 生成 updates.json → 发 Release（xpi 作附件）→ 把 updates.json 提交回 main**。
@@ -476,6 +483,11 @@ git tag v0.25.1 && git push origin v0.25.1
 版本不一致就直接失败的守门员（`tools/make_updates_json.py`）来兜底。
 
 发布中途失败可以直接重跑：Release 已存在时会覆盖附件，不会卡在"已存在"上报错。
+
+> ⚠ 发布说明由**两个 tag 之间的提交**生成，不是 `gh release create --generate-notes`
+> —— 后者只列合并的 PR 和贡献者，本项目直接往 main 提交、没有 PR，
+> 实测生成出来的说明只剩一行 compare 链接。想写更好的说明就事后
+> `gh release edit <tag> --notes-file <文件>`。
 
 > ⚠ **一个不会告警的坑**：`.gitattributes` 只对**新检出**生效。如果你在加它之前就已经
 > 有工作区，那些文件会一直保持旧行尾（本地 CRLF），而 `git status` **永远是干净的** ——

@@ -63,6 +63,28 @@ jobs:
       - name: 生成 updates.json
         run: python tools/make_updates_json.py --tag "${{ steps.t.outputs.tag }}"
 
+      # ⚠ 不用 `gh release create --generate-notes`：它只列**合并的 PR 和贡献者**，
+      #   而本项目是直接往 main 提交、没有 PR —— 实测生成的说明只剩一行 compare 链接。
+      #   这里改成把两个 tag 之间的提交列出来。
+      - name: 生成发布说明
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.t.outputs.tag }}"
+          git fetch --tags --force
+          PREV="$(git tag --sort=-v:refname | grep -vx "$TAG" | head -n1 || true)"
+          {
+            if [ -n "$PREV" ] && git merge-base --is-ancestor "$PREV" "$TAG" 2>/dev/null; then
+              echo "**完整对比**：https://github.com/${{ github.repository }}/compare/$PREV...$TAG"
+              echo
+              echo "### 提交"
+              echo
+              git log --pretty='- %s' "$PREV..$TAG"
+            else
+              echo "首个发布。"
+            fi
+          } > /tmp/notes.md
+          cat /tmp/notes.md
+
       # 幂等：Release 已存在就只覆盖附件。为什么需要 —— 发布中途失败（比如
       # 上传到一半网络断了）时，重跑必须能接着走完，而不是卡在"已存在"上报错。
       - name: 发 Release（xpi 作为附件）
@@ -79,7 +101,7 @@ jobs:
             gh release create "$TAG" \
               zotero-plugin/zotero-kb-*.xpi \
               --title "$TAG" \
-              --generate-notes
+              --notes-file /tmp/notes.md
           fi
 
       # 清单必须落在 main 上：manifest 里的 update_url 指向
