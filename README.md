@@ -460,6 +460,36 @@ kb_acquire(dois="10.xxxx/yyyy", dry_run=True)
 · 无条件信任配置里的 `project_root` → 代码被复制到新目录后，
   仍然用**旧目录**的解释器（用 `os.path.samefile` 认项目身份才拦住）。
 
+### ④ 发版：打一个 tag，剩下的自动做
+
+```bash
+# 1. 改 zotero-plugin/manifest.json 里的 version（三处之一，另两处会自动跟）
+# 2. 打 tag 推上去
+git tag v0.25.1 && git push origin v0.25.1
+```
+
+`.github/workflows/release.yml` 会依次：**跑自检 → 打包 xpi → 审计 →
+生成 updates.json → 发 Release（xpi 作附件）→ 把 updates.json 提交回 main**。
+
+最后一步是关键：`updates.json` 落在 main 上，Zotero 靠它发现新版本。
+**忘了更新它的后果是用户永远停在旧版、且没有任何报错** —— 所以由 tag 与 manifest
+版本不一致就直接失败的守门员（`tools/make_updates_json.py`）来兜底。
+
+发布中途失败可以直接重跑：Release 已存在时会覆盖附件，不会卡在"已存在"上报错。
+
+> ⚠ **一个不会告警的坑**：`.gitattributes` 只对**新检出**生效。如果你在加它之前就已经
+> 有工作区，那些文件会一直保持旧行尾（本地 CRLF），而 `git status` **永远是干净的** ——
+> 因为 `text=auto` 会在比较前把 CRLF 归一化掉，git 不会提醒你。
+> 后果是**本地打包出来的 xpi 与 CI 构建的不一致**（实测差 2 KB）。
+> 查与修：
+> ```bash
+> git ls-files --eol | grep -E '^i/lf\s+w/crlf.*eol=lf'   # 该是 LF 却是 CRLF
+> # 把这些文件删掉再 git checkout -- . 重新落盘即可
+> ```
+>
+> 另注：即使条目内容完全一致，**整包 sha 也可能不同** —— zip 容器的压缩字节
+> 随 Python/zlib 版本变化。要判断"是不是同一个包"，应比对**条目内容**，不是整包哈希。
+
 ---
 
 ## 知识库放哪 / 怎么跟着 Zotero 走
