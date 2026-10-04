@@ -147,8 +147,40 @@ check("metafill 三个占位符都能换",
                                 creator_rules="R"))
 check("render 不炸（含 JSON 示例）", len(out) > 80)
 
-# ---------------------------------------------------------------- [5] 兜底
-print("\n[5] 文件坏了也要能用（退化成默认值）")
+# ---------------------------------------------------------------- [7] 经验口径
+print("\n[7] 经验口径：只记与文献有关的（用户明确抱怨过库里有无关条目）")
+# 用户原话：「让他提经验是文献相关的啊，我现在经验库的最后两条就是无关的」。
+# 那两条的 source 是 dsh，即**不是 learn.py 抽的**，是走 MCP 工具记的 ——
+# 所以口径必须在三处一起收：提取提示词、MCP 工具描述、SKILL.md 的纪律。
+extract_sys = PR.get("extract", "system")
+check("extract 提示词明确排除工程/工具链",
+      "一律不算经验" in extract_sys and "工程/工具链" in extract_sys,
+      extract_sys[:80])
+check("extract 提示词说明为什么要紧（检索加权）",
+      "检索加权" in extract_sys, extract_sys[:80])
+check("propose 提示词同样排除（窗格那条写入路径）",
+      "一律不算经验" in PR.get("propose", "system"),
+      PR.get("propose", "system")[:80])
+try:
+    sys.path.insert(0, os.path.join(ROOT, "offline"))
+    import learn as LN
+    check("机械判据：没有关联文献也没提文献 → 标为可疑",
+          bool(LN.unrelated_reason([], [])), LN.unrelated_reason([], []))
+    check("机械判据：有关联文献 → 不标",
+          LN.unrelated_reason(["AAAA1111"], []) == "")
+    check("机械判据：提到文献标题也算数",
+          LN.unrelated_reason([], ["某篇文献"]) == "")
+except Exception as exc:      # noqa: BLE001
+    check(f"learn.unrelated_reason 可用：{type(exc).__name__}: {exc}", False)
+try:
+    srv = open(os.path.join(ROOT, "online", "server.py"), encoding="utf-8").read()
+    check("MCP 工具描述里也写了这条口径",
+          "不要放进经验库" in srv and "检索加权" in srv)
+except OSError as exc:
+    check(f"读 server.py：{exc}", False)
+
+# ---------------------------------------------------------------- [8] 兜底
+print("\n[8] 文件坏了也要能用（退化成默认值）")
 os.makedirs(os.path.dirname(PR.path()), exist_ok=True)
 with open(PR.path(), "w", encoding="utf-8", newline="\n") as fh:
     fh.write("{ 这不是合法 JSON")

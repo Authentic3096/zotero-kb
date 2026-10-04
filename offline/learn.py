@@ -177,6 +177,22 @@ def segment_text(seg: dict, max_chars: int = 8000) -> str:
     return header + "\n" + body
 
 
+def unrelated_reason(keys, item_refs) -> str:
+    """判断"这条抽出来的经验大概率与文献无关"，返回理由（空串=没意见）。
+
+    为什么要一个**机械**判据，而不只靠提示词：用户明确说过
+    「让他提经验是文献相关的啊，我现在经验库的最后两条就是无关的」。
+    而那两条的 `item_keys` 都是**空的** —— 一条经验没有关联任何文献，
+    就既不会参与加权、也不会出现在任何一篇的档案里，留在库里只会误导。
+
+    ⚠ 只**标注**，不静默丢弃：pending 清单里会写清为什么可疑，
+       默认不勾选，由人决定。静默丢会让用户以为"模型什么都没抽到"。
+    """
+    if not keys and not (item_refs or []):
+        return "与文献无关：既没关联文献、也没提到任何文献"
+    return ""
+
+
 def looks_promising(text: str) -> bool:
     """第一道：出现经验信号词（是不是在报结果）。"""
     lowered = text.lower()
@@ -389,9 +405,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     "item_refs": item["item_refs"],
                     "evidence": item["evidence"],
                     "confidence": item["confidence"],
+                    # 机械判据：没有关联文献、也没提到文献 → 标出来
+                    # （界面默认不勾；**不静默丢**，理由要让人看得见）
+                    "suspect": unrelated_reason(keys, item["item_refs"]),
                 })
+                flag = ("  ⚠ " + new_rows[-1]["suspect"]) if new_rows[-1]["suspect"] else ""
                 print(f"    + [{item['outcome']}] {(item['method'] or '(未写方法)')[:44]}"
-                      f"  涉及 {keys or item['item_refs'] or '?'}")
+                      f"  涉及 {keys or item['item_refs'] or '?'}{flag}")
         positions[session_id] = max_seq
 
     _flush_pending(new_rows)
