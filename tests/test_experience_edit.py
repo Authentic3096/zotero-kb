@@ -258,6 +258,33 @@ got = {r[1] for r in S.connect(old_path).execute("PRAGMA table_info(experience)"
 check("connect() 就地把列补回来了", {"history", "updated_at"} <= got,
       str(sorted(got)))
 
+# ---------------------------------------------------------------- [10] 体检判据
+print("\n[10] 经验体检判据（用户：「最后两条就是无关的」+「#12 没筛选出来」）")
+# ⚠ 这一段是**回归网**：用户实测反馈过"体检只筛选出 #11，#12 没筛选出来"。
+#   #12 讲的是"文本源选型 / ft-cache 缓存"，不属于"没有关联文献"那条判据，
+#   只能靠"元工作特征词"抓。所以这里把两种典型都钉住，同时钉住"别误伤
+#   正常的文献研究经验"（那才是要留下的东西）。
+case_no_keys = {"asked": "能不能改 BabelDOC 的中间产物再回灌？",
+                "method": "读源码核对 xml_converter", "item_keys": "[]"}
+case_meta = {"asked": "全库 111 篇 PDF 的「ft-cache 优先 / PyMuPDF 回落」策略选对了吗？",
+             "method": "算 ratio、逐页字体对照", "item_keys": '["B9FDAHMP"]'}
+case_real = {"asked": "位置-磁矩分离求解在磁偶极子反演里有效吗？",
+             "method": "LM 求解，对照联合反演", "reason": "误差从 19.78% 降到 0",
+             "item_keys": '["LGX77KNV"]'}
+why1 = EXP.checkup_reason(case_no_keys)
+why2 = EXP.checkup_reason(case_meta)
+why3 = EXP.checkup_reason(case_real)
+check("没有关联文献 → 标出来", any("没有关联文献" in w for w in why1), str(why1))
+check("元工作（BabelDOC 类）→ 标出来（关键词或没有文献，二者其一）",
+      bool(why1), str(why1))
+check("**#12 那种文本源/缓存类现在也能标出来**",
+      any("工具链" in w for w in why2), str(why2))
+check("正常的文献研究经验**不被误判**", why3 == [], str(why3))
+check("特征词表覆盖文本源/ft-cache/缓存（#12 那几个词）",
+      all(w in EXP.META_WORK_WORDS for w in ("文本源", "ft-cache", "缓存")),
+      str([w for w in ("文本源", "ft-cache", "缓存")
+           if w not in EXP.META_WORK_WORDS]))
+
 conn.close()
 
 print()

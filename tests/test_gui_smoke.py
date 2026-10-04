@@ -151,10 +151,19 @@ _exp_btns = [t for t in _btns if t in ("修改/增添经验…", "经验体检",
 check("经验库页有「修改/增添经验…」按钮", "修改/增添经验…" in _btns, str(_exp_btns))
 check("经验库页有「经验体检」按钮", "经验体检" in _btns, str(_exp_btns))
 check("经验库页有「选择会话…」按钮", "选择会话…" in _btns, str(_exp_btns))
-for fn in ("do_exp_edit", "do_exp_checkup", "do_exp_delete", "do_pick_sessions"):
+for fn in ("do_exp_edit", "do_exp_checkup", "do_exp_delete", "do_pick_sessions",
+           "do_exp_edit_selected", "do_exp_approve", "do_exp_reject"):
     check(f"经验库页有回调 {fn}", callable(getattr(app, fn, None)))
-check("经验库页有体检清单控件",
-      getattr(app, "exp_suspect_list", None) is not None)
+# ⚠ 经验库页**只有一个列表**（查询/全部/待确认/体检共用），底部那个只作详情。
+#   用户反馈过"上下两个显示经验的窗口…列出全部没法选中，两个是不是冗余了"，
+#   所以这里按"有列表 + **没有**第二套列表控件"来断言。
+check("经验库页有列表（Treeview）", getattr(app, "exp_tree", None) is not None)
+check("经验库页**没有**第二套列表控件（旧的体检 Listbox）",
+      getattr(app, "exp_suspect_list", None) is None)
+check("详情区还在（列表导航 + 详情内容）",
+      getattr(app, "exp_text", None) is not None)
+check("列表所有视图共用（记住当前视图，删完刷新同一个）",
+      isinstance(getattr(app, "exp_view", None), tuple), str(getattr(app, "exp_view", None)))
 # 编辑器与选会话对话框要能 import（它们的 import 失败只在点按钮时才暴露，
 # 那时候用户看到的是"点了没反应"）
 try:

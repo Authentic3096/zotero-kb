@@ -345,6 +345,70 @@ def row_view(row: dict) -> dict:
     return out
 
 
+# ---------------------------------------------------------------- 经验体检
+#
+# 判据放在**这一层**（而不是面板里）的原因：它是领域判断，面板/CLI/以后别的
+# 入口都该用同一份。放 UI 里就只能靠人眼看界面验，写不了测试。
+#
+# ⚠ 这些词是"元工作"（关于知识库自己怎么搭）的强特征词。用户反馈过
+#   「体检只筛选出 #11，#12 没筛选出来」—— #12 讲的是"文本源选型/ft-cache 缓存"，
+#   正是这一类，所以这一组词要够宽。宁可在界面上多标几条（用户扫一眼就能判断），
+#   也不要漏 —— 漏了的后果是脏数据留在**检索加权**的输入里。
+META_WORK_WORDS = (
+    "文本源", "ft-cache", "全文缓存", "缓存", "切片", "索引", "索引库", "嵌入",
+    "bm25", "rrf", "页眉", "页脚", "字符偏移", "位移", "解析器", "版面",
+    "pymupdf", "pdf2zh", "babeldoc", "localserver", "service-token",
+    "manifest", "xpi", "venv", "pip", "插件", "打包", "侧载", "面板",
+    "知识库自己", "zotero-kb", "kb_search", "kb_item", "kb_fulltext",
+    "kb_experience", "kb_weight", "kb_reindex", "kb_stats", "mcp",
+    "提示词", "prompt", "分级视图", "知识库的", "本库", "全库",
+)
+
+
+def keys_of(value) -> list:
+    """把"库里的 item_keys 列"或"调用方给的字符串/列表"统一成 key 列表。
+
+    ⚠ 库里存的是 **JSON 字符串**（`dumps(keys)` 写进去的）：`'[]'` / `'["A","B"]'`。
+      用 `split_list` 去切它会把 `'[]'` 当成**一个 key**（按逗号切，切不开），
+      于是"这条经验没有关联文献"这类判据**永远不成立** —— 实测被测试当场抓到
+      （经验体检里那条"没有关联文献"从来没触发过）。
+      所以：先按 JSON 解，解不出来再退回按分隔符切（面板表单是逗号分隔的）。
+    """
+    if isinstance(value, (list, tuple, set)):
+        return split_list(value)
+    text = str(value or "").strip()
+    if text.startswith("[") and text.endswith("]"):
+        got = loads(text, [])
+        if isinstance(got, list):
+            return split_list([str(x) for x in got])
+    return split_list(text)
+
+
+def checkup_reason(row: dict) -> list:
+    """经验体检：给一条经验列出"为什么可疑"（空列表 = 没意见）。
+
+    **只标注，不自动删** —— 判据是启发式，最终由人决定（用户明确要自己删）。
+    两条判据：
+
+      · `item_keys` 空 → 这条经验没有任何文献引用它，**不参与检索加权**，
+        也不会出现在任何一篇的档案里（用户库里那两条无关经验之一就是这种）；
+      · `asked`/`method`/`reason` 命中**元工作特征词**（缓存/切片/索引/插件/
+        打包…）→ "关于知识库自己怎么搭"的记录，属于工作档案。
+        用户实测反馈过："体检只筛选出 #11，#12 没筛选出来" —— #12 正是这一类
+        （讲"文本源选型 / ft-cache 缓存"），所以这一组词要够宽。
+    """
+    keys = keys_of(row.get("item_keys"))
+    text = " ".join(str(row.get(k) or "") for k in ("asked", "method", "reason"))
+    low = text.lower()
+    why = []
+    if not keys:
+        why.append("没有关联文献（不参与加权）")
+    hit = [w for w in META_WORK_WORDS if w.lower() in low]
+    if hit:
+        why.append("像是工具链/工程记录：" + ", ".join(hit[:4]))
+    return why
+
+
 class ConnWriter:
     """把普通 sqlite 连接包成上面这些函数要的写接口。
 
