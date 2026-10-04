@@ -260,7 +260,11 @@ def main() -> int:
                 # 少任何一个都是"点了没反应"或"建议拿到了写不进去"，
                 # 所以跟着前 21 个一起盯着（本机吃过"分支定义但从未调用"的亏）。
                 "metaFillFor", "metaLine", "metaEmptyText",
-                "askApplyMeta", "askOneMeta", "applyMeta"]
+                "askApplyMeta", "askOneMeta", "applyMeta",
+                # 打开知识库（分级）—— 右键二级菜单那条链。少任何一个都是
+                # "菜单里少一项"或"点了没反应"，所以一起盯着。
+                "kbLevels", "kbLevelsMissing", "openKbPath", "openKbViaPanel",
+                "openKbLevel", "openKbFolder"]
     missing = [f for f in internal if f"{f}:" not in src]
     if missing:
         print(f"  [XX] 缺内部函数：{missing}")
@@ -392,6 +396,20 @@ def main() -> int:
         importlib.reload(check_api_presets)
         if check_api_presets.main() != 0:
             problems.append("插件预设与服务端的服务商地址不一致（见上）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
+
+    # 分级清单在 Python（offline/kbviews.py）和 JS（src/13-kbopen.js）里各存
+    # 一份 —— 不一致就会出现"面板里叫这个名字、右键菜单里叫那个名字"，或者
+    # 某一边指向不存在的文件。这是本项目反复吃过的"两处各写一份"的亏。
+    print("\n[知识库分级清单一致性]")
+    try:
+        sys.path.insert(0, HERE)
+        import importlib
+        import check_kb_levels
+        importlib.reload(check_kb_levels)
+        if check_kb_levels.main() != 0:
+            problems.append("知识库分级清单在 Python 与 JS 两侧不一致（见上）")
     except Exception as exc:  # noqa: BLE001
         print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
 

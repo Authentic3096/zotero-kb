@@ -402,6 +402,39 @@ def backup() -> int:
     return 0
 
 
+def views(key: str = "") -> int:
+    """补齐每篇文献的**分级视图**（views/*.md，见 offline/kbviews.py）。
+
+    为什么需要单独一个入口：视图是构建时生成的，但下面两种情况不会触发构建
+    —— ① 升级到这个版本时库里已有的条目；② 只改了经验/权重（那不动正文）。
+    有了它就不用为了补几个小文件跑一次 2 分钟的全量重建。
+    """
+    import kbviews as KV
+
+    keys = [key] if key else KV.all_keys()
+    if not keys:
+        print("索引里没有条目。先点「更新索引（增量）」。")
+        return 1
+    print(f"生成分级视图：{len(keys)} 篇 → {S.VIEWS_DIR}")
+    res = KV.write_many(keys, log=lambda m: print(m))
+    print(f"完成：{res['written']}/{res['keys']} 篇")
+    if res["failed"]:
+        print(f"失败 {len(res['failed'])} 篇：")
+        for f in res["failed"][:10]:
+            print(f"  {f}")
+        return 1
+    # 顺手报一下三个级别各有多少篇有文件 —— 「图注与表格」本来就允许缺席
+    for lv in KV.LEVELS:
+        if lv["id"] not in KV.GENERATED_IDS:
+            continue
+        n = sum(1 for k in keys
+                if os.path.exists(KV.level_path(lv["id"], k)))
+        print(f"  {lv['label']}：{n}/{len(keys)} 篇"
+              + ("（没有图注的文献本来就不会有这一份）"
+                 if lv["id"] == "figures" else ""))
+    return 0
+
+
 def vacuum() -> int:
     conn = S.connect(S.INDEX_DB)
     before = os.path.getsize(S.INDEX_DB) / 1024 / 1024
@@ -415,8 +448,11 @@ def vacuum() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="知识库维护")
     parser.add_argument("action",
-                        choices=["check", "stats", "backup", "reindex-fst", "vacuum"],
+                        choices=["check", "stats", "backup", "reindex-fst",
+                                 "vacuum", "views"],
                         nargs="?", default="check")
+    parser.add_argument("--key", default="",
+                        help="views 用：只给这一篇补（默认全部）")
     args = parser.parse_args()
     if args.action == "check":
         return check()
@@ -426,6 +462,8 @@ def main() -> int:
         return backup()
     if args.action == "reindex-fst":
         return reindex_fst()
+    if args.action == "views":
+        return views(args.key)
     return vacuum()
 
 

@@ -342,7 +342,7 @@ Object.assign(ZoteroKB, {
         // 只处理真正来自 zotero-itemmenu 本身的事件。
         if (event && event.target && event.target !== popup) return;
         try {
-          // 清理上一次建的几样东西：五个顶层菜单项 + 上下两个分隔符。
+          // 清理上一次建的几样东西：六个顶层菜单项 + 上下两个分隔符。
           // 漏掉的话每弹一次右键菜单就会多留一份（会看出来越用越多）。
           // ⚠ 新建的顶层项**必须同时**在这里登记 id，否则下一轮就重复了。
           for (const id of ["zotero-kb-send-menu",
@@ -350,6 +350,7 @@ Object.assign(ZoteroKB, {
                             "zotero-kb-pin-item",
                             "zotero-kb-metafill-item",
                             "zotero-kb-rebuild-item",
+                            "zotero-kb-open-menu",
                             "zotero-kb-sep-before",
                             "zotero-kb-sep-after"]) {
             const old = doc.getElementById(id);
@@ -603,6 +604,68 @@ Object.assign(ZoteroKB, {
             });
           metaFill.id = "zotero-kb-metafill-item";
 
+          // ---- 第六项：打开知识库（分级）
+          //
+          // 为什么是**二级菜单**（用户 2026-10-05 的要求）：知识库目录里是
+          // `papers/22X9PMR6.md` —— 文件名是 Zotero 的 key，人认不出是哪篇；
+          // 让用户自己去目录里翻，等于把"找文件"又还给了他。所以：
+          // 右键这一篇 → 打开知识库 → 选级别 → 直接打开那个 md。
+          //
+          // 多选时以**第一项**为准：级别是"某一篇的某个层面"，
+          // 多选没有"共同的级别文件"这种东西。
+          const first = real[0];
+          const levels = self.kbLevels(first.key);
+          const missing = levels.filter((lv) => !lv.exists)
+            .map((lv) => lv.label);
+
+          const openMenu = doc.createXULElement
+            ? doc.createXULElement("menu") : doc.createElement("menu");
+          openMenu.id = "zotero-kb-open-menu";
+          openMenu.setAttribute("class", "menu-iconic");
+          openMenu.setAttribute("image", self.rootURI + "toolbar-icon.svg");
+          openMenu.setAttribute(
+            "label", "打开知识库" + (real.length > 1 ? "（第一项）" : ""));
+          openMenu.setAttribute(
+            "tooltiptext",
+            "直接打开这一篇的某个层面，不用去知识库目录里按 key 找：\n"
+            + "　" + levels.map((lv) => lv.label).join(" / ") + "\n"
+            + (real.length > 1 ? "⚠ 一次选了多篇时，以第一项为准。\n" : "")
+            + (missing.length
+               ? ("⚠ 还没生成：" + missing.join("、")
+                  + "\n　去面板的「高级」页点「补齐知识库分级文件」。")
+               : "（这一篇的五个层面都已生成）"));
+
+          const op = doc.createXULElement
+            ? doc.createXULElement("menupopup") : doc.createElement("menupopup");
+          openMenu.appendChild(op);
+          for (const lv of levels) {
+            const mi = doc.createXULElement
+              ? doc.createXULElement("menuitem") : doc.createElement("menuitem");
+            mi.setAttribute("class", "menuitem-iconic");
+            // ⚠ 缺文件的级别**不能**设 disabled —— 本机实测（见上面
+            //   「选择已有对话」那一项的注释）：menupopup 里只要有 disabled 的
+            //   menuitem，整个子菜单就点不开。改成"文案里说明 + 点了给提示"。
+            mi.setAttribute("label",
+              lv.label + (lv.exists ? "" : "（还没生成）"));
+            mi.setAttribute("tooltiptext", lv.what + "\n\n" + lv.path);
+            mi.addEventListener("command", () => {
+              try { self.openKbLevel(first.key, lv.id); }
+              catch (e) { Zotero.logError(e); }
+            });
+            op.appendChild(mi);
+          }
+          op.appendChild(doc.createXULElement
+            ? doc.createXULElement("menuseparator")
+            : doc.createElement("menuseparator"));
+          const revealItem = mkIn(op, "在文件管理器里显示", () => {
+            self.openKbFolder(first.key);
+          }, { ready: "", tooltip: "在资源管理器里选中这一篇的知识库文件" });
+          revealItem.setAttribute("image", self.rootURI + "toolbar-icon.svg");
+          const panelItem = mkIn(op, "打开知识库管理面板", () => {
+            self.openPanel();
+          }, { ready: "", tooltip: "要做「补齐分级文件」这类批量操作时用它" });
+          panelItem.setAttribute("image", self.rootURI + "toolbar-icon.svg");
+
 
           // ---- 放到"插件菜单组的最上面"（不依赖任何其他插件）。
           //
@@ -661,7 +724,8 @@ Object.assign(ZoteroKB, {
             // 上方：锚点后面本来就有分隔符就不用加
             if (!isRealSep(nextReal(anchor))) anchor.after(mkMarkedSep("zotero-kb-sep-before"));
             // 插到"锚点之后、所有相邻分隔符之后"，保证紧跟分隔符下面。
-            // 顺序：发送到 DSH（menu）→ 分类建议 → 标重点 → 补全元数据 → 重建。
+            // 顺序：发送到 DSH（menu）→ 分类建议 → 标重点 → 补全元数据 →
+            //       重建 → 打开知识库（分级）
             let ref = anchor;
             while (isRealSep(nextReal(ref))) ref = nextReal(ref);
             ref.after(menu);
@@ -669,8 +733,9 @@ Object.assign(ZoteroKB, {
             classify.after(pinItem);
             pinItem.after(metaFill);
             metaFill.after(rebuild);
+            rebuild.after(openMenu);
             // 下方：下一个真实元素已经是分隔符就不用加
-            if (!isRealSep(nextReal(rebuild))) rebuild.after(mkMarkedSep("zotero-kb-sep-after"));
+            if (!isRealSep(nextReal(openMenu))) openMenu.after(mkMarkedSep("zotero-kb-sep-after"));
             Zotero.debug("[zotero-kb] 菜单已插到「重建条目索引」之后（按需补分隔符）");
           } else {
             // 兜底：锚点找不到（Zotero 改了菜单结构）就放在最前面，
@@ -682,7 +747,8 @@ Object.assign(ZoteroKB, {
             classify.after(pinItem);
             pinItem.after(metaFill);
             metaFill.after(rebuild);
-            if (!isRealSep(nextReal(rebuild))) rebuild.after(mkMarkedSep("zotero-kb-sep-after"));
+            rebuild.after(openMenu);
+            if (!isRealSep(nextReal(openMenu))) openMenu.after(mkMarkedSep("zotero-kb-sep-after"));
             Zotero.debug("[zotero-kb] 找不到内置锚点，菜单放到最前面");
           }
         } catch (e) {

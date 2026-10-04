@@ -95,6 +95,32 @@ check("解析健康页有图表开关", getattr(app, "q_figures_var", None) is n
 check("运行环境三个路径都有显示", len(getattr(app, "env_vars", {})) == 3,
       str(list(getattr(app, "env_vars", {}).keys())))
 
+
+# 「打开知识库」的两个入口必须在**看得见的地方**（用户 2026-10-05 提的需求：
+# 知识库目录里是 22X9PMR6.md 这种编号，靠人自己去翻等于没解决）。
+# 这条按**控件文案**查，而不是查方法名 —— 方法在但按钮没画出来，用户一样用不上。
+def _button_texts(widget):
+    """递归收集窗口里所有按钮的文案。"""
+    out = []
+    for child in widget.winfo_children():
+        try:
+            if child.winfo_class() == "TButton":
+                out.append(str(child.cget("text")))
+        except tk.TclError:
+            pass
+        out.extend(_button_texts(child))
+    return out
+
+
+_btns = _button_texts(root)
+check("有「打开知识库…」按钮（第一屏核心按钮里）",
+      "打开知识库…" in _btns, str(sorted(set(_btns))[:24]))
+check("有「打开知识库目录」按钮", "打开知识库目录" in _btns)
+check("有「补齐知识库分级文件」按钮（高级页）",
+      any("补齐" in t for t in _btns), str(sorted(set(_btns))[:24]))
+check("「打开知识库…」有回调", callable(getattr(app, "open_kb_browser", None)))
+check("「补齐分级文件」有回调", callable(getattr(app, "do_views", None)))
+
 # 元数据页（本轮新增，"一键补全"就在这里）
 check("元数据页有结果表", getattr(app, "meta_tree", None) is not None)
 check("元数据页有「一键补全」按钮",
@@ -235,6 +261,63 @@ if _kb_entries:
     _starred = [n for n, w, _k, _s in gui.KB_FILE_SPEC
                 if "**" in w or "**" in _s]
     check("说明里没有 markdown 星号（Tk 会原样显示）", not _starred, _starred)
+
+print("\n[6c] 打开知识库（分级浏览）")
+# 级别定义在 offline/kbviews.py 里 —— 面板与 Zotero 插件共用这一份事实来源
+# （插件侧那份由 tools/check_kb_levels.py 盯着一致）。
+try:
+    import kbviews as _KV  # noqa: E402
+
+    _ids = [lv["id"] for lv in _KV.LEVELS]
+    check("级别定义齐备", len(_ids) >= 5, str(_ids))
+    for _want in ("tldr", "card", "fulltext", "figures", "weight"):
+        check(f"有「{_want}」级别", _want in _ids, str(_ids))
+    # 每个级别的相对路径模板都要能用 key 填出绝对路径
+    _k0 = ""
+    try:
+        _row = _S.connect(_S.INDEX_DB).execute(
+            "SELECT key FROM items ORDER BY key LIMIT 1").fetchone()
+        _k0 = _row["key"] if _row else ""
+    except Exception:  # noqa: BLE001
+        pass
+    if _k0:
+        _rows = _KV.level_rows(_k0)
+        check("level_rows 返回每一层", len(_rows) == len(_KV.LEVELS))
+        check("每一层都有绝对路径",
+              all(os.path.isabs(r["path"]) for r in _rows),
+              str([r["path"] for r in _rows]))
+        check("路径都在知识库目录下",
+              all(os.path.normcase(r["path"]).startswith(
+                  os.path.normcase(_S.KB_DIR)) for r in _rows))
+        # card / fulltext 是构建时就写好的现成文件，必须在
+        _missing_files = [r["label"] for r in _rows
+                          if r["id"] in ("card", "fulltext") and not r["exists"]]
+        check("完整档案与按页正文两份文件都在", not _missing_files, _missing_files)
+    else:
+        print("  （库里没有条目，跳过逐层路径检查）")
+
+    # 真装配一次那个窗口（装配阶段的错只有建出来才暴露）。
+    # ⚠ 这一段在 `root.destroy()` **之后**，所以要另开一个 Tk 根 —— 用那个
+    #   已经销毁的 root 会报 "application has been destroyed"（第一版就是）。
+    try:
+        from panels.browser import LevelPicker  # noqa: E402
+
+        _proot = tk.Tk()
+        _proot.withdraw()
+        _pick = LevelPicker(_proot, _k0 or "NOSUCHKEY", "自检用",
+                            ui_font=app.ui_font, mono_font=app.mono_font)
+        _pick.withdraw()          # 立刻藏起来：测试不该弹窗
+        _proot.update_idletasks()
+        check("LevelPicker 能装配", True)
+        check("LevelPicker 列出全部级别",
+              len(_pick.rows) == len(_KV.LEVELS), str(len(_pick.rows)))
+        _pick.destroy()
+        _proot.destroy()
+    except Exception as _exc:  # noqa: BLE001
+        check("LevelPicker 能装配", False,
+              f"{type(_exc).__name__}: {_exc}")
+except Exception as _exc:  # noqa: BLE001
+    check("能 import kbviews", False, f"{type(_exc).__name__}: {_exc}")
 
 print("\n[7] 导入路径与经验查询（防 ModuleNotFoundError 回归）")
 online_dir = os.path.join(ROOT, "online")

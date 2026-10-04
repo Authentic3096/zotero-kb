@@ -455,6 +455,28 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 S.set_meta(conn, "embed_dim", rows["dim"])
         conn.commit()
 
+        # ---------------------------------------------------------- 分级视图
+        # ⚠ 位置有硬约束：必须在**这一批全部提交之后**。视图要读 items /
+        #   figures / experience / item_weight 四张表（见 offline/kbviews.py），
+        #   而它们是在这一轮里逐条写的 —— 提前生成会拿到半截数据。
+        #
+        # 为什么放在构建里而不是"用的时候现生成"：Zotero 右键菜单是**同步**
+        # 构建的（弹菜单那一刻不能等网络/等 Python），它只能靠"文件在不在"
+        # 来决定显示什么。所以文件必须先存在。
+        #
+        # 失败只记一行、不让构建失败：它是派生物，检索不依赖它。
+        try:
+            import kbviews as KV
+            t_view = time.time()
+            res = KV.write_many([it.key for it in items], log=log)
+            log(f"  分级视图：{res['written']}/{res['keys']} 篇，"
+                f"耗时 {time.time() - t_view:.1f}s")
+            if res["failed"]:
+                log(f"    [!!] {len(res['failed'])} 篇失败（不阻塞）："
+                    f"{res['failed'][:2]}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"    [!!] 分级视图没生成（不阻塞，检索不受影响）：{exc}")
+
         # ---------------------------------------------------------- 收尾统计
         total_items = conn.execute("SELECT COUNT(*) FROM items").fetchone()[0]
         total_chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
@@ -663,6 +685,13 @@ def _purge_key(conn, key: str) -> None:
                 os.remove(path)
         except OSError:
             pass
+    # 分级视图（views/<key>.*.md）也要跟着走 —— 否则条目删了、
+    # 视图还在，右键菜单会打开一份指向已删文献的 md。
+    try:
+        import kbviews as KV
+        KV.purge(key)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _purge_orphans(conn, live_keys: set[str]) -> list[str]:

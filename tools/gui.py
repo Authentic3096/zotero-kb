@@ -134,6 +134,24 @@ def console_check() -> int:
         problems.append(f"读索引失败：{type(exc).__name__}: {exc}")
         print(f"  [XX] 读索引失败：{exc}")
 
+    # 分级视图（面板「打开知识库…」与 Zotero 右键菜单读的就是它）。
+    # 它是派生物：缺了功能会退化成"打不开这一层"，所以要在这里看得见。
+    try:
+        import kbviews as KV
+        print(f"  [OK] 知识库分级：{'、'.join(lv['label'] for lv in KV.LEVELS)}")
+        if os.path.isdir(S.VIEWS_DIR):
+            n = len([f for f in os.listdir(S.VIEWS_DIR) if f.endswith(".md")])
+            print(f"       分级视图文件 {n} 份（{S.VIEWS_DIR}）")
+            if n == 0:
+                problems.append("一份分级视图都没有 —— 跑一次"
+                                "「更新索引（增量）」，或 offline\\maintain.py views")
+                print("  [!!] 分级视图是空的")
+        else:
+            problems.append(f"分级视图目录不存在：{S.VIEWS_DIR}")
+            print(f"  [!!] 分级视图目录不存在：{S.VIEWS_DIR}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [!!] 读不到分级视图（{type(exc).__name__}: {exc}）")
+
     print("-" * 66)
     if problems:
         print(f"发现 {len(problems)} 个问题：")
@@ -159,6 +177,25 @@ def _arg_value(flag: str) -> str:
 def main() -> int:
     if "--check" in sys.argv:
         return console_check()
+
+    # --open <路径>：用系统默认程序打开一个文件，然后立刻退出（不开窗口）。
+    #
+    # 用途：Zotero 插件的右键「打开知识库」需要一个"用默认程序打开这个 md"的
+    # 能力，而插件沙箱里没有可靠的接口（试过 launchURL / 外部协议服务，
+    # 都可能因版本而异）。这里 `os.startfile` 是本机一直在用、确定可用的那条，
+    # 于是插件把它当作兜底：起一个短命的 pythonw 进程，打开文件就退出。
+    target = _arg_value("--open")
+    if target:
+        try:
+            if not hasattr(os, "startfile"):       # 非 Windows：给个明确的出路
+                print("[XX] --open 只在 Windows 上实现（os.startfile）")
+                return 1
+            os.startfile(target)  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001
+            print(f"[XX] 打不开 {target}：{type(exc).__name__}: {exc}")
+            return 1
+        return 0
+
     root = tk.Tk()
     # ⚠ 不再调 `tk scaling` —— 它和显式字号是**乘在一起**生效的：
     #   scaling 1.25 + 雅黑 9 号 ≈ 11 号，中文小字会发虚（用户反馈"看不清"）。

@@ -33,6 +33,7 @@ sys.path.insert(0, HERE)
 
 import schemas as S  # noqa: E402
 import extrafill as XF  # noqa: E402 —— 结构化字段的展示口径在这里（describe）
+import kbviews as KBV  # noqa: E402 —— 分级视图（tldr 级的渲染实现在那儿）
 
 try:
     from mcp.server import MCPServer
@@ -1030,58 +1031,14 @@ def res_collections() -> str:
               description="一篇文献的摘要级要点：元数据、摘要、笔记要点、经验权重。",
               mime_type="text/markdown")
 def res_item_tldr(key: str) -> str:
-    """摘要级资源：模型用它判断"要不要深读"，几百 token 就能覆盖一篇。"""
-    s = kb()
-    item = s.get_item(key)
-    if not item:
-        return f"# 未找到 {key}\n\n知识库里没有这个 key。用 kb_search 先检索。"
-    lines = [f"# {item['title']}", ""]
-    if item["author_line"]:
-        lines.append(f"**作者**：{item['author_line']}")
-    if item["year"]:
-        lines.append(f"**年份**：{item['year']}")
-    if item["venue"]:
-        lines.append(f"**出处**：{item['venue']}")
-    if item["collections"]:
-        lines.append(f"**分类**：{' / '.join(item['collections'])}")
-    lines.append(f"**标签**：{'、'.join(item['tags']) or '（无）'}")
-    lines.append(f"**权重**：{item['weight']}｜全文 {item['fulltext_chars']:,} 字符"
-                 f"｜标注 {item['n_annotations']} 条｜笔记 {item['n_notes']} 条")
-    # 结构化字段（知网写入的那些）：一行装下，摘要级资源不占多少 token，
-    # 但"中文译名 / 中图分类号 / 收录标签"往往正是"要不要深读"的决定因素。
-    view = XF.describe(s.extras_for_key(key))
-    if view:
-        lines.append("**结构化字段**：" + "；".join(
-            f"{k} {'/'.join(v) if isinstance(v, list) else v}"
-            for k, v in view.items()))
-    lines.append("")
-    if item["abstract"]:
-        lines.append("## 摘要")
-        lines.append("")
-        lines.append(item["abstract"][:2000])
-        lines.append("")
-    exp = s.experience_for_item(key, limit=5)
-    if exp:
-        lines.append("## 使用经验")
-        lines.append("")
-        label = {"effective": "✅ 有效", "ineffective": "❌ 无效",
-                 "partial": "◐ 部分", "unknown": "❓ 未验证"}
-        for e in exp:
-            lines.append(f"- {e['created_at'][:10]} {label.get(e['outcome'], e['outcome'])}"
-                         f"｜{e['method'] or ''}")
-            if e["reason"]:
-                lines.append(f"  - {e['reason']}")
-        lines.append("")
-    notes = s.read(
-        "SELECT text FROM chunks WHERE item_key=? AND text LIKE '[%笔记]%' LIMIT 2", (key,)
-    )
-    if notes:
-        lines.append("## 我的笔记（要点）")
-        lines.append("")
-        lines.append(notes[0]["text"][:2500])
-        lines.append("")
-    lines.append(f"> 完整档案：`kb/papers/{key}.md`；正文用 kb_fulltext 或资源 `zotero-kb://item/full/{key}`")
-    return "\n".join(lines)
+    """摘要级资源：模型用它判断"要不要深读"，几百 token 就能覆盖一篇。
+
+    ⚠ 渲染实现**搬到 offline/kbviews.py 了**（`render("tldr", …)`）。
+    原因：面板的「打开知识库」和 Zotero 右键菜单也要这一份内容，各写一套
+    迟早会漂移 —— 本项目已经为"两份实现"吃过亏。搬的时候是逐字搬的，
+    输出与原来完全一致（tests/test_mcp.py 与 tests/test_kbviews.py 都盯着）。
+    """
+    return KBV.render("tldr", key, kb())
 
 
 @mcp.resource("zotero-kb://item/{key}",

@@ -53,6 +53,9 @@ class AdvancedTab:
             ("手动调权重（重点标记）", "weight"),
             ("索引维护", [
                 ("统计", self.do_stats, "各表行数"),
+                ("补齐知识库分级文件", self.do_views,
+                 "给每篇补「摘要与要点 / 图注与表格 / 权重与经验」——"
+                 "面板的「打开知识库…」和 Zotero 右键菜单读的就是它"),
                 ("列出当前分类", self.do_coll_list, "看 Zotero 里的分类"),
                 ("分类分布统计", self.do_coll_stats, "每个类有多少篇"),
                 ("重载技能到 DSH", self.do_sync_skill, "改了 SKILL.md 后同步"),
@@ -224,6 +227,16 @@ class AdvancedTab:
 
     def do_backup(self):
         self.run("备份索引", [os.path.join(ROOT, "offline", "maintain.py"), "backup"])
+
+    def do_views(self):
+        """补齐分级视图（views/*.md）。
+
+        什么时候需要它：① 升级到带分级视图的版本时，库里已有的条目没有这些
+        文件；② 只改了经验/权重（那不动正文，不会触发重建）。
+        没有它就得为了几个小文件跑一次 2 分钟的全量重建。
+        """
+        self.run("补齐分级文件",
+                 [os.path.join(ROOT, "offline", "maintain.py"), "views"])
 
 
     def do_clean_test(self):

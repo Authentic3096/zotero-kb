@@ -411,10 +411,27 @@ def test_purge_orphans():
                  (DEAD, 1, "用户标过重点"))
     conn.commit()
 
-    dead = CV._purge_orphans(conn, {LIVE})
-    conn.commit()
+    # ⚠ 分级视图（views/<key>.*.md）也要跟着清 —— 否则条目都删了、文件还在，
+    #   右键「打开知识库」会打开一份指向已删文献的 md。
+    # 这里把 VIEWS_DIR 指到临时目录：绝不能拿**真实知识库**试删除。
+    import kbviews as KV  # noqa: PLC0415
+    _orig_views = S.VIEWS_DIR
+    tmp_views = os.path.join(tmp, "views")
+    os.makedirs(tmp_views, exist_ok=True)
+    for _name in (f"{LIVE}.tldr.md", f"{DEAD}.tldr.md", f"{DEAD}.weight.md"):
+        with open(os.path.join(tmp_views, _name), "w", encoding="utf-8") as fh:
+            fh.write("x")
+    S.VIEWS_DIR = tmp_views
+    try:
+        dead = CV._purge_orphans(conn, {LIVE})
+        conn.commit()
+        left = sorted(os.listdir(tmp_views))
+    finally:
+        S.VIEWS_DIR = _orig_views
 
     check("只清掉那一条孤儿", dead == [DEAD], f"得 {dead}")
+    check("孤儿的分级视图被清、活着的保留",
+          left == [f"{LIVE}.tldr.md"], f"剩 {left}")
     rows = {r["key"] for r in conn.execute("SELECT key FROM items")}
     check("活着的条目还在", LIVE in rows, f"剩 {rows}")
     check("孤儿从 items 消失", DEAD not in rows, f"剩 {rows}")

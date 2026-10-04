@@ -152,6 +152,9 @@ def main() -> int:
     # ---------------- 3. 关键能力是否都有入口
     print("\n[3] 关键能力是否有面板入口")
     expectations = [
+        ("打开知识库（分级浏览）", r"def open_kb_browser"),
+        ("打开某一篇的知识库分级", r"def _open_kb_levels"),
+        ("补齐分级文件", r"do_views"),
         ("列出全部经验", r"do_exp_all"),
         ("查询经验", r"do_exp_list"),
         ("待确认清单", r"do_pending"),

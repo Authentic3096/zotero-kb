@@ -495,6 +495,9 @@ def _resolve_zotero_data_dir() -> str:
 KB_DIR = _resolve_kb_dir()
 PAPERS_DIR = os.path.join(KB_DIR, "papers")
 FULLTEXT_DIR = os.path.join(KB_DIR, "fulltext")
+# 分级视图（摘要与要点 / 图注与表格 / 权重与经验），由 offline/kbviews.py 生成。
+# 和 papers/ fulltext/ 一样是**可重建的派生物**：删了跑一次构建就回来。
+VIEWS_DIR = os.path.join(KB_DIR, "views")
 INBOX_DIR = os.path.join(KB_DIR, "inbox")
 CACHE_DIR = os.path.join(KB_DIR, ".cache")
 INDEX_DB = os.path.join(KB_DIR, "index.db")
@@ -924,7 +927,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
 def init_db(path: str = INDEX_DB) -> sqlite3.Connection:
     """建库建表。幂等，重复调用安全。"""
-    for directory in (KB_DIR, PAPERS_DIR, FULLTEXT_DIR, INBOX_DIR, CACHE_DIR):
+    for directory in (KB_DIR, PAPERS_DIR, FULLTEXT_DIR, VIEWS_DIR, INBOX_DIR,
+                      CACHE_DIR):
         os.makedirs(directory, exist_ok=True)
     conn = connect(path)
     conn.executescript(SCHEMA_SQL)

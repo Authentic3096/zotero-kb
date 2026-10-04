@@ -156,12 +156,17 @@ class AppBase:
         ttk.Label(card, textvariable=self.status_var).grid(
             row=1, column=1, sticky="w", padx=(4, 10), pady=(4, 0))
 
-        # ---- 核心按钮：最常用的五个，一直可见
+        # ---- 核心按钮：最常用的，一直可见
         bar = ttk.Frame(self.root, padding=(12, 4, 12, 2))
         bar.pack(fill="x")
         # ⚠ 按钮名要"看一眼知道是干什么的"。
         #   用户反馈：「更新索引（增量）」这个名字本身就很奇怪 ——
         #   "增量"是给写代码的人看的词，用户只关心"我新加了文献，点它更新"。
+        #
+        # ⚠ 「打开知识库…」放在这里（而不是只放在「知识库结构」页）：
+        #   它解决的是"我想看某一篇的某一层"这个**日常**动作，就该在第一屏。
+        #   与它并列的「打开知识库目录」是另一种需求（要动 index.db、
+        #   看 logs\ 时去目录）。
         quick = [
             ("手动更新", self.do_convert_incremental,
              "新加了文献、或改了笔记/标注之后点这个（只处理变了的，很快）"),
@@ -169,7 +174,11 @@ class AppBase:
              "重新解析所有文献、重算向量。一般不用，除非索引坏了或换了模型"),
             ("环境自检", self.do_check, "检查依赖、索引、向量是否正常"),
             ("备份", self.do_backup, "备份索引（含经验层和权重）"),
-            ("打开知识库目录", self.open_folder, "在文件管理器里打开"),
+            ("打开知识库…", self.open_kb_browser,
+             "先列文献（看得见作者/年份/标题），选中一篇再选\"要读多深\"的那一层，"
+             "双击就打开对应的 md —— 不用去目录里按 22X9PMR6 这种编号找"),
+            ("打开知识库目录", self.open_folder,
+             "在文件管理器里打开知识库根目录（要动 index.db、看 logs\\ 时用它）"),
         ]
         for text, cmd, tip in quick:
             b = ttk.Button(bar, text=text, command=cmd, width=16)

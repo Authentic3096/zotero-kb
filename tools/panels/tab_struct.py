@@ -9,10 +9,11 @@ from __future__ import annotations
 import fnmatch
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from .common import (
     KB_FILE_SPEC,
+    ts,
 )
 
 
@@ -34,6 +35,11 @@ class StructTab:
         head.pack(fill="x")
         ttk.Label(head, text="知识库的位置与内容",
                   font=(self.ui_font, 11, "bold")).pack(side="left")
+        # ⚠ 两个入口的分工（用户 2026-10-05 提的）：
+        #   「打开知识库…」= 从**文献**出发（先列文献，再列级别，再打开 md）。
+        #     它在**顶部那一排核心按钮**里（panels/base.py 的 _build_header）——
+        #     那是个日常动作，不该只有切到这一页才看得到，所以这里不重复放。
+        #   「打开知识库目录」= 从**文件**出发，留在这一页（跟这张结构表配套）。
         ttk.Button(head, text="打开知识库目录", command=self.open_folder).pack(
             side="right")
         ttk.Button(head, text="刷新", command=self.refresh_struct).pack(
@@ -171,7 +177,7 @@ class StructTab:
 
         self.struct_note.set(
             f"知识库根目录：{kb}    ·    合计 {human(used)}\n"
-            "说明：papers/ 与 fulltext/ 是可重建的派生物，删了跑一次"
+            "说明：papers/、fulltext/、views/ 都是可重建的派生物，删了跑一次"
             "「手动更新」就回来；index.db 里的经验层和权重是攒出来的，"
             "重建索引不会恢复它们 —— 所以定期点「备份」。\n"
             "⚠ 上面三个 .txt（service-token / bridge-token / zotero-api-key）"
@@ -179,3 +185,43 @@ class StructTab:
             "跟用哪个模型无关 —— 用 Ollama 不需要任何模型 key，"
             "这三个文件也一直会在。模型那边的 key（如果用 API）"
             "存在 llm-config.json 里。")
+
+    # ---------------------------------------------------------- 打开知识库
+
+    def open_kb_browser(self):
+        """「打开知识库…」：先选文献，再选级别，最后打开那个 md。
+
+        为什么不直接打开目录（原来只有那一个入口）：目录里的文件名是 Zotero
+        的 key（`22X9PMR6.md`），人认不出是哪篇，等于让用户自己去找。
+        这里把"找"变成两次点选 —— 而且第一段直接复用已有的文献选择弹窗。
+        """
+        rows = getattr(self, "paper_rows", None)
+        if not rows:
+            messagebox.showinfo(
+                "列表还没读好",
+                "正在从索引里读文献列表（几秒），稍等一下再点。\n\n"
+                "如果一直没读到，去「分类建议」页点一次「刷新列表」。")
+            # 顺手替用户触发一次读列表，省得他还要自己找那个按钮
+            try:
+                self.refresh_paper_list()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        self.open_paper_picker(on_pick=self._open_kb_levels)
+
+    def _open_kb_levels(self, key: str):
+        """文献选择弹窗里选中了一篇 → 打开它的级别列表。"""
+        title = key
+        for r in getattr(self, "paper_rows", []):
+            if r[0] == key:
+                title = (f"{r[1] or '（无作者）'} {r[2] or ''} · "
+                         f"{(r[3] or '')[:38]}")
+                break
+        try:
+            from .browser import open_level_picker
+        except ImportError as exc:
+            messagebox.showerror("缺文件", f"找不到 panels/browser.py：{exc}")
+            return
+        open_level_picker(self.root, key, title,
+                          on_log=lambda t: self.say(f"[{ts()}] {t}"),
+                          ui_font=self.ui_font, mono_font=self.mono_font)
