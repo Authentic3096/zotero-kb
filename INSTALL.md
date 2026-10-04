@@ -164,6 +164,23 @@ Zotero → 工具 → 插件 → 右上角齿轮 → Install Plugin From File…
 > 为什么：插件代码只在加载时读一次。**运行中更新插件不会重跑 `startup()`** ——
 > 这是"装了没用"最常见的原因。
 
+**以后怎么升级**（这一段请看一眼，能省掉"怎么一直没提示新版本"）：
+
+插件里写死了一个更新地址（manifest 的 `update_url`，指向本仓库 main 上的
+`updates.json`），Zotero 会定期去查"有没有新版本"。**但那个地址
+（`raw.githubusercontent.com`）在国内网络经常连不上** —— 实测有时**完全不通**
+（超时），而 GitHub 的 Release 附件本身是下得动的。
+
+所以升级有两条路，哪条通用就用哪条：
+
+| 情况 | 怎么做 |
+|---|---|
+| Zotero 弹出「有可用更新」 | 直接点更新，然后**完全重启 Zotero** |
+| **没有任何提示**（多数国内网络就是这样） | 去 [Releases](https://github.com/Authentic3096/zotero-kb/releases) 下最新的 `zotero-kb-<版本>.xpi`，按上面「再安装」那两步装一遍 —— 覆盖安装、配置和知识库都不动 |
+
+> 想确认自己现在装的是哪一版：Zotero → 工具 → 插件 → 看「Zotero 文献知识库」
+> 后面的版本号；或跑 `python tools\check_acquire.py`，它会打印插件自报的版本。
+
 ### 第 4 步：跑起来看看
 
 重新打开 Zotero，然后：
