@@ -397,21 +397,38 @@ def main() -> int:
         if check_api_presets.main() != 0:
             problems.append("插件预设与服务端的服务商地址不一致（见上）")
     except Exception as exc:  # noqa: BLE001
-        print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
+        # ⚠ 检查自己崩了也要**报出来**，不能只打一行 [!!] 就放过。
+        #   2026-10-05 发布 v1.0.0 时才发现：CI 上这项一直是崩的
+        #   （根因是 offline/schemas.py 少 import sys），而它被静默忽略了 ——
+        #   等于这条检查在 CI 上从来没真正跑过（就是"死档"）。
+        print(f"  [XX] 这项检查自己崩了：{type(exc).__name__}: {exc}")
+        problems.append(f"服务商地址检查跑不起来：{type(exc).__name__}: {exc}")
 
     # 分级清单在 Python（offline/kbviews.py）和 JS（src/13-kbopen.js）里各存
     # 一份 —— 不一致就会出现"面板里叫这个名字、右键菜单里叫那个名字"，或者
     # 某一边指向不存在的文件。这是本项目反复吃过的"两处各写一份"的亏。
+    #
+    # ⚠ 返回码有三档，别混：0=一致，1=**真的不一致**（要红），2=这项跑不起来
+    #   （缺 node / 读不到源文件）。第二档不能当成"通过" —— 那正是"审计器某档
+    #   从来没有人往里放东西"的成因；但也不能当成"不一致"，否则缺 node 的机器
+    #   会莫名其妙红。
     print("\n[知识库分级清单一致性]")
     try:
         sys.path.insert(0, HERE)
         import importlib
         import check_kb_levels
         importlib.reload(check_kb_levels)
-        if check_kb_levels.main() != 0:
+        rc = check_kb_levels.main()
+        if rc == 1:
             problems.append("知识库分级清单在 Python 与 JS 两侧不一致（见上）")
+        elif rc == 2:
+            print("  [!!] 这项跑不起来（多半是缺 node）—— 没能校验，不算通过")
     except Exception as exc:  # noqa: BLE001
-        print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
+        # 检查自己崩了也要报出来：2026-10-05 发布 v1.0.0 时，CI 上就是这个
+        # 位置暴露出 offline/schemas.py 少 import sys（此前它一直没被发现，
+        # 因为上层把它当"检查没跑成"静默放过了）。
+        print(f"  [XX] 这项检查自己崩了：{type(exc).__name__}: {exc}")
+        problems.append(f"分级清单检查跑不起来：{type(exc).__name__}: {exc}")
 
     print("\n" + "=" * 64)
     if problems:

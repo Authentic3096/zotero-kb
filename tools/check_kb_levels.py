@@ -15,8 +15,15 @@ JS 里读不到 Python 的常量，只能复制一份。而"手工同步的约�
 服务商地址）。所以这里把"两边必须一致"变成一条会红的检查，接进 check_plugin.py，
 并在 CI 里跟着跑。
 
-具体盯三条：**id 集合、标签、相对路径模板**。label 不一致 → 用户在两处看到
-不同的名字；rel 不一致 → 某一边会指向不存在的文件。
+具体盯三条：**id 集合、标签、相对路径模板**（外加顺序）。label 不一致 → 用户
+在两处看到不同的名字；rel 不一致 → 某一边会指向不存在的文件。
+
+## 返回码（调用方要区分）
+
+    0 = 两侧一致
+    1 = **真的不一致**（要红）
+    2 = **这项跑不起来**（缺 node / 读不到源文件）—— 不能当成"通过"，
+        也不能当成"不一致"（否则缺 node 的机器会莫名其妙红）
 """
 
 from __future__ import annotations
@@ -87,12 +94,12 @@ def main() -> int:
         py = py_levels()
     except Exception as exc:  # noqa: BLE001
         print(f"  [XX] 读不到 offline/kbviews.py 的 LEVELS：{exc}")
-        return 1
+        return 2                      # 跑不起来 ≠ 不一致
     try:
         js = js_levels()
     except Exception as exc:  # noqa: BLE001
         print(f"  [XX] 读不到 {os.path.relpath(JS, ROOT)} 的 KB_LEVELS：{exc}")
-        return 1
+        return 2                      # 跑不起来 ≠ 不一致
 
     print(f"  Python：{len(py)} 级  {'、'.join(l['label'] for l in py)}")
     print(f"  JS    ：{len(js)} 级  {'、'.join(l['label'] for l in js)}")

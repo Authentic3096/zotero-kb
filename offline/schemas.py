@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import threading
 from dataclasses import dataclass, field
 from typing import Any
@@ -316,6 +317,11 @@ def resolve_python(explicit: str = "") -> str:
     for cand in _scan_for_python(None):
         if _is_executable(cand):
             return cand
+    # ⚠ 这一行要 `import sys`。**它以前没有 import**，而且一直没暴露：
+    #   本机 Windows 上第 1~3 步总能找到 .venv / 项目里的 Python，走不到这里；
+    #   而在 CI（Linux）上必然走到 —— 模块级 `PYTHON_EXE = resolve_python()`
+    #   于是直接 `NameError: name 'sys' is not defined`，连累所有 import schemas
+    #   的检查（2026-10-05 发布 v1.0.0 时被插件自检逮到）。
     return sys.executable or "python"
 
 
