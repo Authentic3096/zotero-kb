@@ -186,7 +186,7 @@ pages（起止页码）{creator_hint}。
     },
     "para": {
         "title": "逐段检查（提取损坏 / 边界 / 顺序 / 碎片）",
-        "where": "窗格里「全文级段落检测」逐段调用；面板「解析健康」复核也用它",
+        "where": "窗格里「全文级段落检测」逐段调用；面板「损坏查询」复核也用它",
         "placeholders": ["page", "signals", "prev_tail", "next_head", "text"],
         "keys": ["verdict", "kind", "reason"],
         # ⚠ 这一条的每一条判据都必须**可核对**：界面会把客观信号与结论并排显示。

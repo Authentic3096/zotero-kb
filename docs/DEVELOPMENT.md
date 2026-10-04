@@ -86,10 +86,12 @@
     panels\              面板的界面代码，**一个页签一个模块**
       common.py          公共：路径常量、字体、sys.path 引导、知识库目录说明表
       base.py            窗口骨架与通用能力（装配、日志、跑子进程、状态刷新）
-      tab_struct.py      「知识库结构」页（含「打开知识库…」入口）
+                          ★ `_tab_panes`（每页套可滚动画布 + 可拖的底部格）、
+                            `_on_wheel`（滚轮滚"鼠标底下那一页"）、`_build_log`（日志可拖）
+      tab_struct.py      「知识库结构」页（含「文献管理器中查看」入口）
       tab_experience.py  「经验库」页
       tab_ai.py          「分类建议」页（文献列表、检索、分类建议与写回）
-      tab_quality.py     「解析健康」页
+      tab_quality.py     「损坏查询」页
       tab_meta.py        「元数据」页
       tab_env.py         「运行环境」页（服务、同步、侧载、诊断、升级）
       tab_advanced.py    「高级」页（全量重建、自检、备份、清理、补齐分级文件）
@@ -99,7 +101,7 @@
                          （改完插件源码必须跑它，否则打包会被拒绝）
     check_kb_levels.py   ★ 盯"知识库分级清单"在 Python 与 JS 两侧一致
     make_index.py        生成给人看的文献清单 INDEX.md（Markdown 表格）
-    kb_admin.py          经验层管理：查看 / 清理测试数据 / 导出导入
+    kb_admin.py          经验层管理：查看 / 清理测试数据 / 导出导入 / 重排编号
     zotero_upgrade.py    Zotero 升级前检查 / 备份 / 升级后核对
     zotero_sync.py       通过 Zotero 10 本地 API 写回分类（分类重整用）
     zotero_js.py         在 Zotero 里自动执行 JS（经插件任务队列，免手工粘贴）
@@ -204,7 +206,7 @@
   papers\*.md          每篇一份档案（元数据+摘要+笔记+标注+正文首段），按 KEY 命名
   fulltext\*.md        每篇正文，带 `## p.N` 页码锚点
   views\*.md           每篇的**分级视图**：`<KEY>.tldr.md` / `.figures.md` /
-                       `.weight.md`（面板「打开知识库…」与 Zotero 右键菜单读它）
+                       `.weight.md`（面板「打开知识库」与 Zotero 右键菜单读它）
   inbox\               待确认的经验、以及"扫到哪了"的记录
   logs\                运行日志
   .cache\              嵌入模型缓存

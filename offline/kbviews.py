@@ -10,7 +10,7 @@
              / figures（图注与表格）/ weight（权重与经验）
 
 三处消费同一份定义，不再各写一套：
-  · 面板的「打开知识库…」：文献列表 → 级别列表 → `os.startfile` 打开那个 md
+  · 面板的「打开知识库」：文献列表 → 级别列表 → `os.startfile` 打开那个 md
   · Zotero 项的右键「打开知识库」二级菜单（插件侧有一份 `KB_LEVELS` 常量，
     由 tools/check_kb_levels.py 盯着两边一致）
   · MCP 资源 `zotero-kb://item/tldr/{key}`（它的渲染实现就搬到了本模块的
