@@ -39,6 +39,7 @@ zotero-kb-para-stale = 正文重建过，{ $n } 段需重查
 # ---- 输入与状态
 zotero-kb-btn-send = 发送
 zotero-kb-btn-locate = 定位
+zotero-kb-btn-propose = 整理这次讨论
 zotero-kb-btn-clear = 清空对话
 zotero-kb-placeholder-ask = 就这篇文献提问…
 zotero-kb-placeholder-locate = 把 PDF 里选中的文字粘在这里，定位到对应段落

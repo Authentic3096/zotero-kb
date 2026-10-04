@@ -264,7 +264,18 @@ def main() -> int:
                 # 打开知识库（分级）—— 右键二级菜单那条链。少任何一个都是
                 # "菜单里少一项"或"点了没反应"，所以一起盯着。
                 "kbLevels", "kbLevelsMissing", "openKbPath", "openKbViaPanel",
-                "openKbLevel", "openKbFolder"]
+                "openKbLevel", "openKbFolder",
+                # 内容窗格「本地模型」分区（19-itempane.js）与阅读器选中入口
+                # （20-reader.js）。少任何一个都是"按钮点了没反应"或"窗格空白"，
+                # 而这类故障在 Zotero 里**没有任何报错** —— 所以名字一起盯着。
+                "registerItemPane", "registerReaderEvents", "registerQuitGuard",
+                "unregisterQuitGuard", "hasUnsavedChat", "chatOf", "panePaint",
+                "paneRender", "paneSend", "paneInject", "paneLocate",
+                "panePropose", "paneClear", "paraStart", "paraLoadPlan",
+                "paraShowCurrent", "paraCheckOne", "paraPrefetch", "paraRender",
+                "paraRenderButtons", "paraNext", "paraExit", "enterWriteMode",
+                "paintWrite", "confirmWrite", "onReaderSelection",
+                "readerItemKey", "readerLocate"]
     missing = [f for f in internal if f"{f}:" not in src]
     if missing:
         print(f"  [XX] 缺内部函数：{missing}")
@@ -273,16 +284,29 @@ def main() -> int:
         print(f"  [OK] {len(internal)} 个内部函数齐备")
 
     # ---------------------------------------------------------- 首选项键对齐
+    #
+    # ⚠ 这条检查原来是坏的：它找的是 `"extensions.zotero-kb.xxx"` 这个**全长形式**，
+    #   而代码里从来没用过那种写法（PREFS 映射表里是 `"zotero-kb.xxx"` 短形式）
+    #   —— 于是它一直"扫到 0 个键、检查通过"。一个匹配不到东西的检查等于没有检查，
+    #   所以下面顺带加一条：扫不到就报错。
+    #   短形式与 l10n id 不会混：l10n id 是 `zotero-kb-btn-send`（连字符），
+    #   首选项是 `zotero-kb.chatQuitWarn`（点号）。
     ppath = os.path.join(PLUGIN, "prefs.js")
     if os.path.exists(ppath):
-        declared = set(re.findall(r'pref\("([^"]+)"',
-                                  open(ppath, encoding="utf-8").read()))
-        used = set(re.findall(r'"(extensions\.zotero-kb\.[a-zA-Z]+)"', src))
+        declared = {m.replace("extensions.zotero.", "")
+                    for m in re.findall(r'pref\("([^"]+)"',
+                                        open(ppath, encoding="utf-8").read())}
+        used = set(re.findall(r'"(zotero-kb\.[a-zA-Z]+)"', src))
+        if not used:
+            print("  [XX] 没扫到任何首选项键 —— 这条检查本身失效了（曾经就是这样）")
+            problems.append("首选项检查失效：扫不到键")
         undeclared = sorted(used - declared)
         if undeclared:
-            print(f"  [!!] prefs.js 缺默认值：{undeclared}")
+            print(f"  [XX] prefs.js 缺默认值：{undeclared}")
+            problems.append(f"prefs.js 缺默认值：{undeclared}")
         else:
-            print(f"  [OK] prefs.js 覆盖全部 {len(used)} 个键")
+            print(f"  [OK] prefs.js 覆盖全部 {len(used)} 个键"
+                  f"（声明 {len(declared)} 个）")
     else:
         print("  [!!] 没有 prefs.js")
 
@@ -341,8 +365,19 @@ def main() -> int:
         print(f"  [OK] {len(ftl_files)} 个 ftl，共 {len(defined)} 条文案："
               + ", ".join(sorted(os.path.relpath(p, PLUGIN).replace(os.sep, '/')
                                  for p in ftl_files)))
-        used = sorted(set(re.findall(r"""l10nID:\s*['"]([^'"]+)['"]""", bsrc)))
-        for key in used:
+        # 代码里"用了哪个 l10n id"。三种写法都要认 —— 只认 `l10nID:` 字面量的话，
+        # 动态调用（`paneButton(doc, "id")` / `self.l10n(doc, el, "id")`）会漏掉，
+        # 而它们恰恰是分区里绝大多数按钮的写法（本机实测漏了 7 个）。
+        # ⚠ `[^,]+` 必须写成 `[^,\n]+`：不排除换行的话，正则会跨越注释行去匹配，
+        #   把注释里的 `self.l10n()` 和几行之后的 `"placeholder"` 凑成一对
+        #   —— 于是报出一个根本不存在的 l10n id（实测撞到过）。
+        used = set(re.findall(r"""l10nID:\s*['"]([^'"]+)['"]""", bsrc))
+        used |= set(re.findall(
+            r"""\.l10n\(\s*[^,\n]+,\s*[^,\n]+,\s*['"]([^'"]+)['"]""", bsrc))
+        used |= set(re.findall(
+            r"""paneButton\(\s*[^,\n]+,\s*['"]([^'"]+)['"]""", bsrc))
+        used |= set(re.findall(r"""l10nText\(\s*['"]([^'"]+)['"]""", bsrc))
+        for key in sorted(used):
             if key in defined:
                 print(f"  [OK] l10nID {key} 有定义"
                       f"（{', '.join(sorted(set(defined[key]))) }）")
@@ -352,6 +387,8 @@ def main() -> int:
                 problems.append(f"l10nID 未定义：{key}")
         if not used:
             print("  [--] 代码里还没用到 l10nID（新加分区时这条检查会兜住）")
+        else:
+            print(f"  [OK] 代码里用了 {len(used)} 个 l10nID，全部有定义")
         # 中英文必须成对：只有 zh-CN 时，英文用户会看到空白标题
         langs = {os.path.basename(os.path.dirname(p)) for p in ftl_files}
         if "en-US" not in langs:

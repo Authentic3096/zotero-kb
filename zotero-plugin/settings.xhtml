@@ -279,6 +279,31 @@
     </html:div>
   </html:div>
 
+  <!-- 内容窗格里的「本地模型」分区（文献条目右侧那个）。
+       退出提醒之所以要留一个开关：对话框里的「下次不再提示」勾了之后，
+       唯一的回头路就是这个设置项 —— 没有它用户就再也看不到提醒了。 -->
+  <html:div style="margin-bottom: 18px; padding:10px 12px;
+                   background:rgba(128,128,128,0.08); border-radius:6px;">
+    <html:div style="font-weight:600; margin-bottom:6px;">内容窗格「本地模型」</html:div>
+    <html:label style="display:block; margin-bottom:6px;">
+      <html:input type="checkbox" data-pref="zotero-kb.chatQuitWarn"/>
+      <html:span>退出 Zotero 前提醒"这个窗格里的对话不会被保存"</html:span>
+      <html:span style="color:#888;">（默认开；对话框里可以勾"下次不再提示"）</html:span>
+    </html:label>
+    <html:label style="display:block; margin-bottom:6px;">
+      <html:span>上下文窗口（num_ctx）</html:span>
+      <html:input type="text" data-pref="zotero-kb.chatNumCtx"
+                  style="width:90px; margin-left:6px;"/>
+      <html:span style="color:#888;">（默认 16384；8192 装不下"注入全文级"）</html:span>
+    </html:label>
+    <html:div style="color:#888; font-size:12px;">
+      在文献列表里选中一篇 → 右侧内容窗格出现「本地模型」：可以先注入摘要级/全文级
+      再提问，也可以「全文级段落检测」逐段核对正文提取质量。
+      **对话不落盘**（退出即清），而检测进度与确认过的修正会保留。
+      模型想改知识库时必须你点两次确认才会写。
+    </html:div>
+  </html:div>
+
   <html:div>
     <html:button id="zotero-kb-test-btn" style="padding: 4px 12px;">
       测试连接

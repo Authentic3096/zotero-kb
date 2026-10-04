@@ -60,6 +60,8 @@ SRC_ORDER = [
     "16-weightcol",
     "17-windowhook",
     "18-taskpoll",
+    "19-itempane",
+    "20-reader",
     "99-bootstrap",
 ]
 

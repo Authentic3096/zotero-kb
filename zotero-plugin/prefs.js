@@ -25,6 +25,21 @@ pref("extensions.zotero.zotero-kb.syncEnabled", false);
 pref("extensions.zotero.zotero-kb.syncMode", "none");
 pref("extensions.zotero.zotero-kb.syncTarget", "");
 
+// ---- 从 DSH 导入文献（10-acquire.js）
+// ⚠ 这两个原来只在 registerPrefs 里设了兜底默认值、**没写进 prefs.js** ——
+//   修好 check_plugin 里那条"首选项键对齐"检查后立刻被抓出来（那条检查原来
+//   找的是一个代码里根本不存在的键形式，一直"扫到 0 个键、通过"）。
+pref("extensions.zotero.zotero-kb.acquireConfirm", false);
+pref("extensions.zotero.zotero-kb.acquireAutoClassify", true);
+
+// ---- 内容窗格「本地模型」分区
+// 退出 Zotero 前提醒"这个窗格里的对话不会被保存"（对话框里带「下次不再提示」）。
+// 默认开：按需求对话**确实不落盘**，不提醒的话用户会以为聊过的东西还在。
+pref("extensions.zotero.zotero-kb.chatQuitWarn", true);
+// 聊天的上下文窗口（Ollama num_ctx）。默认 16384 才装得下"注入全文级"
+// （8192 大约只够一篇 6 页论文的一半）。
+pref("extensions.zotero.zotero-kb.chatNumCtx", 16384);
+
 // ---- 运行环境（三个位置互相独立，谁也不能由谁推算）
 //
 // 「项目目录」= 用户填的（权威来源，设置面板「运行环境」区）

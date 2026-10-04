@@ -283,6 +283,19 @@ def do_chat(key: str, messages: list, inject: str = "tldr",
         conn.close()
 
 
+def do_chat_context(key: str, inject: str = "tldr") -> dict:
+    """**只拼上下文、不调模型** —— 给界面显示"已注入多少字符"用。
+
+    为什么要单独一个端点：在界面上点「注入摘要级/全文级」时，用户需要立刻看到
+    "装进去了多少"，而这件事根本不需要模型。原来插件为了拿这个数字发了一条
+    假的 /chat 请求，等于白跑一次推理（本地 4B 一次好几秒）。
+    """
+    import kbchat
+
+    ctx = kbchat.build_context(key, inject)
+    return {"ok": True, "injected": ctx, "note": ctx.get("note", "")}
+
+
 def do_para_plan(key: str, scope: str = "suspect",
                  include_fixed: bool = False) -> dict:
     """逐段检查的计划：总共多少段、已查多少、下一段是哪一段（续跑用）。"""
@@ -297,9 +310,11 @@ def do_para_plan(key: str, scope: str = "suspect",
 
 def do_para_check(key: str, page: int, logical_index: int, text: str,
                   prev_tail: str = "", next_head: str = "",
-                  model: str = "", save: bool = True) -> dict:
+                  model: str = "", save: bool = True,
+                  p_hash: str = "") -> dict:
     """检查一段；结论 + 客观信号一起返回，并把进度落库（好续跑）。
 
+    `hash` 与 `text` 二选一：插件只有指纹（计划里不带正文），面板直接给正文。
     `save=False` 用于"只想看一眼、不想留痕"的调用（面板复核用得到）。
     """
     import kbchat
@@ -309,7 +324,7 @@ def do_para_check(key: str, page: int, logical_index: int, text: str,
         out = kbchat.check_paragraph(conn, key, int(page or 0),
                                      int(logical_index or 0), text,
                                      prev_tail=prev_tail, next_head=next_head,
-                                     model=model)
+                                     model=model, p_hash=p_hash)
         if save and out.get("hash"):
             status = ("ok" if out.get("verdict") == "ok" else
                       "suspect" if out.get("ok") else "skipped")
@@ -2584,15 +2599,25 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/para-check":
             key = str(body.get("key") or "").strip()
-            if not key or not str(body.get("text") or "").strip():
-                return self._send(400, {"error": "需要 key 与 text"})
+            p_hash = str(body.get("hash") or "").strip()
+            if not key or not (p_hash or str(body.get("text") or "").strip()):
+                return self._send(400, {"error": "需要 key，以及 hash 或 text 之一"})
             return self._send(200, do_para_check(
                 key, int(body.get("page") or 0),
                 int(body.get("logical_index") or 0), str(body.get("text") or ""),
                 prev_tail=str(body.get("prev_tail") or ""),
                 next_head=str(body.get("next_head") or ""),
                 model=str(body.get("model") or ""),
-                save=body.get("save") is not False))
+                save=body.get("save") is not False,
+                p_hash=p_hash))
+
+        if path == "/chat-context":
+            # 只拼上下文、不调模型：界面点「注入摘要级/全文级」时拿注入量用的
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key"})
+            return self._send(200, do_chat_context(
+                key, inject=str(body.get("inject") or "tldr")))
 
         if path == "/para-locate":
             key = str(body.get("key") or "").strip()
@@ -3156,6 +3181,15 @@ def self_test(port: int) -> int:
          token=True, expect=400)
     call("POST", "/para-check", {"key": "22X9PMR6"}, token=True, expect=400)
     call("POST", "/para-locate", {"key": "22X9PMR6"}, token=True, expect=400)
+    call("POST", "/chat-context", {}, token=True, expect=400)
+    # /chat-context 不调模型：点「注入摘要级」时拿注入量用的
+    cc = call("POST", "/chat-context", {"key": "22X9PMR6", "inject": "tldr"},
+              token=True, expect=200)
+    cctx = (cc or {}).get("injected") or {}
+    ok = isinstance(cctx, dict) and "chars" in cctx and "note" in cctx
+    print(f"  {'PASS' if ok else 'FAIL'}  /chat-context 只拼上下文"
+          f"（注入 {cctx.get('chars')} 字符，truncated={cctx.get('truncated')}）")
+    passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
     call("POST", "/kb-apply", {"key": "22X9PMR6", "plan": {}},
          token=True, expect=400)
     call("POST", "/exp-draft", {}, token=True, expect=400)

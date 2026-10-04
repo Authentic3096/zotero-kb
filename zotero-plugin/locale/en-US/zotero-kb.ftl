@@ -33,6 +33,7 @@ zotero-kb-para-stale = Full text was rebuilt; { $n } paragraph(s) need re-checki
 # ---- Input and status
 zotero-kb-btn-send = Send
 zotero-kb-btn-locate = Locate
+zotero-kb-btn-propose = Turn this chat into proposals
 zotero-kb-btn-clear = Clear chat
 zotero-kb-placeholder-ask = Ask about this paper…
 zotero-kb-placeholder-locate = Paste text selected in the PDF to locate its paragraph

@@ -22,6 +22,20 @@ Object.assign(ZoteroKB, {
     } catch (e) { /* ignore */ }
     try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
     try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
+    // 内容窗格分区与退出提醒都要显式收掉：分区不注销的话，插件卸载后
+    // 那个窗格还在（点它没有任何反应），退出提醒则会一直挂着。
+    // 阅读器的监听不需要手动摘 —— registerEventListener 传了 pluginID，
+    // Zotero 会自己按 pluginID 清掉（见 reader.js 的 _unregisterEventListenerByPluginID）。
+    try {
+      if (self.paneID && Zotero.ItemPaneManager
+          && Zotero.ItemPaneManager.unregisterSection) {
+        Zotero.ItemPaneManager.unregisterSection(self.paneID);
+        self.paneID = null;
+      }
+    } catch (e) { /* ignore */ }
+    try { self.unregisterQuitGuard(); } catch (e) { /* ignore */ }
+    // 对话按需求"不落盘"：把内存里的会话状态一并丢掉
+    try { self.chatState = {}; } catch (e) { /* ignore */ }
     try {
       if (self.notifyIDs && self.notifyIDs.length) {
         self.notifyIDs.forEach((id) => Zotero.Notifier.unregisterObserver(id));
@@ -71,5 +85,14 @@ Object.assign(ZoteroKB, {
     // 一次性全部算完、再用**一个**汇总框问（见 askApplyBatch）——
     // 不用每篇弹一次：抓 5 篇弹 5 个模态框，点完"添加"还要连点 5 次。
     acquireAutoClassify: "zotero-kb.acquireAutoClassify",
+    // ---- 内容窗格「本地模型」分区（19-itempane.js）
+    //
+    // 退出 Zotero 前提醒"这个窗格里的对话不会保存"（对话框里带"下次不再提示"）。
+    // 为什么默认开：不提醒的话，用户以为聊过的东西还在，回来发现空了 ——
+    // 而按需求对话**确实不落盘**（只有检测进度与确认过的修正会保留）。
+    chatQuitWarn: "zotero-kb.chatQuitWarn",
+    // 聊天时的上下文窗口（Ollama 的 num_ctx）。默认 16384：
+    // 8192 装不下"注入全文级"（一篇 6 页论文约 1.5 万字符 ≈ 1 万 token）。
+    chatNumCtx: "zotero-kb.chatNumCtx",
   },
 });

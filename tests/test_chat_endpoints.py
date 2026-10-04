@@ -180,6 +180,31 @@ check("模型失败 → 带 error 与 hint",
       out.get("ok") is False and out.get("hint") == "启动 Ollama", str(out)[:80])
 judge.generate = fake_generate
 
+# ---- 按 hash 检查（**插件走的就是这条**）
+# ⚠ 这条是回归网：插件只有段落指纹（/para-plan 的返回里不带正文），曾经
+#   按"计划里的 item"取 item.text —— 计划里根本没这个字段，于是模型收到
+#   空段落，还一本正经地回了一个 verdict。
+paras_now = [p for p in P.load_paras(conn, KEY) if p.kind == "prose"]
+check("临时库里解析出了正文段", bool(paras_now), str(len(paras_now)))
+if paras_now:
+    target = paras_now[0]
+    REPLY["text"] = json.dumps({"verdict": "ok", "kind": "none", "reason": "测试"},
+                               ensure_ascii=False)
+    got = KC.check_paragraph(conn, KEY, 0, 0, "", p_hash=target.hash)
+    check("按 hash 能取到正文（不是空段落）",
+          got.get("text") == target.text and len(got.get("text") or "") > 0,
+          f"取到 {len(got.get('text') or '')} 字")
+    check("按 hash 时页号/段号以正文为准",
+          got.get("page") == target.page
+          and got.get("logical_index") == target.logical_index, str(got)[:80])
+    check("按 hash 的结果里带主观信号",
+          isinstance(got.get("signals"), dict) and got["signals"].get("chars", 0) > 0,
+          str(got.get("signals"))[:60])
+    bad = KC.check_paragraph(conn, KEY, 0, 0, "", p_hash="不存在的指纹")
+    check("指纹对不上时给可执行的错",
+          bad.get("ok") is False and "重新拉一次" in str(bad.get("error")),
+          str(bad.get("error"))[:80])
+
 # ---------------------------------------------------------------- [4] 续跑
 print("\n[4] 续跑：跳过已查、重建后要重查")
 pl = KC.plan(conn, KEY, scope="all")

@@ -343,11 +343,48 @@ def plan(conn, key: str, scope: str = "suspect", include_fixed: bool = False) ->
 
 def check_paragraph(conn, key: str, page: int, logical_index: int, text: str,
                     *, prev_tail: str = "", next_head: str = "",
-                    model: str = "", signals_in: dict | None = None) -> dict:
-    """让模型核对一段；结论与客观信号一起返回（界面并排显示）。"""
+                    model: str = "", signals_in: dict | None = None,
+                    p_hash: str = "") -> dict:
+    """让模型核对一段；结论与客观信号一起返回（界面并排显示）。
+
+    ## 两种调用方式
+
+    · 给 `p_hash`（**插件走这条**）：服务端自己按指纹去 fulltext md 里取出
+      这一段与它的前后邻居。为什么不让插件把正文传上来：`/para-plan` 的返回
+      里不含段落全文（889 个可疑段各几百字，一次全带回来是几百 KB），
+      插件只有 hash。**插件发 hash、服务端取正文**，职责也更清楚。
+    · 直接给 `text`（**面板走这条**：面板本来就是从 md 里读的）。
+
+    ⚠ 曾经踩过：插件按"计划里的 item"取 `item.text` —— 计划里根本没有这个
+      字段，于是模型收到的是**空段落**，而它照样一本正经地回了一个 verdict。
+    """
     import judge
 
-    sig = signals_in or signals(text, prev_tail=prev_tail, next_head=next_head)
+    if p_hash and not text:
+        found = None
+        paras = P.load_paras(conn, key)
+        for i, p in enumerate(paras):
+            if p.hash == p_hash:
+                found = (i, p)
+                break
+        if not found:
+            return {"ok": False, "error": f"这篇的正文里找不到指纹 {p_hash}"
+                    "（正文可能重建过，请重新拉一次逐段计划）", "signals": {}}
+        i, p = found
+        text = p.text
+        page = p.page
+        logical_index = p.logical_index
+        prose = [x for x in paras if x.kind == "prose"]
+        try:
+            j = prose.index(p)
+        except ValueError:
+            j = -1
+        if j > 0:
+            prev_tail = prose[j - 1].text[-300:]
+        if 0 <= j < len(prose) - 1:
+            next_head = prose[j + 1].text[:300]
+
+    sig = signals(text, prev_tail=prev_tail, next_head=next_head)
     hot, why = suspect(sig)
     sig["suspect_why"] = why
     prompt = PR.render(
@@ -359,7 +396,7 @@ def check_paragraph(conn, key: str, page: int, logical_index: int, text: str,
         next_head=(next_head or "（这一页的最后一段）")[:300])
     res = judge.generate(prompt, system=PR.get("para", "system"), model=model,
                          json_mode=True, temperature=0.0, timeout=240.0)
-    out = {"ok": False, "signals": sig, "page": page,
+    out = {"ok": False, "signals": sig, "page": page, "text": text,
            "logical_index": logical_index, "hash": P.para_hash(text)}
     if not res.get("ok"):
         out["error"] = res.get("error") or "模型调用失败"

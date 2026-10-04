@@ -87,6 +87,12 @@ var ZoteroKB = {
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
       step("startTaskPolling", () => self.startTaskPolling());
+      // 内容窗格里的「本地模型」分区（19-itempane.js）与阅读器里的选中入口
+      // （20-reader.js）。两个都**不能**让插件启动失败：老版本 Zotero 没有
+      // `ItemPaneManager` 时只写状态文件（见各自的实现）。
+      step("registerItemPane", () => self.registerItemPane());
+      step("registerReaderEvents", () => self.registerReaderEvents());
+      step("registerQuitGuard", () => self.registerQuitGuard());
 
       // ⚠ 工具栏按钮与右键菜单**必须在这里也注册一次**，不能只靠 onMainWindowLoad。
       // 实测（用任务队列在 Zotero 内查证）：
