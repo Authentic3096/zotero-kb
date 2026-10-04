@@ -138,6 +138,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import prompts as PR  # noqa: E402 —— 提示词注册表（用户可改）
 import schemas as S  # noqa: E402
 import zreader  # noqa: E402
 
@@ -1135,45 +1136,11 @@ def _creator_note(cr: dict, source: str = "rule", verified=None) -> str:
 
 
 # ---------------------------------------------------------------- 模型兜底
-
-MODEL_SYSTEM = (
-    "你是文献元数据抽取助手。只从给定文字里抄出信息，不要推测、不要补全、"
-    "不要用外部知识。文字里没有的字段一律留空字符串。输出 JSON。"
-)
-
-# 提示词里反复强调"没有就留空"，是因为小模型在这类任务上最大的风险是**编**：
-# 它见过太多文献，会凭"这类文章一般发在哪年哪卷"填一个看起来合理的值。
-# 作者上这个风险更高：它会凭"这个领域常引谁"编出一串人名。
 #
-# `{creator_hint}` / `{creator_rules}` 只在**规则没搞定作者**时才填内容。
-# 为什么要按需填而不是永远问：`_model_suggest` 的原则是"少问就少编" ——
-# 不问的字段模型没有机会瞎给值，提示词短一点小模型的注意力也更集中。
-MODEL_PROMPT = """从下面这段文献正文（首页节选）里，抄出这些元数据字段的值：
-date（日期）、date_kind（日期类型）、DOI、volume（卷）、issue（期）、
-pages（起止页码）{creator_hint}。
+# ⚠ 话术已搬到 `offline/prompts.py` 的 `metafill` 一条（用户可看可改）。
+#   下面两个常量只为兼容外部引用保留，送进模型的一律走 PR.get / PR.render。
 
-【正文】
-{text}
-
-【要求】
-1. 只抄正文里**字面出现过**的内容；找不到的字段必须留空字符串 ""，绝对不要猜。
-2. date 优先抄**正式出版日期**（如 "2025 年 12 月" → "2025-12"、"Dec. 2025" → "2025-12"）。
-   如果正文里**只有**收稿日期 / 网络首发日期 / 在线发表日期，**也要抄出来、不要留空** ——
-   这些日期照样能用（date 最终只用来算按发表年份的基础权重，差一两年影响很小，
-   留空反而丢掉整篇的初始权重）。
-3. date_kind 填上一步那个日期的类型：正式出版填 "published"，
-   网络首发/在线发表/优先出版填 "online_first"，收稿/投稿/修回/录用填 "submitted"，
-   实在看不出填 "unknown"。
-4. DOI 只给纯净形态（不要 "doi:" 前缀，不要 URL），例如 "10.1234/abc.2025.001"。
-5. pages 给 "起页-止页" 形态，例如 "765-770"。
-6. volume / issue 只给数字，不要带 "Vol." "第" "期" 这些字。
-7. evidence 字段填**正文里支持该值的那一小段原文**（照抄，20-60 字），
-   找不到出处的字段就不要给值。{creator_rules}
-只输出 JSON：
-{{"date": "", "date_kind": "", "DOI": "", "volume": "", "issue": "", "pages": "",
-  "creators": [], "creators_partial": false,
-  "evidence": {{"date": "", "DOI": "", "volume": "", "issue": "", "pages": "",
-                "creators": ""}}}}"""
+MODEL_SYSTEM = PR.default("metafill", "system")
 
 # 只追加在作者需要模型兜底时的提示词片段
 CREATOR_HINT = "、creators（作者列表）"
@@ -1299,14 +1266,16 @@ def _model_suggest(pages: list[str], need: list[str], model: str = ""
     if len(text.strip()) < MIN_TEXT_CHARS:
         return {}, {}
     want_creators = "creators" in need
-    prompt = MODEL_PROMPT.format(
-        text=text,
-        creator_hint=CREATOR_HINT if want_creators else "",
-        creator_rules=CREATOR_RULES if want_creators else "",
-    )
+    # 话术在 offline/prompts.py 的 `metafill` 一条里（用户可改）。
+    # `{creator_hint}` / `{creator_rules}` 只在**规则没搞定作者**时才填内容 ——
+    # `_model_suggest` 的原则是"少问就少编"：不问的字段模型没有机会瞎给值，
+    # 提示词短一点小模型的注意力也更集中。
+    prompt = PR.render("metafill", text=text,
+                       creator_hint=CREATOR_HINT if want_creators else "",
+                       creator_rules=CREATOR_RULES if want_creators else "")
     try:
-        res = judge.generate(prompt, system=MODEL_SYSTEM, model=model,
-                             json_mode=True, temperature=0.0)
+        res = judge.generate(prompt, system=PR.get("metafill", "system"),
+                             model=model, json_mode=True, temperature=0.0)
     except Exception:  # noqa: BLE001  —— 模型层任何异常都不该冒泡给调用方
         return {}, {}
     if not isinstance(res, dict) or not res.get("ok"):

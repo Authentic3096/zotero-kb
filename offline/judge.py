@@ -28,6 +28,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import prompts as PR  # noqa: E402 —— 提示词注册表（用户可改，改完立即生效）
 import schemas as S  # noqa: E402
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
@@ -491,34 +492,21 @@ def parse_json(text: str) -> tuple[bool, object]:
 
 
 # ---------------------------------------------------------------- 三个任务
+#
+# ⚠ 话术已经搬到 `offline/prompts.py`（用户可看可改，改完立即生效）。
+#   下面三个常量保留下来只为"别处引用它时还能拿到默认值"，
+#   真正送进模型的文本一律走 `PR.get()` / `PR.render()`。
 
-TAG_SYSTEM = (
-    "你是文献管理助手。只根据给定的标题与摘要输出标签，不要编造内容，"
-    "不要解释。输出 JSON。"
-)
-
-SUMMARY_SYSTEM = (
-    "你是文献阅读助手。用中文写要点，只依据给定文字，不要引入外部知识，"
-    "不要评价好坏。输出 JSON。"
-)
-
-EXTRACT_SYSTEM = (
-    "你是技术记录整理助手。从给定对话片段里提取「用过什么方法、结果如何」的事实。"
-    "严格只提取文字里明确写出的内容；没写的一律留空，绝不推测。"
-    "outcome 只能取 effective / ineffective / partial / unknown 之一；"
-    "文字没有明确结论时必须用 unknown。输出 JSON。"
-)
+TAG_SYSTEM = PR.default("tag", "system")
+SUMMARY_SYSTEM = PR.default("summary", "system")
+EXTRACT_SYSTEM = PR.default("extract", "system")
 
 
 def tag_item(title: str, abstract: str, model: str = "") -> dict:
     """给一篇文献打标签。"""
-    prompt = (
-        "请为下面这篇文献给出 3-6 个中文标签（主题词或方法名，不要泛词如"
-        "「研究」「论文」）。\n"
-        '输出 JSON：{"tags": ["标签1", "标签2"], "topic": "一句话主题（不超过 20 字）"}\n\n'
-        f"标题：{title}\n\n摘要：{(abstract or '（无摘要）')[:1500]}"
-    )
-    result = generate(prompt, system=TAG_SYSTEM, model=model)
+    prompt = PR.render("tag", title=title,
+                       abstract=(abstract or "（无摘要）")[:1500])
+    result = generate(prompt, system=PR.get("tag", "system"), model=model)
     if not result["ok"]:
         return {"ok": False, "error": result["error"]}
     good, data = parse_json(result["text"])
@@ -533,13 +521,8 @@ def tag_item(title: str, abstract: str, model: str = "") -> dict:
 
 def summarize_item(title: str, text: str, model: str = "") -> dict:
     """给一篇文献写 2-3 句中文要点。"""
-    prompt = (
-        "用 2-3 句中文概括下面这篇文献做了什么、用了什么方法、结论是什么。\n"
-        '输出 JSON：{"points": ["句1", "句2"], "method": "核心方法名", '
-        '"keywords": ["关键词"]}\n\n'
-        f"标题：{title}\n\n正文节选：\n{text[:6000]}"
-    )
-    result = generate(prompt, system=SUMMARY_SYSTEM, model=model)
+    prompt = PR.render("summary", title=title, text=text[:6000])
+    result = generate(prompt, system=PR.get("summary", "system"), model=model)
     if not result["ok"]:
         return {"ok": False, "error": result["error"]}
     good, data = parse_json(result["text"])
@@ -559,28 +542,11 @@ def extract_experience(text: str, model: str = "") -> dict:
 
     这是"事后补经验"的核心。提示词里反复强调"没写就留空"，
     因为小模型在这类任务上最大的风险是**编造结论**。
+    （话术在 `offline/prompts.py` 的 `extract` 一条里，用户可改。）
     """
-    prompt = (
-        "从下面的对话片段中提取「用过什么方法、结果如何」的记录。\n\n"
-        "输出 JSON：\n"
-        "{\n"
-        '  "found": true/false,          // 片段里有没有可提取的经验\n'
-        '  "items": [{\n'
-        '    "asked": "要解决的问题（没写就留空字符串）",\n'
-        '    "method": "用了什么方法（没写就留空）",\n'
-        '    "outcome": "effective|ineffective|partial|unknown",\n'
-        '    "reason": "为什么有效/失败（没写就留空）",\n'
-        '    "context": "前提条件（没写就留空）",\n'
-        '    "item_refs": ["提到的文献标题或编号片段"],\n'
-        '    "evidence": "引用原文里支持这个结论的短句（不超过 60 字）",\n'
-        '    "confidence": 0.0-1.0        // 你对这条提取有多确信\n'
-        "  }]\n"
-        "}\n\n"
-        "重要：只提取文字里明确写出的结论。凡是没写的一律留空。"
-        "宁可 found=false，也不要推测。\n\n"
-        f"对话片段：\n{text[:8000]}"
-    )
-    result = generate(prompt, system=EXTRACT_SYSTEM, model=model, timeout=240.0)
+    prompt = PR.render("extract", text=text[:8000])
+    result = generate(prompt, system=PR.get("extract", "system"), model=model,
+                      timeout=240.0)
     if not result["ok"]:
         return {"ok": False, "error": result["error"]}
     good, data = parse_json(result["text"])

@@ -60,6 +60,7 @@ import sys
 import time
 from datetime import datetime
 
+import prompts as PR
 import schemas as S
 
 # 模型的取样：整篇均匀取 4 段，每段 500 字符。
@@ -122,27 +123,7 @@ def _sample(text: str, n: int = SAMPLE_N, size: int = SAMPLE_SIZE) -> str:
                        for i in range(n))
 
 
-ITEM_PROMPT = """下面是**同一篇论文**正文的若干片段（从全文不同位置均匀抽取）。
-
-请判断：这篇论文的正文提取是否**整体失败**了？
-
-只有下面几种情况算「整体失败」：
-- **字符整体错乱**：英文字母像被整体位移过（`&DOFXODWLRQ` 本该是 `Calculation`）
-- **编码错乱**：混入藏文、天城文等不该出现的字符
-- **中文全丢**：中文文献里中文几乎没了，只剩数字、标点、孤立字母
-
-⚠⚠ 下面这些**都不算失败**，不要判失败：
-- 公式、矩阵、符号、上下标（论文里本来就有）
-- 参考文献列表（本来就零碎、编号多）
-- 表格内容（本来就是孤立单词和数字）
-- 封面、目录、页眉页脚、基金信息
-- 某一段的开头或结尾不完整（切片/分页造成的）
-
-拿不准时判**没失败** —— 宁可放过，也不要误伤正常文献。
-
-{fragments}
-
-只输出 JSON：{{"failed": true 或 false, "reason": "一句话理由"}}"""
+ITEM_PROMPT = PR.default("chunks", "user")
 
 
 def judge_item(text: str, model: str = "") -> tuple[bool, str]:
@@ -153,7 +134,10 @@ def judge_item(text: str, model: str = "") -> tuple[bool, str]:
     """
     import judge
 
-    r = judge.generate(ITEM_PROMPT.replace("{fragments}", _sample(text)),
+    # 话术在 offline/prompts.py 的 `chunks` 一条里（用户可改）。
+    # ⚠ `judge.generate` 返回 **dict**（含 ok/text/model/backend/eval_count），
+    #   不是字符串 —— 这个坑踩过不止一次。
+    r = judge.generate(PR.render("chunks", fragments=_sample(text)),
                        model=model, json_mode=True, temperature=0.0)
     if not isinstance(r, dict) or not r.get("ok"):
         err = (r or {}).get("error") if isinstance(r, dict) else "返回值不是 dict"
