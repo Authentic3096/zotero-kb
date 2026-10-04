@@ -255,6 +255,134 @@ def _task_get(tid: str) -> dict | None:
         return dict(t) if t else None
 
 
+
+# ---------------------------------------------------------------- 窗格聊天助手
+#
+# 这一组端点是给 **Zotero 右侧内容窗格**里那个「本地模型」分区用的。
+# 逻辑都在 `offline/kbchat.py`，这里只做路由与参数校验（与 /classify 一样的分工）。
+#
+# ⚠ 三条边界（用户明确要求，别顺手改掉）：
+#   1. **对话不落盘** —— 消息由插件内存持有，退出 Zotero 即清。这里不存任何
+#      对话内容；落盘的只有"检查进度/结论"与"用户确认过的修正"。
+#   2. **模型只提议，落库要人点** —— /kb-propose 只返回建议，
+#      /kb-apply 必须带 confirm="yes" 才写（两次确认在界面上，见插件侧）。
+#   3. **结论与客观信号并排** —— 逐段检查的返回里必须带 signals，
+#      否则用户没法判断模型是不是在胡说（check_chunks 记过那次 60% 误判）。
+
+
+def do_chat(key: str, messages: list, inject: str = "tldr",
+            model: str = "", num_ctx: int = 16000) -> dict:
+    """带上下文聊一句。注入量如实回报（界面会显示）。"""
+    import kbchat
+
+    conn = S.connect(S.INDEX_DB)
+    try:
+        return kbchat.chat(key, messages, inject=inject, model=model,
+                           num_ctx=num_ctx or 16000)
+    finally:
+        conn.close()
+
+
+def do_para_plan(key: str, scope: str = "suspect",
+                 include_fixed: bool = False) -> dict:
+    """逐段检查的计划：总共多少段、已查多少、下一段是哪一段（续跑用）。"""
+    import kbchat
+
+    conn = S.connect(S.INDEX_DB)
+    try:
+        return kbchat.plan(conn, key, scope=scope, include_fixed=include_fixed)
+    finally:
+        conn.close()
+
+
+def do_para_check(key: str, page: int, logical_index: int, text: str,
+                  prev_tail: str = "", next_head: str = "",
+                  model: str = "", save: bool = True) -> dict:
+    """检查一段；结论 + 客观信号一起返回，并把进度落库（好续跑）。
+
+    `save=False` 用于"只想看一眼、不想留痕"的调用（面板复核用得到）。
+    """
+    import kbchat
+
+    conn = S.connect(S.INDEX_DB)
+    try:
+        out = kbchat.check_paragraph(conn, key, int(page or 0),
+                                     int(logical_index or 0), text,
+                                     prev_tail=prev_tail, next_head=next_head,
+                                     model=model)
+        if save and out.get("hash"):
+            status = ("ok" if out.get("verdict") == "ok" else
+                      "suspect" if out.get("ok") else "skipped")
+            try:
+                conn.execute(
+                    "INSERT INTO para_check(item_key, p_hash, page, para_index,"
+                    " logical_index, status, signals, note, patch_ids, done_units,"
+                    " checked_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)"
+                    " ON CONFLICT(item_key, p_hash) DO UPDATE SET"
+                    " status=excluded.status, signals=excluded.signals,"
+                    " note=excluded.note, checked_at=excluded.checked_at",
+                    (key, out["hash"], int(page or 0), int(logical_index or 0),
+                     int(logical_index or 0), status,
+                     json.dumps(out.get("signals") or {}, ensure_ascii=False),
+                     str(out.get("reason") or "")[:400], "[]", 1,
+                     datetime.now().isoformat(timespec="seconds")))
+                conn.commit()
+            except Exception as exc:      # noqa: BLE001
+                # 进度写不进去不该让整次检查失败（结论还是要给用户看）
+                out["progress_error"] = f"{type(exc).__name__}: {exc}"
+        return out
+    finally:
+        conn.close()
+
+
+def do_para_locate(key: str, text: str) -> dict:
+    """把用户选中的文字定位到段落（多候选就都列出来，不替他猜）。"""
+    import kbchat
+
+    conn = S.connect(S.INDEX_DB)
+    try:
+        return kbchat.locate(conn, key, text)
+    finally:
+        conn.close()
+
+
+def do_kb_propose(key: str, transcript_tail: str, instruction: str = "",
+                  model: str = "") -> dict:
+    """把讨论整理成"可以落库的改动建议"（**不写库**）。"""
+    import kbchat
+
+    return kbchat.propose(key, transcript_tail, instruction=instruction,
+                          model=model)
+
+
+def do_kb_apply(key: str, plan_data: dict, confirm: str = "") -> dict:
+    """写库。**必须带 confirm="yes"** —— 界面上的两次确认在这里收口。"""
+    import kbchat
+
+    if str(confirm).strip().lower() not in ("yes", "true", "1", "确认"):
+        return {"ok": False,
+                "error": "没有确认就不写库（confirm 必须是 yes）",
+                "hint": "界面上的「确认」+ 二次确认都点过之后才带这个字段"}
+    from searcher import Searcher
+
+    s = Searcher()
+    try:
+        return kbchat.apply_plan(s, key, plan_data or {})
+    finally:
+        s.close()
+
+
+def do_exp_draft(text: str, ref_id: int = 0, model: str = "") -> dict:
+    """把用户的大白话整理成一条经验草稿（**不写库**）。"""
+    import kbchat
+
+    conn = S.connect(S.INDEX_DB)
+    try:
+        return kbchat.draft_experience(text, ref_id=ref_id, model=model,
+                                       conn=conn)
+    finally:
+        conn.close()
+
 def do_set_weight(key: str, pinned: bool | None = None,
                   manual: float | None = None,
                   note: str | None = None) -> dict:
@@ -269,36 +397,23 @@ def do_set_weight(key: str, pinned: bool | None = None,
       （attempts / effective / ineffective / partial）——
       那些是 `kb_experience_add` 按经验累加出来的，人工改会破坏"经验驱动"
       这个前提（本机在 kb_admin.py 的清理逻辑里也是这个判据）。
+
+    ⚠ 实现只有一份：`offline/experience.py:set_weight`。原来这里自己写了一遍
+      upsert，`server.py` 的 kb_weight_set 又写了一遍 —— 两处对"空 note 算不算
+      清空"的理解就不一样，迟早出事。
     """
     from searcher import Searcher
+
+    import experience as EXP
 
     s = Searcher()
     try:
         if not s.get_item(key):
             return {"ok": False, "error": f"知识库里没有 key={key} 的条目"}
-        row = s.read_one("SELECT * FROM item_weight WHERE item_key = ?", (key,))
-        cur = dict(row) if row else {}
-
-        new_pinned = int(bool(cur.get("pinned"))) if pinned is None \
-            else int(bool(pinned))
-        new_manual = float(cur.get("manual") or 0.0) if manual is None \
-            else float(manual)
-        new_note = (cur.get("note") or "") if note is None else str(note)[:500]
-
-        s.write(
-            "INSERT INTO item_weight(item_key, pinned, manual, note, updated_at,"
-            " attempts, effective, ineffective, partial)"
-            " VALUES(?,?,?,?,datetime('now'),?,?,?,?)"
-            " ON CONFLICT(item_key) DO UPDATE SET pinned=excluded.pinned,"
-            " manual=excluded.manual, note=excluded.note,"
-            " updated_at=excluded.updated_at",
-            (key, new_pinned, new_manual, new_note,
-             cur.get("attempts") or 0, cur.get("effective") or 0,
-             cur.get("ineffective") or 0, cur.get("partial") or 0))
-        s.reload_weights()
-        weight = round(s.weight_of(key), 3)
-        return {"ok": True, "key": key, "pinned": bool(new_pinned),
-                "manual": new_manual, "note": new_note, "weight": weight}
+        info = EXP.set_weight(s, key, pinned=pinned, manual=manual, note=note)
+        return {"ok": True, "key": key, "pinned": info["pinned"],
+                "manual": info["manual"], "note": info["note"],
+                "weight": round(s.weight_of(key), 3)}
     finally:
         s.close()
 
@@ -2446,6 +2561,70 @@ class Handler(BaseHTTPRequestHandler):
             job = start_job("生成分类建议", do_collection_suggest, use_model)
             return self._send(202, {"job": job, "state": "running"})
 
+        # ---- 窗格聊天助手（Zotero 右侧内容窗格用；逻辑在 offline/kbchat.py）
+        if path == "/chat":
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key"})
+            msgs = body.get("messages")
+            if not isinstance(msgs, list) or not msgs:
+                return self._send(400, {"error": "需要 messages 数组"})
+            return self._send(200, do_chat(
+                key, msgs, inject=str(body.get("inject") or "tldr"),
+                model=str(body.get("model") or ""),
+                num_ctx=int(body.get("num_ctx") or 16000)))
+
+        if path == "/para-plan":
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key"})
+            return self._send(200, do_para_plan(
+                key, scope=str(body.get("scope") or "suspect"),
+                include_fixed=bool(body.get("include_fixed"))))
+
+        if path == "/para-check":
+            key = str(body.get("key") or "").strip()
+            if not key or not str(body.get("text") or "").strip():
+                return self._send(400, {"error": "需要 key 与 text"})
+            return self._send(200, do_para_check(
+                key, int(body.get("page") or 0),
+                int(body.get("logical_index") or 0), str(body.get("text") or ""),
+                prev_tail=str(body.get("prev_tail") or ""),
+                next_head=str(body.get("next_head") or ""),
+                model=str(body.get("model") or ""),
+                save=body.get("save") is not False))
+
+        if path == "/para-locate":
+            key = str(body.get("key") or "").strip()
+            if not key or not str(body.get("text") or "").strip():
+                return self._send(400, {"error": "需要 key 与 text（选中的原文）"})
+            return self._send(200, do_para_locate(key, str(body.get("text") or "")))
+
+        if path == "/kb-propose":
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key"})
+            return self._send(200, do_kb_propose(
+                key, str(body.get("transcript_tail") or ""),
+                instruction=str(body.get("instruction") or ""),
+                model=str(body.get("model") or "")))
+
+        if path == "/kb-apply":
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key"})
+            res = do_kb_apply(key, body.get("plan") or {},
+                              confirm=str(body.get("confirm") or ""))
+            return self._send(200 if res.get("ok") else 400, res)
+
+        if path == "/exp-draft":
+            text = str(body.get("text") or "").strip()
+            if not text:
+                return self._send(400, {"error": "需要 text（用户的大白话）"})
+            return self._send(200, do_exp_draft(
+                text, ref_id=int(body.get("ref_id") or 0),
+                model=str(body.get("model") or "")))
+
         if path == "/weight":
             # 写权重（标重点 / 取消重点 / 人工分 / 备注）。
             # 插件右键菜单用它 —— 用户在 Zotero 里看到某篇想标重点时，
@@ -2968,6 +3147,50 @@ def self_test(port: int) -> int:
     print(f"  {'PASS' if not wrote else 'FAIL'}  /typefix 是只读的"
           f"（响应里没有写入结果字段）")
     passed, failed = (passed + 1, failed) if not wrote else (passed, failed + 1)
+
+    print("\n[13] 窗格聊天助手（本轮新增）")
+    # ⚠ 这里**不调模型**：自检要快且可复现。模型相关的分支只验"参数不对就 400"
+    #   与"没有 confirm 绝不写库"这两条 —— 后者是安全底线，必须钉住。
+    call("POST", "/chat", {"key": "22X9PMR6"}, token=True, expect=400)
+    call("POST", "/chat", {"key": "22X9PMR6", "messages": []},
+         token=True, expect=400)
+    call("POST", "/para-check", {"key": "22X9PMR6"}, token=True, expect=400)
+    call("POST", "/para-locate", {"key": "22X9PMR6"}, token=True, expect=400)
+    call("POST", "/kb-apply", {"key": "22X9PMR6", "plan": {}},
+         token=True, expect=400)
+    call("POST", "/exp-draft", {}, token=True, expect=400)
+    # 这两个不调模型：计划（读段落+进度）与定位（相似度匹配）
+    pl = call("POST", "/para-plan", {"key": "22X9PMR6"}, token=True, expect=200)
+    if isinstance(pl, dict) and "total" in pl and "items" in pl:
+        print(f"  PASS  /para-plan 结构（待查 {pl.get('total')} 段，"
+              f"已查 {pl.get('checked')}，下一段 "
+              f"{(pl.get('next') or {}).get('page')}）")
+        passed += 1
+    else:
+        print(f"  FAIL  /para-plan 结构：{list(pl or {})[:6]}")
+        failed += 1
+    # 拿一段真正文去定位（唯一命中才给 best）
+    sample = ""
+    try:
+        import paras as _P
+        conn = S.connect(S.INDEX_DB)
+        for p in _P.load_paras(conn, "22X9PMR6"):
+            if p.kind == "prose" and p.n_chars > 60:
+                sample = p.text[:60]
+                break
+        conn.close()
+    except Exception:      # noqa: BLE001
+        sample = ""
+    if sample:
+        loc = call("POST", "/para-locate", {"key": "22X9PMR6", "text": sample},
+                   token=True, expect=200)
+        ok = isinstance(loc, dict) and loc.get("matches") is not None
+        print(f"  {'PASS' if ok else 'FAIL'}  /para-locate 能定位"
+              f"（{len((loc or {}).get('matches') or [])} 个候选，"
+              f"best={'有' if (loc or {}).get('best') else '无'}）")
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+    else:
+        print("  SKIP  /para-locate（库里没有可用的正文段）")
 
     print("\n[9] 未知路径")
     call("GET", "/nope", token=True, expect=404)

@@ -301,8 +301,11 @@ def delete_experience(s, exp_id: int, *, rollback: bool = True) -> bool:
     return True
 
 
-def set_weight(s, key: str, pinned=None, manual=None, note: str = "") -> dict:
-    """标重点 / 加减分 / 写备注（人工分，与经验计数互不干扰）。"""
+def set_weight(s, key: str, pinned=None, manual=None, note=None) -> dict:
+    """标重点 / 加减分 / 写备注（人工分，与经验计数互不干扰）。
+
+    `None` = 这一项不动；`note=""` = **清空**备注（面板要能清）。
+    """
     row = s.read_one("SELECT * FROM item_weight WHERE item_key=?", (key,))
     pinned_val = row["pinned"] if row else 0
     manual_val = row["manual"] if row else 0.0
@@ -311,8 +314,8 @@ def set_weight(s, key: str, pinned=None, manual=None, note: str = "") -> dict:
         pinned_val = 1 if pinned else 0
     if manual is not None:
         manual_val = float(manual)
-    if note:
-        note_val = note
+    if note is not None:
+        note_val = str(note)[:500]
     s.write(
         """
         INSERT INTO item_weight(item_key, pinned, manual, note, updated_at, attempts,

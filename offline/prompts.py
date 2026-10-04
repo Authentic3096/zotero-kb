@@ -157,6 +157,132 @@ pages（起止页码）{creator_hint}。
   "evidence": {"date": "", "DOI": "", "volume": "", "issue": "", "pages": "",
                 "creators": ""}}""",
     },
+    "chat": {
+        "title": "窗格聊天（按需注入上下文后的问答）",
+        "where": "Zotero 右侧内容窗格「本地模型」分区的普通对话",
+        "placeholders": ["context", "history", "question"],
+        "keys": [],
+        "system": (
+            "你是这篇文献的阅读助手，只在用户给的上下文范围内回答。"
+            "上下文没写的内容不要编；不确定就直说「这篇里没有」。"
+            "回答用中文、简洁、直接给结论，不要客套。"
+            "如果用户的问题提示某个结论应当记进经验库或修正正文，"
+            "**不要自行写入** —— 只用一句话说明你建议记什么、改哪里，"
+            "由界面带着用户确认。"
+        ),
+        "user": """【这篇文献的上下文】
+{context}
+
+【已经聊过的】（可能为空）
+{history}
+
+【用户现在问】
+{question}""",
+    },
+    "para": {
+        "title": "逐段检查（提取损坏 / 边界 / 顺序 / 碎片）",
+        "where": "窗格里「全文级段落检测」逐段调用；面板「解析健康」复核也用它",
+        "placeholders": ["page", "signals", "prev_tail", "next_head", "text"],
+        "keys": ["verdict", "kind", "reason"],
+        # ⚠ 这一条的每一条判据都必须**可核对**：界面会把客观信号与结论并排显示。
+        #   历史上吃过一次亏：让模型对每个切片"读着像不像句子"打分，
+        #   结果判错 60%，同一模型对同一文本给出相反结论（见 check_chunks.py 开头）。
+        "system": (
+            "你在核对一篇论文的**正文提取质量**。一次只看一段，逐条判断下面四件事：\n"
+            "1. 提取损坏：有没有乱码、符号汤（如矩阵碎片 `⎡BX BY BZ⎦`）、英文断词、"
+            "页眉页脚混入正文？\n"
+            "2. 段落边界：这一段和上一段/下一段是不是**本来同一段**被拆开了"
+            "（典型是跨页，或上一段末尾是小写/逗号）？或者这一段里是不是**粘了"
+            "两段**（中间有明显的另一段开头）？\n"
+            "3. 阅读顺序：双栏排版有没有被读成交错（句子在栏宽处硬切、"
+            "上下句接不上、页眉页码夹在段中间）？\n"
+            "4. 碎片混入：公式、表格碎片、参考文献碎片是不是被当成正文了？\n\n"
+            "只给**最小修正**：能替换几个字就别重写整段。"
+            "拿不准时 verdict 给 ok 或 unsure —— 宁可放过，也不要把正常的"
+            "学术文本（公式、参考文献、表格、封面）判成坏的。\n"
+            "输出 JSON。"
+        ),
+        "user": """页码：p.{page}
+
+【服务端算出来的客观信号】（不依赖模型，可与你的结论对照）
+{signals}
+
+【上一段末尾】
+{prev_tail}
+
+【本段】
+{text}
+
+【下一段开头】
+{next_head}
+
+输出 JSON：
+{{"verdict": "ok|suspect|damaged|unsure",
+  "kind": "text|boundary|order|fragment|none",
+  "join_with": "prev|next|",
+  "before": "要被替换掉的那一小段原文（没有就空串）",
+  "after": "替换成什么（没有就空串）",
+  "reason": "一句话理由（要能对应上面某条信号）"}}""",
+    },
+    "propose": {
+        "title": "把对话里「该记的东西」整理成写入建议",
+        "where": "窗格的写入模式（用户确认后才落库）",
+        "placeholders": ["instruction", "key", "transcript"],
+        "keys": ["experiences", "weights", "patches"],
+        # ⚠ 这是"经验库会被污染"的那条路径，口径必须收得很紧：
+        #   经验库参与**检索加权**，工具链/工程类的记录进错地方会让排序变脏。
+        "system": (
+            "你在把一段关于某篇文献的讨论，整理成**可以落库的改动建议**。"
+            "三条硬口径：\n"
+            "1. 经验只记**与文献内容或研究方法有关**的尝试与结论"
+            "（用了什么方法、结果如何、为什么）。"
+            "工程/工具链/配置/安装/打包这类「关于知识库自己怎么搭」的内容"
+            "**一律不算经验**，不要放进 experiences。\n"
+            "2. 只记讨论里**明确写出**的结论；没写的留空，绝不推测。"
+            "outcome 只能 effective / ineffective / partial / unknown，"
+            "没明确结论就用 unknown。\n"
+            "3. 正文修正只给**最小改动**（before 必须是原文里能逐一找到的片段）。"
+            "找不到确切原文就不要给 patches。\n"
+            "输出 JSON，没有内容的数组给空数组。"
+        ),
+        "user": """文献 key：{key}
+用户的意图：{instruction}
+
+【讨论片段】
+{transcript}
+
+输出 JSON：
+{{"experiences": [{{"asked": "", "outcome": "unknown", "method": "",
+                 "reason": "", "context": "", "evidence": "", "tags": [],
+                 "item_keys": []}}],
+  "weights": [{{"key": "", "pinned": null, "manual": null, "note": ""}}],
+  "patches": [{{"page": 0, "kind": "text", "before": "", "after": "",
+               "note": ""}}],
+  "joins": [{{"page": 0, "para_index": 0, "with_prev": 1, "reason": ""}}]}}""",
+    },
+    "draft": {
+        "title": "把用户的大白话整理成一条经验",
+        "where": "面板「经验库 → 修改/增添经验」（有本地模型时）",
+        "placeholders": ["text"],
+        "keys": ["asked", "outcome", "method"],
+        "system": (
+            "用户在口述一条**文献研究经验**，你把它整理成结构化的一条。"
+            "只整理，不添加用户没说的内容；字段说不清就留空字符串。"
+            "outcome 只能 effective / ineffective / partial / unknown，"
+            "用户没说效果就用 unknown。"
+            "item_keys 只填用户明确提到的文献（8 位 Zotero key），"
+            "拿不准就留空数组 —— 关联错的文献会让权重加到别的论文上。"
+            "另外给出你判断的「这条像不像已有经验」是给用户看的建议，"
+            "不要替用户决定是新增还是修改。输出 JSON。"
+        ),
+        "user": """用户口述：
+{text}
+
+输出 JSON：
+{{"asked": "", "outcome": "unknown", "method": "", "context": "",
+  "reason": "", "evidence": "", "tags": [], "item_keys": [],
+  "similar_hint": "一句话：这条大概是在讲什么，便于用户确认"}}""",
+    },
     "chunks": {
         "title": "判「整篇提取是否失败」（解析健康灰区）",
         "where": "offline/check_chunks.py 的灰区判定（一次只看一篇）",

@@ -675,7 +675,8 @@ def kb_weight_set(key: str, pinned: bool | None = None, manual: float | None = N
     s = kb()
     if not s.get_item(key):
         return jdump({"error": f"知识库里没有 key={key} 的条目。"})
-    info = EXP.set_weight(s, key, pinned=pinned, manual=manual, note=note)
+    info = EXP.set_weight(s, key, pinned=pinned, manual=manual,
+                          note=(note or None))
     return jdump({"ok": True, "key": key, "pinned": info["pinned"],
                   "manual": info["manual"], "note": info["note"],
                   "weight": round(s.weight_of(key), 3)})

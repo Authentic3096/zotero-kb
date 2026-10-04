@@ -254,13 +254,17 @@ def pick_model(preferred: str = "", host: str = "") -> str:
 
 
 def _generate_ollama(prompt: str, system: str, model: str, json_mode: bool,
-                     timeout: float, temperature: float, host: str) -> dict:
+                     timeout: float, temperature: float, host: str,
+                     num_ctx: int = 0) -> dict:
     """Ollama 原生协议（/api/generate）。"""
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": temperature, "num_ctx": 8192},
+        # num_ctx 默认 8192：这些任务每次只吃几百到几千字。
+        # 窗格聊天要注入整篇正文时才传更大的值（显存/内存换上下文）。
+        "options": {"temperature": temperature,
+                    "num_ctx": int(num_ctx) if num_ctx else 8192},
     }
     if system:
         payload["system"] = system
@@ -420,7 +424,8 @@ def _generate_openai(prompt: str, system: str, model: str, json_mode: bool,
 def generate(prompt: str, system: str = "", model: str = "",
              json_mode: bool = True, timeout: float = 180.0,
              temperature: float = 0.1, provider: str = "",
-             base_url: str = "", api_key: str = "") -> dict:
+             base_url: str = "", api_key: str = "",
+             num_ctx: int = 0) -> dict:
     """调模型生成。返回 {ok, text|error, model, backend}。
 
     **后端与模型全都由配置决定**（kb/llm-config.json 或环境变量），
@@ -434,6 +439,9 @@ def generate(prompt: str, system: str = "", model: str = "",
 
     temperature 压到 0.1：这些任务要的是稳定复现，不是文采。
     json_mode 让模型输出结构化 JSON（两家协议都支持约束解码）。
+
+    num_ctx 只对 Ollama 有意义（默认 8192）：窗格里的聊天要注入整篇上下文，
+    8k 装不下；OpenAI 兼容后端由服务端自己决定窗口，这里忽略。
     """
     cfg = load_llm_config()
     prov = (provider or cfg.get("provider") or "ollama").strip().lower()
@@ -459,7 +467,7 @@ def generate(prompt: str, system: str = "", model: str = "",
                 "error": "Ollama 不可用或没有模型：先启动 Ollama 并 "
                          "`ollama pull qwen3:4b-instruct`"}
     return _generate_ollama(prompt, system, mdl, json_mode, timeout,
-                            temperature, host)
+                            temperature, host, num_ctx=num_ctx)
 
 
 def parse_json(text: str) -> tuple[bool, object]:

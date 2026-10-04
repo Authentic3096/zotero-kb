@@ -98,6 +98,9 @@ TABLE_ROW = re.compile(r"^\s*\|")
 NO_TEXT = re.compile(r"^\*\(本页无可提取文字\)\*$")
 # 单独成行的公式编号（`(1)` / `（12）`）
 FORMULA_ONLY = re.compile(r"^[（(]\s*[0-9]{1,3}\s*[)）]$")
+# 我们自己插入的标记行（`<!-- kb-fix:8f3a2b -->` / `<!-- kb-join:… -->`）。
+# ⚠ 必须认出来：否则它会被当正文并进上一段，AI 读全时也会把工程注释当论文内容。
+MARK_LINE = re.compile(r"^\s*<!--\s*kb-")
 # 参考文献条目：`[157] D. Mohanadas, …`
 REFS_LINE = re.compile(r"^\s*\[\s*[0-9]{1,3}\s*\]")
 # 目录行：`1.1 研究背景 ………… 12`
@@ -210,6 +213,8 @@ def _classify(line: str, *, first_of_page: bool, in_refs: bool = False,
         return "blank"
     if NO_TEXT.match(s):
         return "block"
+    if MARK_LINE.match(s):
+        return "mark"
     if FIGBLOCK.match(s):
         return "figure"
     # 单独成行的公式编号/公式碎片（`(1)`、`(12)`）——不当正文。
@@ -247,7 +252,7 @@ def _classify(line: str, *, first_of_page: bool, in_refs: bool = False,
 
 # 独立成块的 kind（不参与"行→段"的粘连判断）
 _BLOCKY = ("heading", "caption", "figure", "table", "block", "header",
-           "refs", "toc", "formula")
+           "refs", "toc", "formula", "mark")
 
 
 def split_page(lines: list[str], page: int, start_index: int = 0,
@@ -300,6 +305,7 @@ def split_page(lines: list[str], page: int, start_index: int = 0,
     cur_ev = ""                  # **这一段为什么从这里开始**（可核对的证据）
     pending_ev = ""              # 刚断过，下一段开始时要记的理由
     in_refs = False
+    in_figure = False            # 是否在 `**本页图注**` / `**本页表格 N**` 块里
 
     def flush() -> None:
         """收束当前段落。evidence 记的是"它为什么从这里开始"。
@@ -326,6 +332,15 @@ def split_page(lines: list[str], page: int, start_index: int = 0,
                          page=page, line_no=i)
         if kind == "heading" and REFS_HEADING.match(line):
             in_refs = True
+        # ⚠ 图注/表格块要**延续**：`**本页图注**` 后面那些 `- 图：…` 行本身
+        #   不匹配图注正则（以 `- ` 开头），第一版就漏成了"正文" ——
+        #   于是预筛里 35% 的可疑段有一大半是图注（实测），完全是自找的噪声。
+        if in_figure and kind in ("prose", "caption"):
+            kind = "figure"
+        if kind == "figure":
+            in_figure = True
+        elif kind in ("heading", "blank"):
+            in_figure = False
 
         if kind == "blank":
             flush()
