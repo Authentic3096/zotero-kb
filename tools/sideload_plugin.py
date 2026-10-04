@@ -1,4 +1,4 @@
-﻿"""侧载插件到 Zotero（绕过 UI 安装的兼容性检查）。
+"""侧载插件到 Zotero（绕过 UI 安装的兼容性检查）。
 
     python tools/sideload_plugin.py install    # 装（会先备份关键文件）
     python tools/sideload_plugin.py remove     # 卸（清掉侧载痕迹）

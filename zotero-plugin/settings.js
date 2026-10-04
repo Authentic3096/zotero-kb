@@ -1,4 +1,4 @@
-﻿// 设置面板的交互逻辑。由 bootstrap.js 通过 PreferencePanes 的 scripts 选项加载。
+// 设置面板的交互逻辑。由 bootstrap.js 通过 PreferencePanes 的 scripts 选项加载。
 // 用 Zotero.Prefs 读写（与 bootstrap.js 里的键保持一致）。
 
 const KB_PREFS = {

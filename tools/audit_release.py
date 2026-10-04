@@ -354,16 +354,64 @@ def audit_install():
         check(f"打包器排除 {script}", script in packer)
 
 
+# ---------------------------------------------------------------- D. 编码卫生
+
+# 允许保留 BOM 的例外（白名单，按相对路径）。
+# 为什么会有例外：Windows PowerShell 5.1 读 **无 BOM** 的 .ps1 时会按 ANSI 解码，
+# 里面 69 处中文字符串会全部变乱码 —— 所以那个文件**必须**带 BOM，不是脏。
+BOM_ALLOWED = {"scripts/install-env.ps1"}
+
+
+def audit_encoding():
+    """查 UTF-8 BOM。
+
+    为什么单列一类：BOM 是**隐形**的，肉眼 review 看不出来，而后果可以很重 ——
+    2026-10-04 本机 `~/.dsh/storages/workspace.json` 被 PowerShell 写进 BOM，
+    DSH 的 JSON 存储后端直接抛错，`workspace` 插件启动失败、整个工作区列表消失。
+    同类事故还发生过一次（profile package.json 带 BOM → desktop 变「不可选」）。
+
+    本机 shell 名义上是 pwsh、实际是 **Windows PowerShell 5.1**，
+    它的 `Set-Content / Out-File -Encoding UTF8` **一定**写 BOM ——
+    所以这条只能靠自动检查，不能靠人记得。
+    """
+    print("\n[D] 编码卫生（UTF-8 BOM）")
+    bad, scanned = [], 0
+    for p in iter_files():
+        rel = os.path.relpath(p, ROOT).replace(os.sep, "/")
+        try:
+            with open(p, "rb") as fh:
+                head = fh.read(3)
+        except OSError:
+            continue
+        scanned += 1
+        if head == b"\xef\xbb\xbf" and rel not in BOM_ALLOWED:
+            bad.append(rel)
+    check(f"扫描 {scanned} 个文本文件，没有意外的 UTF-8 BOM",
+          not bad, "带 BOM：" + ", ".join(bad))
+    if bad:
+        print("        ⚠ 去掉 BOM 用 Python 写文件，别用 PowerShell：")
+        print("          python -c \"p=r'<文件>'; s=open(p,encoding='utf-8-sig')"
+              ".read(); open(p,'w',encoding='utf-8',newline='\\n').write(s)\"")
+    for rel in sorted(BOM_ALLOWED):
+        p = os.path.join(ROOT, rel.replace("/", os.sep))
+        if os.path.exists(p):
+            with open(p, "rb") as fh:
+                ok = fh.read(3) == b"\xef\xbb\xbf"
+            # 例外文件**反过来**要求有 BOM：没有的话中文会乱码
+            check(f"{rel} 保留 BOM（PS 5.1 需要它才能读中文）", ok)
+
+
 # ---------------------------------------------------------------- 主流程
 
 def main() -> int:
     print("=" * 72)
-    print("发布前综合审计：隐私 / 路径 / 安装")
+    print("发布前综合审计：隐私 / 路径 / 安装 / 编码")
     print("=" * 72)
     print(f"  项目根：{ROOT}")
     audit_privacy()
     audit_paths()
     audit_install()
+    audit_encoding()
     print()
     print("=" * 72)
     if PROBLEMS:

@@ -1,4 +1,4 @@
-﻿"""生成 manifest 变体 xpi，用于二分定位"解析失败(error=-3)"的真因。
+"""生成 manifest 变体 xpi，用于二分定位"解析失败(error=-3)"的真因。
 
     python tools/make_variants.py
 
