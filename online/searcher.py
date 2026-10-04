@@ -236,6 +236,42 @@ class Searcher:
         self.conn.commit()
         return int(cur.lastrowid or 0)
 
+    @serialized
+    def write_many(self, statements: list) -> tuple:
+        """在**同一个事务**里跑多条写语句：要么全成、要么全不成。
+
+        为什么需要它：有些改动天然是好几步，例如"改一条经验" =
+        回滚旧权重 → 改行 → 应用新权重。分三次 `write` 的话中间任何一步失败
+        （本机实测：真库还缺 `history` 列）都会留下"权重已回滚、经验行没改"
+        的不一致状态，而**没有任何地方会报错**。这类状态只能靠原子性避免。
+
+        返回 `(rowcount, rows)`；`rows` 是最后一条**带结果集**的语句
+        （`INSERT … RETURNING`）的行 —— 需要新插入的 id 时用它，
+        不要用 `last_insert_rowid()`：同一批里插别的表会把它顶掉（踩过）。
+        """
+        rowcount = 0
+        rows: list = []
+        try:
+            for sql, params in statements:
+                cur = self.conn.execute(sql, params)
+                rowcount = cur.rowcount
+                if cur.description:
+                    rows = cur.fetchall()
+            self.conn.commit()
+        except Exception:
+            # 不 rollback 的话，前几条语句还留在**未提交的事务**里，
+            # 下一次任何 commit（可能是完全不相干的写入）会把它们一起提交 ——
+            # 那就等于"原子性"是假的。这里必须显式回滚再抛出。
+            self.conn.rollback()
+            raise
+        return rowcount, rows
+
+    @serialized
+    def last_insert_id(self) -> int:
+        """本次连接上最后一次 INSERT 的自增 id（配合 `write_many` 用）。"""
+        row = self.conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+        return int(row["id"] if row else 0)
+
     # ------------------------------------------------------------ 权重缓存
 
     @serialized

@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.join(ROOT, "offline"))
 sys.path.insert(0, HERE)
 
 import schemas as S  # noqa: E402
+import experience as EXP  # noqa: E402 —— 经验层的唯一写入实现（含权重算术）
 import extrafill as XF  # noqa: E402 —— 结构化字段的展示口径在这里（describe）
 import kbviews as KBV  # noqa: E402 —— 分级视图（tldr 级的渲染实现在那儿）
 
@@ -555,21 +556,19 @@ def kb_experience_add(
     if not (asked or "").strip():
         return jdump({"error": "asked 不能为空 —— 没有问题的经验以后检索不到。"})
 
-    keys = [k for k in re_split(item_keys) if k]
-    tag_list = re_split(tags)
     s = kb()
-    exp_id = s.write_returning_id(
-        """
-        INSERT INTO experience(created_at, asked, context, item_keys, method,
-                               outcome, reason, evidence, tags, source, session)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)
-        """,
-        (now_iso(), asked.strip(), context, json.dumps(keys, ensure_ascii=False),
-         method, outcome, reason, evidence, json.dumps(tag_list, ensure_ascii=False),
-         "dsh", os.environ.get("DSH_SESSION_ID", "")),
-    )
-    _bump_weights(s, keys, outcome)
-    s.reload_weights()
+    keys = EXP.split_list(item_keys)
+    # ⚠ 写入与权重计算只有一份实现：offline/experience.py。
+    #   原来这里内联了 INSERT + _bump_weights，而 kb_admin.py 里又抄了一份
+    #   回滚 SQL —— 三处漂移过一次（"经验说无效、权重还挂着 +1"）。
+    try:
+        exp_id = EXP.add_experience(
+            s, asked=asked, outcome=outcome, method=method, item_keys=keys,
+            context=context, reason=reason, evidence=evidence, tags=tags,
+            source="dsh", session=os.environ.get("DSH_SESSION_ID", ""),
+        )
+    except ValueError as exc:
+        return jdump({"error": str(exc)})
 
     return jdump({
         "ok": True,
@@ -676,32 +675,9 @@ def kb_weight_set(key: str, pinned: bool | None = None, manual: float | None = N
     s = kb()
     if not s.get_item(key):
         return jdump({"error": f"知识库里没有 key={key} 的条目。"})
-    row = s.read_one("SELECT * FROM item_weight WHERE item_key=?", (key,))
-    pinned_val = row["pinned"] if row else 0
-    manual_val = row["manual"] if row else 0.0
-    note_val = (row["note"] if row else "") or ""
-    if pinned is not None:
-        pinned_val = 1 if pinned else 0
-    if manual is not None:
-        manual_val = float(manual)
-    if note:
-        note_val = note
-    s.write(
-        """
-        INSERT INTO item_weight(item_key, pinned, manual, note, updated_at, attempts,
-                                effective, ineffective, partial)
-        VALUES(?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(item_key) DO UPDATE SET
-            pinned=excluded.pinned, manual=excluded.manual, note=excluded.note,
-            updated_at=excluded.updated_at
-        """,
-        (key, pinned_val, manual_val, note_val, now_iso(),
-         row["attempts"] if row else 0, row["effective"] if row else 0,
-         row["ineffective"] if row else 0, row["partial"] if row else 0),
-    )
-    s.reload_weights()
-    return jdump({"ok": True, "key": key, "pinned": bool(pinned_val),
-                  "manual": manual_val, "note": note_val,
+    info = EXP.set_weight(s, key, pinned=pinned, manual=manual, note=note)
+    return jdump({"ok": True, "key": key, "pinned": info["pinned"],
+                  "manual": info["manual"], "note": info["note"],
                   "weight": round(s.weight_of(key), 3)})
 
 
@@ -978,41 +954,22 @@ def kb_stats() -> str:
 
 
 def _bump_weights(s: Searcher, keys: list[str], outcome: str) -> None:
-    """把一次尝试计入文献的累积战绩。"""
-    for key in keys:
-        s.write(
-            """
-            INSERT INTO item_weight(item_key, attempts, effective, ineffective, partial,
-                                    pinned, manual, updated_at)
-            VALUES(?, 1, ?, ?, ?, 0, 0, ?)
-            ON CONFLICT(item_key) DO UPDATE SET
-                attempts = attempts + 1,
-                effective = effective + ?,
-                ineffective = ineffective + ?,
-                partial = partial + ?,
-                updated_at = excluded.updated_at
-            """,
-            (key,
-             1 if outcome == "effective" else 0,
-             1 if outcome == "ineffective" else 0,
-             1 if outcome == "partial" else 0,
-             now_iso(),
-             1 if outcome == "effective" else 0,
-             1 if outcome == "ineffective" else 0,
-             1 if outcome == "partial" else 0),
-        )
+    """把一次尝试计入文献的累积战绩。
+
+    ⚠ 实现已抽到 `offline/experience.py:apply_weight_delta` —— "加分"与
+      "回滚"必须是同一份算术，否则会出现"经验删了、权重还挂着"的脏状态。
+      保留这个薄壳是为了不惊动已有调用点与测试。
+    """
+    EXP.apply_weight_delta(s, keys, outcome, +1)
 
 
 def re_split(text: str) -> list[str]:
-    """把逗号/空格/分号分隔的字符串拆成列表。"""
-    if not text:
-        return []
-    out: list[str] = []
-    for piece in text.replace(",", " ").replace("，", " ").replace(";", " ").replace("；", " ").split():
-        piece = piece.strip()
-        if piece and piece not in out:
-            out.append(piece)
-    return out
+    """把逗号/空格/分号分隔的字符串拆成列表。
+
+    实现只有一份：`offline/experience.py:split_list`（插件端点、面板、CLI
+    都要按同一套规则拆 key/tags，规则漂了就会出现"同一个标签被当成两个"）。
+    """
+    return EXP.split_list(text)
 
 
 # ---------------------------------------------------------------- 资源

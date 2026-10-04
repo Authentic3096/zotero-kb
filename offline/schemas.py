@@ -935,6 +935,12 @@ def connect(path: str = INDEX_DB) -> sqlite3.Connection:
 
     WAL 模式供在线侧长期持有；连接做成 `LockedConnection`，
     因为 MCP 工具会在不同线程里被调用（见该类的说明）。
+
+    ⚠ 这里**顺手补一次迁移**（幂等、只读 PRAGMA + 极少数 ALTER）。
+      原来迁移只在 `init_db`（构建时）跑，于是"加了新列 → 还没重建库"的
+      窗口里，任何写入（CLI 改经验、MCP 记经验）都会撞上
+      `no such column: history` —— 而且是在**改了权重之后**才炸，
+      留下"权重回滚了、行没改"的不一致状态（本机实测踩到）。
     """
     conn = sqlite3.connect(path, timeout=30.0, factory=LockedConnection,
                            check_same_thread=False)
@@ -942,6 +948,12 @@ def connect(path: str = INDEX_DB) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.row_factory = sqlite3.Row
+    try:
+        _migrate(conn)
+    except sqlite3.Error:
+        # 空库/半成品库（例如"索引文件无法使用"那条路径）不该在连接阶段就炸，
+        # 真正的问题是缺表，交给调用方按已有的报错口径处理。
+        pass
     return conn
 
 
@@ -989,7 +1001,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
             return set()
 
     cols = columns("items")
-    if "collections_sig" not in cols:
+    if cols and "collections_sig" not in cols:
         conn.execute("ALTER TABLE items ADD COLUMN collections_sig TEXT")
 
     # 经验层：用户显式编辑时要能追溯（旧值留 history）。

@@ -1,15 +1,24 @@
-"""经验层管理：查看、清理测试数据、导出。经验是攒出来的，要能看清、能备份。
+"""经验层管理：查看、编辑、增添、清理测试数据、导出。经验是攒出来的，要能看清、能备份。
 
     python tools/kb_admin.py list                 # 列出全部经验与权重
     python tools/kb_admin.py list --pending       # 只看待确认清单里还没处理的
+    python tools/kb_admin.py add --asked "…" --outcome effective --method "…" --keys A,B
+    python tools/kb_admin.py edit 12 --outcome ineffective --reason "…"
     python tools/kb_admin.py clean --test-data    # 清掉自检/验收留下的记录
     python tools/kb_admin.py clean --id 3         # 删掉某一条经验（会同时修正权重）
     python tools/kb_admin.py export backup.json   # 导出经验与权重（换机器时带走）
     python tools/kb_admin.py import backup.json   # 导入（按内容去重）
 
-为什么要有 `clean`：验收测试会往经验表写记录，写进去就会影响检索排序。
-测试完必须能干净地把它们拿掉，并且**同时回滚 item_weight** ——
-只删 experience 不回滚权重，会留下"没有经验却权重很高"的脏状态。
+## 权重算术只有一份
+
+`add` / `edit` / `clean` 都会改权重，而"加一次"与"回滚一次"必须是同一份
+算术 —— 否则会出现"经验删了、权重还挂着"的脏状态（实测漏过一次：删经验不
+回滚权重，排序就继续被幽灵分数影响）。这一份实现在
+`offline/experience.py`，本文件只负责把参数喂进去。
+
+⚠ `import` 是唯一的例外：它是**批量恢复**路径，重建 experience 行但**不合并
+item_weight**（导出文件里那份权重是当时的快照，直接合并会重复计分）。工具
+末尾会明确提示这一点。
 """
 
 from __future__ import annotations
@@ -23,9 +32,15 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "offline"))
 
+import experience as EXP  # noqa: E402
 import schemas as S  # noqa: E402
 
 TEST_MARKERS = ("%自检%", "%验收%", "%测试%")
+
+
+def _writer(conn) -> EXP.ConnWriter:
+    """CLI 是单线程的，裸连接直接包一层就行（MCP 侧必须传 Searcher）。"""
+    return EXP.ConnWriter(conn)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -92,30 +107,15 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_clean(args: argparse.Namespace) -> int:
     conn = S.connect(S.INDEX_DB)
+    w = _writer(conn)
     if args.id:
         row = conn.execute("SELECT * FROM experience WHERE id = ?", (args.id,)).fetchone()
         if not row:
             print(f"没有 id={args.id} 的经验")
             return 1
         print(f"删除 #{args.id} [{row['outcome']}] {row['asked'][:60]}")
-        # 回滚这条经验对权重的贡献
-        delta = {"effective": (1, 0, 0), "ineffective": (0, 1, 0),
-                 "partial": (0, 0, 1)}.get(row["outcome"], (0, 0, 0))
-        for key in json.loads(row["item_keys"] or "[]"):
-            conn.execute(
-                """
-                UPDATE item_weight SET
-                    attempts = MAX(0, attempts - 1),
-                    effective = MAX(0, effective - ?),
-                    ineffective = MAX(0, ineffective - ?),
-                    partial = MAX(0, partial - ?),
-                    updated_at = datetime('now')
-                WHERE item_key = ?
-                """,
-                (delta[0], delta[1], delta[2], key),
-            )
-        conn.execute("DELETE FROM experience WHERE id = ?", (args.id,))
-        conn.commit()
+        # 回滚权重与删除走同一份实现（experience.py）
+        EXP.delete_experience(w, args.id)
         print("已删除，并回滚了对应权重")
         conn.close()
         return 0
@@ -139,22 +139,7 @@ def cmd_clean(args: argparse.Namespace) -> int:
         print(f"将删除 {len(rows)} 条测试经验并回滚权重：")
         for row in rows:
             print(f"  #{row['id']} [{row['outcome']}] {row['asked'][:60]}")
-            delta = {"effective": (1, 0, 0), "ineffective": (0, 1, 0),
-                     "partial": (0, 0, 1)}.get(row["outcome"], (0, 0, 0))
-            for key in json.loads(row["item_keys"] or "[]"):
-                conn.execute(
-                    """
-                    UPDATE item_weight SET
-                        attempts = MAX(0, attempts - 1),
-                        effective = MAX(0, effective - ?),
-                        ineffective = MAX(0, ineffective - ?),
-                        partial = MAX(0, partial - ?),
-                        updated_at = datetime('now')
-                    WHERE item_key = ?
-                    """,
-                    (delta[0], delta[1], delta[2], key),
-                )
-        conn.execute(f"DELETE FROM experience WHERE {where}", params)
+            EXP.delete_experience(w, row["id"])
     else:
         print("没有找到测试经验"
               + ("（继续检查权重残留…）" if args.orphan_weights else ""))
@@ -282,6 +267,66 @@ def cmd_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_add(args: argparse.Namespace) -> int:
+    """手记一条经验（面板「修改/增添经验」在没有本地模型时走的就是这条路）。"""
+    conn = S.connect(S.INDEX_DB)
+    w = _writer(conn)
+    try:
+        exp_id = EXP.add_experience(
+            w, asked=args.asked, outcome=args.outcome, method=args.method,
+            item_keys=args.keys, context=args.context, reason=args.reason,
+            evidence=args.evidence, tags=args.tags, source="user",
+        )
+    except ValueError as exc:
+        print(f"  ✗ {exc}")
+        conn.close()
+        return 1
+    row = EXP.get_experience(w, exp_id)
+    keys = EXP.loads(row["item_keys"], [])
+    print(f"  已新增 #{exp_id} [{row['outcome']}] {row['asked'][:60]}")
+    if keys:
+        print("  关联文献：" + ", ".join(keys) + "（权重已计入）")
+    else:
+        print("  ⚠ 没有关联文献：这条经验不会被检索加权，也不会出现在任何一篇的档案里")
+    conn.close()
+    return 0
+
+
+def cmd_edit(args: argparse.Namespace) -> int:
+    """改一条经验：先回滚旧权重 → 改行（旧值进 history）→ 应用新权重。"""
+    conn = S.connect(S.INDEX_DB)
+    w = _writer(conn)
+    fields = {}
+    for name, value in (("asked", args.asked), ("outcome", args.outcome),
+                        ("method", args.method), ("context", args.context),
+                        ("reason", args.reason), ("evidence", args.evidence),
+                        ("tags", args.tags), ("item_keys", args.keys)):
+        if value is not None:
+            fields[name] = value
+    if not fields:
+        print("  没有要改的字段（用 --asked/--outcome/--method/--reason/--keys… 指定）")
+        conn.close()
+        return 1
+    try:
+        info = EXP.update_experience(w, args.id, reason_suffix="CLI 编辑", **fields)
+    except ValueError as exc:
+        print(f"  ✗ {exc}")
+        conn.close()
+        return 1
+    print(f"  已修改 #{args.id}：")
+    for name, diff in (info.get("changed") or {}).items():
+        print(f"    {name}：{str(diff['from'])[:60]!r} → {str(diff['to'])[:60]!r}")
+    if not info.get("changed"):
+        print("    （内容没变）")
+    print("  权重已按新旧 outcome / 关联文献重算；旧值留在 history 里")
+    if info.get("item_keys"):
+        print("  关联文献：" + ", ".join(info["item_keys"]))
+    else:
+        print("  ⚠ 现在没有关联文献了：这条经验不会再参与加权")
+    conn.close()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="经验层管理")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -301,11 +346,36 @@ def main() -> int:
     p_imp = sub.add_parser("import")
     p_imp.add_argument("path")
 
+    p_add = sub.add_parser("add", help="手记一条经验")
+    p_add.add_argument("--asked", required=True, help="当时要解决的问题（必填）")
+    p_add.add_argument("--outcome", required=True, choices=list(EXP.OUTCOMES))
+    p_add.add_argument("--method", default="")
+    p_add.add_argument("--keys", default="", help="关联文献 key，逗号/空格分隔")
+    p_add.add_argument("--context", default="")
+    p_add.add_argument("--reason", default="")
+    p_add.add_argument("--evidence", default="")
+    p_add.add_argument("--tags", default="")
+
+    p_edit = sub.add_parser("edit", help="改一条经验（会重算权重，旧值留档）")
+    p_edit.add_argument("id", type=int)
+    p_edit.add_argument("--asked")
+    p_edit.add_argument("--outcome", choices=list(EXP.OUTCOMES))
+    p_edit.add_argument("--method")
+    p_edit.add_argument("--keys", help="新的关联文献（逗号/空格分隔）")
+    p_edit.add_argument("--context")
+    p_edit.add_argument("--reason")
+    p_edit.add_argument("--evidence")
+    p_edit.add_argument("--tags")
+
     args = parser.parse_args()
     if args.cmd == "list":
         return cmd_list(args)
     if args.cmd == "clean":
         return cmd_clean(args)
+    if args.cmd == "add":
+        return cmd_add(args)
+    if args.cmd == "edit":
+        return cmd_edit(args)
     if args.cmd == "export":
         return cmd_export(args)
     return cmd_import(args)
