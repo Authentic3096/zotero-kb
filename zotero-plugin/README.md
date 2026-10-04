@@ -34,7 +34,20 @@ Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js`
 | `14-menus.js` | 工具栏按钮与条目右键菜单 |
 | `15-prefpane.js` `16-weightcol.js` | 设置面板；「知识库权重」列 |
 | `17-windowhook.js` `18-taskpoll.js` | 窗口钩子；任务轮询 |
+| `19-itempane.js` | **右侧内容窗格「本地模型」分区**：注入摘要级/全文级、逐段检测（可中断可续跑）、定位、写入确认。对话**只在内存**里，退出即清 |
+| `20-reader.js` | **阅读器里的选中入口**：官方 `renderTextSelectionPopup` 拿 `params.annotation.text` → 「定位到这一段」（**不去挖** `reader._iframeWindow` 那条私有路） |
 | `99-bootstrap.js` | Zotero 要调用的顶层生命周期函数 |
+
+界面文案在 `zotero-plugin/locale/{zh-CN,en-US}/zotero-kb.ftl`（**两个语言都要有**，
+Zotero 的兜底链是 精确 → 同语种 → en-US → 第一个可用的）。`registerSection` 的
+`header`/`sidenav.l10nID` 是**必填**项，指向的 id 不存在时表现为"分区标题空白、
+没有任何报错"，所以 `tools/check_plugin.py` 会静态检查
+"bootstrap.js 里用到的每个 l10nID 都在 ftl 里有定义"，并断言 `locale/**` 真的进了 xpi
+（打包器原来是"只收根目录的文件"，会把整个 `locale/` 目录漏掉）。
+
+⚠ 插件里"字段名写错 / 名字写错"在 Zotero 里**没有任何报错**，只表现为
+"按钮点了没反应"。`tools/verify_bootstrap.js`（Node 的 vm + 桩 `Zotero` 跑真机
+`bootstrap.js`）专门盯这类问题，已接进 `check_plugin.py`，不需要重启 Zotero。
 
 ⚠ **改完 src 必须跑 `python tools/build_bootstrap.py`**，否则 xpi 里装的还是旧
 代码（插件表现像没改，而 Zotero 的报错没有任何线索）。忘了也不会出事：
