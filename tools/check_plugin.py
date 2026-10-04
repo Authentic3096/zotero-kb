@@ -418,6 +418,37 @@ def main() -> int:
                 else:
                     print(f"  [OK] {lang} 与 {base} 的 {len(per_lang[lang])} 条 id 一一对应")
 
+    # ---------------------------------------------------------- 结构验证（桩环境）
+    # 用 Node 的 vm 把真机 bootstrap.js 跑起来，断言"分区注册的字段齐、阅读器
+    # 事件注册了、退出观察挂上了、onRender 能建出界面"。
+    # 为什么值得单独跑一遍：插件里"字段名写错/名字写错"在 Zotero 里**没有任何
+    # 报错**，只表现为"按钮点了没反应"或"窗格空白" —— 而真机验证要重启 Zotero。
+    print("\n[桩环境结构验证]")
+    node = shutil.which("node") or os.environ.get("DSH_NODE")
+    if not node:
+        for cand in (r"C:\Users\17326\.dsh\dsh-runtimes\dsh-primary-runtime"
+                     r"\dependencies\node\bin\node.exe",):
+            if os.path.exists(cand):
+                node = cand
+                break
+    script = os.path.join(HERE, "verify_bootstrap.js")
+    if not node or not os.path.exists(script):
+        print("  [--] 没有 node 或没有 verify_bootstrap.js，跳过")
+    else:
+        r = subprocess.run([node, script], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        tail = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+        for ln in tail[-3:]:
+            print("      " + ln.strip())
+        for ln in tail:
+            if "FAIL" in ln:
+                problems.append("桩环境验证：" + ln.strip()[:120])
+        if r.returncode != 0:
+            print("  [XX] 桩环境验证没通过")
+            problems.append("桩环境验证没通过（见输出）")
+        else:
+            print("  [OK] 桩环境验证通过（分区/阅读器/退出观察/onRender）")
+
     # ---------------------------------------------------------- 打包
     # 用 pack_plugin.py 打包，不用本地 zipfile 默认参数 ——
     # 默认参数写出的 ZIP 是 MS-DOS 来源、权限 0666，与可用插件不一致，
