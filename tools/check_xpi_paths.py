@@ -34,9 +34,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PLUGIN = os.path.join(ROOT, "zotero-plugin")
 
-# 开发机/用户特有的痕迹 —— 这些一出现就是写死
+# 开发机/用户特有的痕迹 —— 这些一出现就是写死。
+#
+# ⚠ 这套模式是**共享的**：`tools/audit_release.py` 的全仓库扫描直接 import 它，
+#   不再各写一份。2026-10-04 之前两处各有一份，而 DSHplugins / ZoteroData
+#   只写在这一份里 —— 于是全仓库扫描漏掉了它们，`skills/` 里写死的
+#   `D:\DSHplugins\...` 从首个提交起就躺在公开仓库里，一直没人发现。
+#
+#   另外：Nutstore 只认「盘符 + 路径」形式（`X:\Nutstore`），不认裸词 ——
+#   否则 `nutstore:zotero-kb` 这种 rclone 远端名会被误报。
 SENSITIVE = re.compile(
-    r"(DSHplugins|ZoteroData|Nutstore|" + re.escape(os.path.expanduser("~")) + r")",
+    r"(DSHplugins|ZoteroData|[A-Za-z]:[\\/]+Nutstore|"
+    + re.escape(os.path.expanduser("~")) + r")",
     re.I)
 
 # 完整的 Windows 绝对路径（盘符 + 至少两级目录）

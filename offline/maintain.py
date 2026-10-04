@@ -220,7 +220,7 @@ def check() -> int:
             else:
                 print(f"{BAD}profile 的 bundles 里没有 dsh-bundle-zotero-kb")
                 print("     修法：dsh plugin --profile desktop add "
-                      "\"link:D:/DSHplugins/zotero-kb/bundle\"")
+                      f"\"link:{S.PROJECT_ROOT.replace(os.sep, '/')}/bundle\"")
                 problems.append("把 bundle 装进 desktop profile")
                 core_broken = True
         except Exception as exc:  # noqa: BLE001

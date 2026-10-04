@@ -24,7 +24,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)                    # …\zotero-kb
-PLUGINS_ROOT = os.path.dirname(ROOT)            # …\DSHplugins
+PLUGINS_ROOT = os.path.dirname(ROOT)            # 插件目录的父目录
 # ⚠ bridge 是**独立**的 DSH 插件，放在 DSHplugins\zotero-bridge\，
 #   不在 zotero-kb\ 下 —— 曾经按 ROOT 拼路径，结果 FileNotFoundError。
 PATCH = os.path.join(PLUGINS_ROOT, "zotero-bridge", "bundle", "cordis.patch.yml")

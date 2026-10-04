@@ -86,7 +86,18 @@
                          参数/干跑"，先失败的那一环就是问题所在（--live 才联网）
     check_plugin.py      插件静态检查 + 打包 xpi（**发版前跑这个**，
                          最后两步会自动调 check_xpi_paths、check_prefpane）
-    check_xpi_paths.py   查 xpi 里有没有写死的开发机路径（发布前必查）
+    check_xpi_paths.py   查 xpi 里有没有写死的开发机路径（发布前必查）。
+                         它导出的 SENSITIVE 模式被 audit_release 的全仓库扫描复用
+                         —— 模式只留一处定义，不要再各写一份
+    audit_release.py     发布前综合审计：**全仓库**扫密钥 / 本机用户名 /
+                         开发机目录名（模式见 check_xpi_paths.SENSITIVE），
+                         外加「必须可移植的文件」与安装可用性。
+                         ⚠ 2026-10-04 补的「开发机目录名」这条：此前它只作用于 xpi，
+                         于是 skills/ 里写死的开发机路径从首个提交起就躺在公开仓库里、
+                         没人发现。正文/代码里命中即**失败**；注释里讲这个坑用的例子
+                         只提示（与 check_xpi_paths 同口径）。
+                         ⚠ 写这段说明时也要注意：那几个词本身不能出现在非注释行 ——
+                         本文件就被自己拦过一次（见 check_xpi_paths.SENSITIVE）
     check_prefpane.py    查 settings.xhtml 能不能被 Zotero 正常加载
                          （XML 声明会让面板点进去一片空白，见下）
     pack_plugin.py       打包器（ZIP 条目属性对齐可用插件）

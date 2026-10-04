@@ -11,10 +11,13 @@ _parseXHTMLToFragment）。这个差别很要命 —— 文件头部有 `<?xml .
 from __future__ import annotations
 
 import io
+import os
 import sys
 import xml.etree.ElementTree as ET
 
-P = r"D:\DSHplugins\zotero-kb\zotero-plugin\settings.xhtml"
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+P = os.path.join(ROOT, "zotero-plugin", "settings.xhtml")
 
 # 与 Zotero preferences.js 的 _parseXHTMLToFragment 一致：
 #   parseFromSafeString(`<div xmlns="http://www.w3.org/1999/xhtml"
@@ -113,7 +116,7 @@ def main() -> int:
         pass
 
     # 5) 面板里的 id 与 settings.js 找的一致
-    js = io.open(r"D:\DSHplugins\zotero-kb\zotero-plugin\settings.js",
+    js = io.open(os.path.join(ROOT, "zotero-plugin", "settings.js"),
                  encoding="utf-8").read()
     for probe in ("zotero-kb-settings", "zotero-kb-project-root",
                   "zotero-kb-python-exe", "zotero-kb-ollama-exe",

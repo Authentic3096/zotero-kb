@@ -10,7 +10,9 @@
 // 用法：Zotero → 工具 → 开发者 → 运行 JavaScript，粘全部内容，Ctrl+R
 // ============================================================================
 
-const XPI = "D:\\DSHplugins\\zotero-kb\\zotero-plugin\\zotero-kb-0.1.4.xpi";
+// ⚠ 改成你本机的项目目录（这里不写死任何开发机路径）
+const PROJECT = "D:\\path\\to\\zotero-kb";
+const XPI = PROJECT + "\\zotero-plugin\\zotero-kb-0.1.4.xpi";
 const out = [];
 const say = (s) => { out.push(s); Zotero.debug("[kb2] " + s); };
 

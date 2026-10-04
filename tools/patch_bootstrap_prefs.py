@@ -62,7 +62,11 @@ NEW_BLOCK = r'''  // ===========================================================
   /** 把运行状态写到文件，方便从 Python 侧和排障时查看。 */
   writeStatusFile: function (extra) {
     try {
-      const path = "D:\\DSHplugins\\zotero-kb\\kb\\plugin-status.json";
+      // ⚠ 不写死绝对路径 —— 与 bootstrap.js 的 kbDir() 同一原则：
+      //   位置只能来自用户设置或服务端上报，都没有就不写，让上层提示去配置。
+      const kb = String(Zotero.Prefs.get("zotero-kb.kbDir") || "").trim();
+      if (!kb) return;
+      const path = kb + "/plugin-status.json";
       const data = {
         pluginVersion: this.version,
         zoteroVersion: Zotero.version,

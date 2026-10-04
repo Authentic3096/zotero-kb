@@ -8,7 +8,7 @@ description: 开发 Zotero 7/8/9/10 桌面端插件（bootstrapped extension）�
 本文件里的每条结论都在 **Zotero 10.0.5 / Firefox 140** 上实测验证过，标注了
 证据（日志、状态文件、心跳数据）。踩过的坑都写了"症状 → 根因 → 修法"。
 
-参考实现在 `D:\DSHplugins\zotero-kb\zotero-plugin\`（一个可工作的插件：
+参考实现在本仓的 `zotero-plugin\`（一个可工作的插件：
 自定义权重列 + 设置面板 + 新条目监听 + 任务轮询）。
 
 ---
@@ -817,7 +817,7 @@ function kbDiag(line) {
 （有 `offline/`、`online/`、`.venv/`）。
 问题：那个旧目录**确实存在**（它是另一份拷贝），所以判据通过 ——
 拦不住。本机在沙箱测试里就复现了：把代码复制到临时目录跑，
-识别出的仍是 `D:\DSHplugins\zotero-kb`。
+识别出的仍是项目根的绝对路径。
 
 **正确判据**：问"这个目录里的**同一个文件**是不是我正在跑的那个"。
 
@@ -1101,7 +1101,7 @@ Zotero.Prefs.get("extensions.myplugin.dataDir")
 | | 注释里的举例 |
 
 > 还要**扫源码里的注释与文档**：示例路径写了开发者自己的目录同样该改
-> （比如 placeholder 写 `D:\Nutstore\...`，别人根本不知道那是什么）。
+> （比如 placeholder 写 `D:\某个盘\某个目录\...`，别人根本不知道那是什么）。
 
 ### ② 不透露隐私
 
@@ -1259,7 +1259,7 @@ export function apply(ctx, config = {}) {
 和知识库 MCP 一样用 **bundle**：
 
 ```
-D:\DSHplugins\<name>\bundle\
+<你的插件目录>\bundle\
   package.json          { name, type: 'module', main: 'index.js',
                           dsh: { bundle: { patch: 'cordis.patch.yml' } } }
   cordis.patch.yml      - insert: [ { id, name, config } ]
@@ -1267,7 +1267,7 @@ D:\DSHplugins\<name>\bundle\
 ```
 
 ```powershell
-dsh plugin --profile <profile> add "link:D:/DSHplugins/<name>/bundle"
+dsh plugin --profile <profile> add "link:<你的插件目录>/bundle"
 ```
 
 `patchReload: live` 只重载**已加载**插件的配置；**新增**的 bundle 需要**重启 DSH**。

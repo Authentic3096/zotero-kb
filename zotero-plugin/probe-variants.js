@@ -8,7 +8,9 @@
 // 解析成功（install.addon 有 id）的变体，再真装那一个。
 // ============================================================================
 
-const DIR = "D:\\DSHplugins\\zotero-kb\\zotero-plugin\\variants";
+// ⚠ 改成你本机的项目目录（这里不写死任何开发机路径）
+const PROJECT = "D:\\path\\to\\zotero-kb";
+const DIR = PROJECT + "\\zotero-plugin\\variants";
 const out = [];
 const say = (s) => { out.push(s); Zotero.debug("[kbv] " + s); };
 

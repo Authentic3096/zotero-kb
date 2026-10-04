@@ -275,7 +275,7 @@ def resolve_python(explicit: str = "") -> str:
       · `runtime.json` 是**程序自己写的缓存**（`write_runtime_state`），
         可能来自另一个项目目录。无条件信任它会导致"新目录里的代码
         去用旧目录的解释器" —— 本机在沙箱测试里就复现了：
-        沙箱里跑，识别出的却是 `D:\\DSHplugins\\zotero-kb`。
+        沙箱里跑，识别出的却是开发机的项目目录（而不是沙箱目录）。
     """
     cfg = _read_location_config()
     env_cfg = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
@@ -331,7 +331,7 @@ def _looks_like_this_project(path: str) -> bool:
         项目根。只要那个目录存在（它当然存在，是另一个拷贝），
         "看着像项目"的判断就会通过 —— 于是新目录里的代码去用了
         旧目录的解释器。本机沙箱测试复现的正是这个：
-        沙箱里跑，识别出的却是 `D:\\DSHplugins\\zotero-kb`。
+        沙箱里跑，识别出的却是开发机的项目目录（而不是沙箱目录）。
       · 用 samefile 之后，"另一份拷贝"自然被判为不是本项目，
         而"项目就在这个目录里"这种正当情况仍然通过。
     """

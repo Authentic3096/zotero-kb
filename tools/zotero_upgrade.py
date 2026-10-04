@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "offline"))
 
 import schemas as S  # noqa: E402
 
-ZOTERO_DIR = os.path.dirname(S.ZOTERO_DB)          # …\ZoteroData\Zotero
+ZOTERO_DIR = os.path.dirname(S.ZOTERO_DB)          # …\<Zotero 数据目录>\Zotero
 PROFILE_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Zotero",
                            "Zotero", "Profiles")
 BACKUP_ROOT = r"D:\ZoteroBackup"
@@ -340,7 +340,7 @@ def cmd_check() -> int:
 
 def cmd_backup() -> int:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    dst = os.path.join(BACKUP_ROOT, f"ZoteroData-{stamp}")
+    dst = os.path.join(BACKUP_ROOT, f"Zotero-backup-{stamp}")
     src = os.path.dirname(ZOTERO_DIR)
     print(f"备份 {src}")
     print(f"  → {dst}")

@@ -211,6 +211,12 @@ def is_generated(rel: str, ignored: set[str]) -> bool:
         p = pat.lower()
         if rel_l == p or rel_l.endswith("/" + p):
             return True
+        # ⚠ 2026-10-04 修：目录型规则（.gitignore 里的 `xxx/`）必须按**前缀**匹配。
+        #   之前只比对整路径与 basename，于是 `zotero-plugin/variants/` 这种
+        #   目录规则对它**里面**的文件全都不生效 —— 那些"按本机生成"的产物
+        #   会被当成"会跟着仓库走"而误报（variants.json 就是这么冒出来的）。
+        if rel_l.startswith(p + "/"):
+            return True
         if "/" not in p and os.path.basename(rel_l) == p:
             return True
         # 通配：*.xpi / kb/index.db*
@@ -244,13 +250,16 @@ def audit_paths():
             if generated:
                 gen.append(entry)
                 continue
+            # ⚠ 2026-10-04 修：这一档（真问题）此前**从来没有任何分支往里放**，
+            #   于是下面 `check(..., not high)` 永远通过 —— 等于没查（死档）。
+            #   现在把「别人拿到必须能用」的文件真正接上。
+            if rel in MUST_BE_PORTABLE or base in MUST_BE_PORTABLE:
+                high.append(entry)
+                continue
             if ln.strip().startswith(("//", "*", "#", "<!--", "REM", "'", "::")):
                 low.append(entry)       # 注释里的说明
                 continue
-            if base in DOC_FILES:
-                low.append(entry)       # 文档示例
-            else:
-                low.append(entry)       # 待确认
+            low.append(entry)           # 文档示例 / 待确认
 
     if high:
         print("  ❌ 必须可移植的文件里有本机路径（别人拿到用不了）：")
@@ -280,6 +289,54 @@ def audit_paths():
                     hits.append(f"{rel}:{i}  {ln.strip()[:80]}")
     check(f"全仓库没有本机用户名（{user}）", not hits,
           f"{len(hits)} 处：{hits[:2]}")
+
+    # 开发机特有的**目录名**，和本机用户名是同一类东西：对别人毫无意义。
+    # 出现在任何会随仓库发出去的地方（文档正文、代码、示例）都是泄漏。
+    #
+    # ⚠ 2026-10-04 补：此前这类名字只写在 `check_xpi_paths.py` 里、只对 xpi 生效，
+    #   于是 `skills/` 里写死的 `D:\DSHplugins\...` 从首个提交起就在公开仓库里。
+    #   现在共用同一套模式（import 过来），不再各写一份。
+    #   注释里讲这个坑本身时会举例（与 check_xpi_paths.strip_code 同口径放过），
+    #   但仍然打印出来供人过目 —— 不静默。
+    try:
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import check_xpi_paths
+        dev_dir = check_xpi_paths.SENSITIVE
+    except Exception:  # noqa: BLE001
+        dev_dir = re.compile(r"(DSHplugins|ZoteroData)", re.I)
+
+    dev_leaks: list[str] = []
+    dev_notes: list[str] = []
+    # 审计器自身：模式定义与提示语里**必须**写出这些名字，跳过（同 check_xpi_paths）
+    AUDIT_MACHINERY = {"tools/check_xpi_paths.py", "tools/audit_release.py"}
+    for p in iter_files():
+        rel = os.path.relpath(p, ROOT).replace("\\", "/")
+        if rel in AUDIT_MACHINERY:
+            continue
+        if is_generated(rel, ignored):
+            continue          # 按本机生成、不跟着仓库走（如 kb-location.json）
+        for i, ln in enumerate(read(p).split("\n"), 1):
+            if not dev_dir.search(ln):
+                continue
+            entry = f"{rel}:{i}  {ln.strip()[:88]}"
+            if ln.strip().startswith(("//", "*", "#", "<!--", "REM", "'", "::")):
+                dev_notes.append(entry)
+            else:
+                dev_leaks.append(entry)
+    if dev_notes:
+        print(f"  ℹ 注释里提到开发机目录名 {len(dev_notes)} 处"
+              f"（讲这个坑用的例子，不拦）：")
+        for x in dev_notes[:6]:
+            print(f"    {x}")
+        if len(dev_notes) > 6:
+            print(f"    … 还有 {len(dev_notes) - 6} 处")
+    if dev_leaks:
+        print(f"  ❌ {len(dev_leaks)} 处开发机目录名出现在正文/代码里：")
+        for x in dev_leaks[:15]:
+            print(f"    {x}")
+    check("全仓库正文/代码里没有开发机目录名"
+          "（DSHplugins / ZoteroData / X:\\Nutstore）", not dev_leaks,
+          f"{len(dev_leaks)} 处：{dev_leaks[:2]}")
 
     # 打包产物单独查（用的是更严格的规则）
     print()

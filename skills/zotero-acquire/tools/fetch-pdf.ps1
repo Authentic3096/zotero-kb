@@ -104,7 +104,7 @@ function Resolve-TargetDir {
     # 为什么是"下载文件夹下的固定子目录"（而不是项目目录、也不是临时目录）：
     #   · 下一步是**人工把 PDF 拖进 Zotero**。拖拽的起点必须是用户一眼能找到的地方，
     #     而"下载"是所有 Windows 用户找文件的第一个去处；
-    #   · 项目目录（D:\DSHplugins\zotero-kb）是**跨工作区可读的插件源码目录**，
+    #   · 项目目录是**跨工作区可读的插件源码目录**，
     #     往里堆几百 MB 用户数据既污染源码树、又会被打包/备份脚本一起卷走；
     #   · 临时目录（%TEMP%）会被系统清理，"下载完过两天再拖"就找不到了。
     return (Join-Path (Get-DownloadsDir) "zotero-acquire")
