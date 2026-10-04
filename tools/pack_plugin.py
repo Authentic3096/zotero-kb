@@ -41,6 +41,15 @@ sys.path.insert(0, HERE)
 #     但这里显式写出来 —— 以后谁想把打包改成递归收集时，必须看到这条。
 EXCLUDE_DIRS = {"src"}
 
+# 需要**递归**收进包的子目录。
+#
+# ⚠ `locale/` 必须在里面：Zotero 自动读插件根下 `locale/<语言>/*.ftl`
+#   （`readDirectory(rootURI, 'locale', true)`），而 `registerSection` 的
+#   `header.l10nID` / `sidenav.l10nID` 是**必填**项 —— 漏了整目录的症状是
+#   "内容窗格里分区标题空白"，而且**没有任何报错**（本机的报错口径里没有这类）。
+#   原来的收集逻辑只收根目录下的**文件**，目录会被整目录跳过。
+RECURSE_DIRS = ("locale",)
+
 # 打进包的文件。
 # ⚠ 这里必须**自动列全**，不能只写死几个 —— 曾经因为硬编码列表漏掉了
 #   新增的 `toolbar-icon.svg`，结果代码里引用的图标在包里不存在，
@@ -76,6 +85,15 @@ def collect_entries() -> list[str]:
         if n.endswith(".bak-iife"):
             continue
         names.append(n)
+    # 递归收 locale/**（zip 里用正斜杠的路径，Zotero 按 rootURI 相对路径读）
+    for sub in RECURSE_DIRS:
+        base = os.path.join(PLUGIN, sub)
+        if not os.path.isdir(base):
+            continue
+        for root, _dirs, files in os.walk(base):
+            for fn in files:
+                rel = os.path.relpath(os.path.join(root, fn), PLUGIN)
+                names.append(rel.replace(os.sep, "/"))
     ordered = [n for n in ORDER if n in names]
     # 其余（图标、将来新增的 .js/.xhtml 等）按名字排序跟在后面，保证可复现
     ordered += sorted(n for n in names if n not in ordered)

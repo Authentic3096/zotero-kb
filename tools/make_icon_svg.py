@@ -108,43 +108,29 @@ def build_icon_svg() -> str:
     return "\n".join(parts) + "\n"
 
 
-def build_toolbar_svg() -> str:
-    """16×16 版：**和主图标同一份几何**，只做小尺寸下必要的简化。
+def build_small_svg(size: int, stroke: float, node_r: float, scale: float,
+                    what: str) -> str:
+    """小尺寸图标（16×16 工具栏 / 20×20 内容窗格侧栏）。
 
-    之前这里是**手写**的一版近似（自己编的坐标），和主图标形状对不上 ——
-    用户一眼就看出来了。现在全部从 `book_lines_and_arcs()` /
-    `compute_ellipse_arcs()` 生成，形状必然一致。
+    ⚠ 参数化是必须的：Zotero 的内容窗格 `sidenav.icon` 要 20×20，工具栏要
+      16×16。手写两版近似必然漂移 —— 本项目已经因为"工具栏图标是手写近似"
+      被用户一眼看出形状对不上。所以两个尺寸都从同一份几何生成，只调
+      线宽/节点半径/整体放大倍数这三个小尺寸参数。
 
-    ⚠ 踩过的第二个坑：为了"干净"，我把所有椭圆弧**合并成一条连续 path**、
-    书的边也不断开 —— 结果**避让效果全没了**，两个图标看着还是不像。
-    现在原样保留：书的边在椭圆穿过处断开、椭圆在节点和书角处断开。
-
-    16px 下的两处必要简化：
-      1. **线加粗**：主图标 1.29 单位 ≈ 0.21px，16px 下看不见；
-         这里用 TB_STROKE（约 0.93px）。
-      2. **节点改成实心点**：半径 3.4 的空心圆在 16px 下只有一个像素，
-         还带不动；实心点才认得出。节点位置仍然取自 NODES。
+    `what` 只用于注释文字，说明这是哪个尺寸。
     """
-    TB_STROKE = 5.6      # 设计单位；16px 下约 0.93px
-    TB_NODE_R = 4.4      # 节点半径（实心点）
-    # 图形放大倍数。
-    # ⚠ 用户反馈"工具栏图标太小，和旁边的 Zotero 自带按钮不搭"——
-    #   原因是我们的图形在 96 画布里只占约 82%（x 10~89 / y 12~91），
-    #   而 Zotero 自带图标基本占满。整体放大约 1.18 倍补上这个差。
-    TB_SCALE = 1.18
-
     lines, arcs = M.book_lines_and_arcs()
 
     parts = [
-        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
         'viewBox="0 0 96 96">',
         "  <!-- 由 tools/make_icon_svg.py 从主图标**同一份几何**生成，",
-        "       只按 16px 做了简化（线加粗、整体放大、节点改实心点）。",
+        f"       只按 {what} 做了简化（线加粗、整体放大、节点改实心点）。",
         "       避让关系与主图标完全一致：书的边在椭圆穿过处断开、",
         "       椭圆在节点和封面左上角处断开。",
         "       颜色用 context-fill，跟随 Zotero 的浅色/深色主题。 -->",
-        f'  <g transform="translate(48 48) scale({TB_SCALE}) translate(-48 -48)"',
-        f'     fill="none" stroke="context-fill" stroke-width="{f(TB_STROKE)}" '
+        f'  <g transform="translate(48 48) scale({scale}) translate(-48 -48)"',
+        f'     fill="none" stroke="context-fill" stroke-width="{f(stroke)}" '
         'stroke-linecap="round" stroke-linejoin="round">',
     ]
     for x1, y1, x2, y2, _n in lines:
@@ -156,14 +142,37 @@ def build_toolbar_svg() -> str:
         parts.append(f'    <path d="{arc_path_ellipse(a0, a1)}"/>')
     parts += [
         "  </g>",
-        "  <!-- 节点：16px 下只能做实心点 -->",
-        f'  <g transform="translate(48 48) scale({TB_SCALE}) translate(-48 -48)" '
+        f"  <!-- 节点：{what} 下只能做实心点 -->",
+        f'  <g transform="translate(48 48) scale({scale}) translate(-48 -48)" '
         'fill="context-fill">',
     ]
     for cx, cy in M.NODES:
-        parts.append(f'    <circle cx="{f(cx)}" cy="{f(cy)}" r="{f(TB_NODE_R)}"/>')
+        parts.append(f'    <circle cx="{f(cx)}" cy="{f(cy)}" r="{f(node_r)}"/>')
     parts += ["  </g>", "</svg>"]
     return "\n".join(parts) + "\n"
+
+
+def build_toolbar_svg() -> str:
+    """16×16 版：工具栏 / 右键菜单用。
+
+    ⚠ 踩过的第二个坑：为了"干净"，我把所有椭圆弧**合并成一条连续 path**、
+    书的边也不断开 —— 结果**避让效果全没了**，两个图标看着还是不像。
+    现在原样保留：书的边在椭圆穿过处断开、椭圆在节点和书角处断开。
+
+    16px 下的两处必要简化：线加粗（主图标 1.29 单位 ≈ 0.21px，看不见）、
+    节点改成实心点（半径 3.4 的空心圆在 16px 下只有一个像素）。
+    """
+    return build_small_svg(16, stroke=5.6, node_r=4.4, scale=1.18, what="16px")
+
+
+def build_sidenav_svg() -> str:
+    """20×20 版：Zotero 内容窗格侧栏（`sidenav.icon`）用。
+
+    为什么单独要一版：`registerSection` 的 `header.icon` 与 `sidenav.icon`
+    是两个不同的槽位（16 与 20 像素），Zotero 不会帮我们缩放；用 16px 的图
+    去填 20px 的槽位会显得小一圈、和旁边自带图标不齐。
+    """
+    return build_small_svg(20, stroke=5.0, node_r=4.8, scale=1.15, what="20px")
 
 
 def main() -> int:
@@ -173,12 +182,15 @@ def main() -> int:
 
     icon = build_icon_svg()
     tb = build_toolbar_svg()
+    sn = build_sidenav_svg()
     if args.dry:
         print(icon)
         print(tb)
+        print(sn)
         return 0
 
-    for name, text in (("icon.svg", icon), ("toolbar-icon.svg", tb)):
+    for name, text in (("icon.svg", icon), ("toolbar-icon.svg", tb),
+                       ("sidenav-icon.svg", sn)):
         p = os.path.join(PLUGIN, name)
         with open(p, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(text)

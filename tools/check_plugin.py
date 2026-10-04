@@ -313,6 +313,74 @@ def main() -> int:
             print(f"  [XX] bootstrap.js 引用了 {rel}，但文件不存在")
             problems.append(f"缺少被引用的资源 {rel}")
 
+    # ---------------------------------------------------------- 本地化（ftl）
+    # 两个坑都是"没有任何报错"的那种：
+    #   · `registerSection` 的 header/sidenav 里 `l10nID` 是必填项，
+    #     指向的 id 必须在 ftl 里存在 —— 少一条就是分区标题空白；
+    #   · `locale/` 是**目录**，而打包器原来是"只收根目录的文件"，
+    #     会把整目录漏掉（包做好了、装上了、就是没有文案）。
+    print("\n[本地化 ftl]")
+    ftl_files = []
+    loc_dir = os.path.join(PLUGIN, "locale")
+    if os.path.isdir(loc_dir):
+        for root, _dirs, files in os.walk(loc_dir):
+            for fn in files:
+                if fn.endswith(".ftl"):
+                    ftl_files.append(os.path.join(root, fn))
+    if not ftl_files:
+        print("  [XX] 没有 locale/**/*.ftl —— registerSection 的 l10nID 会找不到文案")
+        problems.append("缺少 locale/**/*.ftl")
+    else:
+        defined = {}          # id -> [文件]
+        for path in ftl_files:
+            rel = os.path.relpath(path, PLUGIN).replace(os.sep, "/")
+            for line in open(path, encoding="utf-8"):
+                m = re.match(r"^([A-Za-z0-9_-]+)\s*=", line)
+                if m:
+                    defined.setdefault(m.group(1), []).append(rel)
+        print(f"  [OK] {len(ftl_files)} 个 ftl，共 {len(defined)} 条文案："
+              + ", ".join(sorted(os.path.relpath(p, PLUGIN).replace(os.sep, '/')
+                                 for p in ftl_files)))
+        used = sorted(set(re.findall(r"""l10nID:\s*['"]([^'"]+)['"]""", bsrc)))
+        for key in used:
+            if key in defined:
+                print(f"  [OK] l10nID {key} 有定义"
+                      f"（{', '.join(sorted(set(defined[key]))) }）")
+            else:
+                print(f"  [XX] bootstrap.js 用了 l10nID {key}，但 ftl 里没有 —— "
+                      f"界面上会显示空白，且没有任何报错")
+                problems.append(f"l10nID 未定义：{key}")
+        if not used:
+            print("  [--] 代码里还没用到 l10nID（新加分区时这条检查会兜住）")
+        # 中英文必须成对：只有 zh-CN 时，英文用户会看到空白标题
+        langs = {os.path.basename(os.path.dirname(p)) for p in ftl_files}
+        if "en-US" not in langs:
+            print(f"  [XX] 缺 en-US（Zotero 的兜底链是 精确 → 同语种 → en-US → "
+                  f"第一个可用的；没有 en-US 的非中文用户会看到空白）")
+            problems.append("locale 缺 en-US")
+        else:
+            print(f"  [OK] 语言覆盖：{', '.join(sorted(langs))}")
+        # 各语言的 id 必须一致：少一条就是那条文案在某个语言下显示空白
+        per_lang = {}
+        for path in ftl_files:
+            lang = os.path.basename(os.path.dirname(path))
+            per_lang.setdefault(lang, set())
+            for line in open(path, encoding="utf-8"):
+                m = re.match(r"^([A-Za-z0-9_-]+)\s*=", line)
+                if m:
+                    per_lang[lang].add(m.group(1))
+        if len(per_lang) > 1:
+            base = sorted(per_lang)[0]
+            for lang in sorted(per_lang)[1:]:
+                miss = per_lang[base] - per_lang[lang]
+                extra = per_lang[lang] - per_lang[base]
+                if miss or extra:
+                    print(f"  [XX] {lang} 与 {base} 的文案 id 不一致："
+                          f"缺 {sorted(miss)[:5]}，多 {sorted(extra)[:5]}")
+                    problems.append(f"ftl id 不一致：{lang} vs {base}")
+                else:
+                    print(f"  [OK] {lang} 与 {base} 的 {len(per_lang[lang])} 条 id 一一对应")
+
     # ---------------------------------------------------------- 打包
     # 用 pack_plugin.py 打包，不用本地 zipfile 默认参数 ——
     # 默认参数写出的 ZIP 是 MS-DOS 来源、权限 0666，与可用插件不一致，
@@ -345,6 +413,14 @@ def main() -> int:
         if "src/00-core.js" in names:
             print("  [XX] 包里有 src/ —— 源码目录不该进 xpi（白胖、而且没用）")
             problems.append("xpi 里混进了 src/")
+        # locale 是**目录**：打包器原来是"只收根目录的文件"，会把整目录漏掉。
+        # 这条断言盯的就是那个漏法（症状：分区标题空白、无报错）。
+        ftl_in_xpi = [n for n in names if n.startswith("locale/") and n.endswith(".ftl")]
+        if ftl_in_xpi:
+            print(f"  [OK] 包内本地化：{', '.join(sorted(ftl_in_xpi))}")
+        else:
+            print("  [XX] 包里没有 locale/**/*.ftl —— 内容窗格的分区标题会是空白")
+            problems.append("xpi 缺 locale/**/*.ftl")
         xpi_for_paths = xpi
 
     # 打包后立刻查"包内有没有写死的开发机路径"。
