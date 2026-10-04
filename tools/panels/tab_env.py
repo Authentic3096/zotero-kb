@@ -32,10 +32,13 @@ class EnvTab:
         九成是因为其中一个不对。把它摆在明面上，用户自己就能看出来。
 
         ⚠ 2026-10-05（用户要求）：这三个位置**可以直接在面板里改**，而且
-          与 Zotero 插件设置**同步** —— 两边读写的是同一份配置
-          （知识库目录下 `kb-location.json` 的 `env` 段，见
-          `schemas.write_location_config`；插件设置面板走 `/env-config`
-          写的也是它）。所以这里是可编辑输入框 + 「浏览…」+「保存并重新检测」。
+          写的是与 Zotero 插件设置**同一份配置**（知识库目录下
+          `kb-location.json` 的 `env` 段，见 `schemas.save_env_config`；
+          插件设置面板点「保存并检测」写的也是它）。
+        ⚠ 但要诚实说清一处差别：插件设置页里那三个框显示的是**插件自己记的
+          pref**，插件的 `projectRoot()` / `pythonExe()` 会**优先**用它。
+          所以"插件设置里曾经手填过某一项"时，想让这里说了算，得先把插件设置里
+          那一项清空再保存。界面上（下面的说明与 tooltip）如实写了这句。
         """
         f = self.tab_env
         head = ttk.Frame(f, padding=(10, 8, 10, 0))
@@ -48,9 +51,11 @@ class EnvTab:
             f, foreground="#666", font=(self.ui_font, 9), justify="left",
             wraplength=920,
             text="下面三个位置可以直接在这里改：填好（或点「浏览…」选）"
-                 "再点「保存并重新检测」。它和 Zotero 插件设置里的"
-                 "「运行环境」是同一份配置 —— 在哪边改，两边都用新值。\n"
-                 "留空 = 这一项交回自动探测（例如 Python 留空就用项目里的 .venv）。"
+                 "再点「保存并重新检测」。写的是 Zotero 插件设置里那一项背后的"
+                 "同一份配置（插件设置页点「保存并检测」写的也是它）。\n"
+                 "留空 = 这一项交回自动探测（例如 Python 留空就用项目里的 .venv）。\n"
+                 "⚠ 如果你在 Zotero 插件设置页里手填过某一项，插件会优先用那一份 —— "
+                 "想让这里说了算，请把插件设置里对应那一项清空再保存。"
         ).pack(fill="x", padx=12, pady=(6, 4))
 
         body = ttk.Frame(f, padding=(10, 2, 10, 4))
@@ -95,7 +100,7 @@ class EnvTab:
         btns.pack(fill="x")
         b = ttk.Button(btns, text="保存并重新检测", command=self.do_save_env)
         b.pack(side="left")
-        self._tip(b, "写进 kb-location.json（与 Zotero 插件设置同一份配置），"
+        self._tip(b, "写进 kb-location.json（插件设置页点「保存并检测」写的也是同一份），"
                      "然后重新检测一遍")
         ttk.Button(btns, text="打开模型设置（在 Zotero 里）",
                    command=self.do_open_model_settings).pack(side="left",
@@ -168,7 +173,9 @@ class EnvTab:
         saved = res.get("saved") or {}
         self.say(f"[{ts()}] 运行环境已保存到 {res.get('path')}："
                  + "、".join(f"{k}={v or '(自动探测)'}" for k, v in saved.items()))
-        self.say(f"[{ts()}] Zotero 插件设置读的就是这一份配置 —— 两边已经同步。")
+        self.say(f"[{ts()}] 写的是与 Zotero 插件设置同一份配置；"
+                 f"若插件设置页里手填过某一项，插件会优先用它"
+                 f"（想让这里说了算就把那一项清空再保存）。")
         self.refresh_env()
 
 
