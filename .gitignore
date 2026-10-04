@@ -19,6 +19,11 @@ kb/papers/
 kb/logs/
 kb/profile-backup/
 kb/.cache/
+# 运行期生成的标记文件（`ollama-owned-by-dsh.flag` 等）。
+# ⚠ 原来只忽略了 `kb/` 下的**具体几类**，于是这个 flag 一直让 `git status`
+#   显示 `?? kb/` —— 而"总有一个看不懂的未跟踪目录"会让人慢慢无视 git status，
+#   那比多一行忽略危险得多。整个 kb/ 都是本机数据，直接忽略目录。
+kb/
 .venv/
 .tools/
 __pycache__/
