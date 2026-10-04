@@ -285,6 +285,33 @@ check("特征词表覆盖文本源/ft-cache/缓存（#12 那几个词）",
       str([w for w in ("文本源", "ft-cache", "缓存")
            if w not in EXP.META_WORK_WORDS]))
 
+# ---------------------------------------------------------------- [11] 编号连续
+print("\n[11] 经验编号：删完自动重排，始终从 1 开始连续")
+# 用户 2026-10-05：「经验库的编号的问题，应该能自动更新，从 1 开始」。
+# 库里当时是 2..10（1 被早期测试删过）—— 留空号看着像坏了。
+new_ids = [EXP.add_experience(w, asked=f"自检：编号 {i}", outcome="unknown",
+                              tags="自检") for i in range(3)]
+EXP.delete_experience(w, new_ids[1], renumber_ids=False)   # 手工造一个空号
+gap = EXP.all_ids(w)
+check("删一条（关掉自动重排）会留空号", gap != list(range(1, len(gap) + 1)),
+      str(gap))
+EXP.renumber(w)
+after = EXP.all_ids(w)
+check("renumber 后从 1 开始连续", after == list(range(1, len(after) + 1)),
+      f"{gap} → {after}")
+
+# 批量删：一次删两条，剩下的编号仍连续
+# （循环调用单条删除会边删边重排，第二条就删到别的行上了）
+kill = [after[0], after[-1]]
+gone = EXP.delete_experiences(w, kill)
+now = EXP.all_ids(w)
+check("delete_experiences 返回真删掉的 id", sorted(gone) == sorted(kill),
+      f"要删 {kill}，返回 {gone}")
+check("批量删两条后编号仍连续", now == list(range(1, len(now) + 1)),
+      f"{after} 删 {kill} → {now}")
+check("删掉两条后条数正好少 2", len(now) == len(after) - 2,
+      f"{len(after)} → {len(now)}")
+
 conn.close()
 
 print()

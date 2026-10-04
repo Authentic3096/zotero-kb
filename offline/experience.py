@@ -24,6 +24,14 @@ read_one 的对象"，MCP 侧传 `Searcher`，CLI 侧（单线程）传一个小
 `schemas` 里 experience 表写着 `-- 经验层：只追加，永不覆盖`。这条对**自动
 流程**（learn.py 抽取、MCP 记经验）依然成立；本模块只在**用户显式编辑**时
 改行，而且改之前把旧值 push 进 `history` 列（JSON 数组），所以历史仍可追溯。
+
+## id 是**连续编号**（删除后自动重排，从 1 开始）
+
+用户看到库里的 id 是 2、3、…、10（1 被早期测试删过），问「编号应该自动更新、
+从 1 开始」。删除后留空号对"历史引用"更友好，但界面上就是一串跳号的数字，
+越删越乱 —— 所以**删完自动把 id 重排成 1..N**（`renumber()`，见那里的两段式
+写法的说明）。库里没有任何地方按 id 引用经验（history 是行内 JSON、
+item_weight 按 item_key、pending.jsonl 用的是会话号），所以重排是安全的。
 """
 
 from __future__ import annotations
@@ -288,17 +296,107 @@ def update_experience(s, exp_id: int, *, reason_suffix: str = "", **fields) -> d
             "outcome": new_outcome, "item_keys": new_keys}
 
 
-def delete_experience(s, exp_id: int, *, rollback: bool = True) -> bool:
-    """删一条经验；默认同时回滚它给权重加过的分（否则留下脏权重）。"""
+def delete_experience(s, exp_id: int, *, rollback: bool = True,
+                      renumber_ids: bool = True) -> bool:
+    """删一条经验；默认同时回滚它给权重加过的分（否则留下脏权重）。
+
+    删完默认把 id 重排成 1..N（`renumber_ids=False` 可关掉 —— 批量删除时
+    由 `delete_experiences` 统一重排一次，见那里的说明）。
+    """
     old = get_experience(s, exp_id)
     if not old:
         return False
+    stmts = []
     if rollback:
-        apply_weight_delta(s, loads(old.get("item_keys"), []), old["outcome"], -1)
-    s.write("DELETE FROM experience WHERE id = ?", (int(exp_id),))
+        stmts.extend(weight_statements(loads(old.get("item_keys"), []),
+                                       old["outcome"], -1))
+    stmts.append(("DELETE FROM experience WHERE id = ?", (int(exp_id),)))
+    if renumber_ids:
+        stmts.extend(_renumber_statements(s, skip=(int(exp_id),)))
+    _write_many(s, stmts)
     if rollback and hasattr(s, "reload_weights"):
         s.reload_weights()
     return True
+
+
+def delete_experiences(s, exp_ids, *, rollback: bool = True) -> list[int]:
+    """一次删多条：**同一个事务**，删完只重排一次编号。返回真正删掉的 id。
+
+    ⚠ 为什么不能循环调用 `delete_experience`：每删一条都会立刻重排编号，
+      下一条要删的 id 可能已经指到**别的行**上了（面板的多选删除、
+      `kb_admin.py clean --test-data` 都是批量删的，会删错）。
+    """
+    want = []
+    for i in exp_ids:
+        i = int(i)
+        if i not in want:
+            want.append(i)
+    olds = []
+    for i in want:
+        row = get_experience(s, i)
+        if row:
+            olds.append(row)
+    if not olds:
+        return []
+    gone = [int(o["id"]) for o in olds]
+    stmts = []
+    if rollback:
+        for old in olds:
+            stmts.extend(weight_statements(loads(old.get("item_keys"), []),
+                                           old["outcome"], -1))
+    marks = ",".join("?" * len(gone))
+    stmts.append((f"DELETE FROM experience WHERE id IN ({marks})", tuple(gone)))
+    stmts.extend(_renumber_statements(s, skip=gone))
+    _write_many(s, stmts)
+    if rollback and hasattr(s, "reload_weights"):
+        s.reload_weights()
+    return gone
+
+
+# ---------------------------------------------------------------- id 连续编号
+
+
+def all_ids(s) -> list[int]:
+    """库里全部经验 id（升序）。拿不到读接口时返回空列表（不报错）。"""
+    reader = getattr(s, "read", None) or getattr(s, "read_all", None)
+    if reader is None:
+        return []
+    out: list[int] = []
+    for row in (reader("SELECT id FROM experience ORDER BY id") or []):
+        try:
+            out.append(int(row["id"]))
+        except (TypeError, IndexError, KeyError):
+            out.append(int(row[0]))
+    return out
+
+
+def _renumber_statements(s, skip=()) -> list:
+    """生成"把 id 压成 1..N"的语句表（已经连续时返回空表）。
+
+    ⚠ 必须**两段式**：`id` 是主键，直接改名会当场撞车（想写 2，而 2 还在）。
+      所以先把整表改成负数（落在目标区间之外），再逐个写成目标值。
+      整个过程在**同一个事务**里，中途失败会整体回滚。
+    """
+    skip_set = {int(x) for x in skip}
+    ids = [i for i in all_ids(s) if i not in skip_set]
+    want = list(range(1, len(ids) + 1))
+    if ids == want:
+        return []
+    stmts = [("UPDATE experience SET id = -id", ())]
+    for old, new in zip(ids, want):
+        stmts.append(("UPDATE experience SET id = ? WHERE id = ?", (new, -old)))
+    return stmts
+
+
+def renumber(s) -> dict:
+    """把经验 id 重排成 1..N 连续（已经连续就什么都不做）。"""
+    before = all_ids(s)
+    stmts = _renumber_statements(s)
+    if not stmts:
+        return {"ok": True, "moved": 0, "before": before, "after": before}
+    _write_many(s, stmts)
+    return {"ok": True, "moved": len(before), "before": before,
+            "after": list(range(1, len(before) + 1))}
 
 
 def set_weight(s, key: str, pinned=None, manual=None, note=None) -> dict:
@@ -456,6 +554,9 @@ class ConnWriter:
     def read_one(self, sql: str, params: tuple = ()):
         return self.conn.execute(sql, params).fetchone()
 
+    def read_all(self, sql: str, params: tuple = ()):
+        return self.conn.execute(sql, params).fetchall()
+
     # 离线侧没有权重缓存要刷新，但保留同名方法让调用方不必分支
     def reload_weights(self) -> None:
         return None
@@ -509,6 +610,32 @@ def main(argv: list[str] | None = None) -> int:
     ok &= b2["attempts"] == 0 and b2["ineffective"] == 0
     print(f"  删除并回滚后：AAAA attempts={a2['attempts']}；"
           f"BBBB attempts={b2['attempts']}")
+
+    # ---- id 连续编号：删掉中间一条之后，编号要从 1 开始重新连续
+    for i in range(3):
+        add_experience(w, asked=f"自检：编号 {i}", outcome="unknown",
+                       tags="自检")
+    # 手工造一个空号（模拟老库：那时删除不重排）
+    delete_experience(w, 2, renumber_ids=False)
+    before = all_ids(w)
+    res = renumber(w)
+    after = all_ids(w)
+    ok &= before == [1, 3] and after == [1, 2] and res["moved"] == 2
+    print(f"  重排编号：{before} → {after}（moved={res['moved']}）")
+
+    # 批量删：一次删两条，剩下的编号仍然连续
+    # （循环调用 delete_experience 会边删边重排，第二条就删到别的行上了）
+    for i in range(2):
+        add_experience(w, asked=f"自检：批量 {i}", outcome="unknown",
+                       tags="自检")
+    ids_before = all_ids(w)                      # [1, 2, 3, 4]
+    gone = delete_experiences(w, [2, 4])
+    ok &= sorted(gone) == [2, 4] and all_ids(w) == [1, 2]
+    print(f"  批量删 {sorted(gone)}（原 {ids_before}）后：{all_ids(w)}")
+
+    delete_experiences(w, all_ids(w))
+    ok &= all_ids(w) == []
+    print(f"  清空后：{all_ids(w)}")
     print("  自检结果：", "通过" if ok else "**不通过**")
     conn.close()
     return 0 if ok else 1

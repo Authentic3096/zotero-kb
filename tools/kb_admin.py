@@ -6,6 +6,7 @@
     python tools/kb_admin.py edit 12 --outcome ineffective --reason "…"
     python tools/kb_admin.py clean --test-data    # 清掉自检/验收留下的记录
     python tools/kb_admin.py clean --id 3         # 删掉某一条经验（会同时修正权重）
+    python tools/kb_admin.py renumber             # 把经验 id 重排成 1..N 连续
     python tools/kb_admin.py export backup.json   # 导出经验与权重（换机器时带走）
     python tools/kb_admin.py import backup.json   # 导入（按内容去重）
 
@@ -114,9 +115,9 @@ def cmd_clean(args: argparse.Namespace) -> int:
             print(f"没有 id={args.id} 的经验")
             return 1
         print(f"删除 #{args.id} [{row['outcome']}] {row['asked'][:60]}")
-        # 回滚权重与删除走同一份实现（experience.py）
+        # 回滚权重与删除走同一份实现（experience.py）；删完 id 自动重排成 1..N
         EXP.delete_experience(w, args.id)
-        print("已删除，并回滚了对应权重")
+        print("已删除，并回滚了对应权重（id 已重排成 1..N 连续）")
         conn.close()
         return 0
 
@@ -139,7 +140,10 @@ def cmd_clean(args: argparse.Namespace) -> int:
         print(f"将删除 {len(rows)} 条测试经验并回滚权重：")
         for row in rows:
             print(f"  #{row['id']} [{row['outcome']}] {row['asked'][:60]}")
-            EXP.delete_experience(w, row["id"])
+        # ⚠ 一次批量删（`delete_experiences`），**不要**循环调 delete_experience：
+        #   每删一条都会重排编号，下一条的 id 可能已经指到别的行上了。
+        EXP.delete_experiences(w, [row["id"] for row in rows])
+        print(f"  已删除 {len(rows)} 条，编号已重排成 1..N")
     else:
         print("没有找到测试经验"
               + ("（继续检查权重残留…）" if args.orphan_weights else ""))
@@ -214,6 +218,20 @@ def _clean_orphan_weights(conn) -> int:
         print(f"  共清零 {len(rows)} 行残留权重")
     conn.commit()
     return len(rows)
+
+
+def cmd_renumber(args: argparse.Namespace) -> int:
+    """把经验 id 重排成 1..N 连续（老库删过条目、编号有空洞时用一次）。"""
+    conn = S.connect(S.INDEX_DB)
+    w = _writer(conn)
+    res = EXP.renumber(w)
+    if res["moved"]:
+        print(f"已重排：{res['before']} → {res['after']}")
+    else:
+        print(f"编号本来就是连续的：{res['before']}")
+    print(f"现在共 {len(EXP.all_ids(w))} 条经验")
+    conn.close()
+    return 0
 
 
 def cmd_export(args: argparse.Namespace) -> int:
@@ -341,6 +359,8 @@ def main() -> int:
                          help="清零「有 pinned/人工分/备注、却没有任何经验引用」的权重残留")
     p_clean.add_argument("--id", type=int, default=0, help="删除指定 id 的经验")
 
+    sub.add_parser("renumber", help="把经验 id 重排成 1..N 连续")
+
     p_exp = sub.add_parser("export")
     p_exp.add_argument("path")
     p_imp = sub.add_parser("import")
@@ -372,6 +392,8 @@ def main() -> int:
         return cmd_list(args)
     if args.cmd == "clean":
         return cmd_clean(args)
+    if args.cmd == "renumber":
+        return cmd_renumber(args)
     if args.cmd == "add":
         return cmd_add(args)
     if args.cmd == "edit":
