@@ -156,13 +156,20 @@ kb_acquire(dois="10.xxxx/yyyy", dry_run=True)
 > 有响应（哪怕 404）就说明活着，连不上才是没开。`kb_acquire` 内部就是这么判的，
 > 所以它现在会直接说"Zotero 没在运行"而不是"插件没在轮询"。
 
-> **升级注意（这一条踩过坑，务必看清）**：改完 `bootstrap.js` 之后，
+> **升级注意（这一条踩过坑，务必看清）**：改完插件源码之后，
 > **运行中的 Zotero 不会自动用上新代码**。两种装法对应两种生效方式：
 >
 > | 装法 | 改完源码怎么生效 | 风险 |
 > |---|---|---|
 > | **侧载代理**（`extensions\zotero-kb@authentic3096.github.io`，内容是源码目录路径） | **重启 Zotero 即生效，不用重新打包** | 项目目录不能移动 |
 > | **真 xpi**（`extensions\zotero-kb@authentic3096.github.io.xpi`） | 必须**重新打包 + 重新安装** | ⚠ **最容易坑人的一种**：profile 里那份 xpi 会一直是旧的，你以为改了、其实跑的还是老代码 |
+>
+> ⚠ **改的是 `zotero-plugin\src\*.js`（源码），而 xpi 里装的是
+> `zotero-plugin\bootstrap.js`（由 src 拼出来的生成物）**。所以顺序是：
+> 改 src → 跑 `python tools\build_bootstrap.py` → 再打包/侧载。
+> 忘了重新生成的话，`tools\pack_plugin.py` 会**拒绝打包**（`check_plugin.py`
+> 里也有一条会红的检查），不会让你把旧代码装进去。
+> 侧载代理那条路读的也是 `bootstrap.js`，所以同样要先生成。
 >
 > **开发期推荐侧载代理**：`tools\sideload_plugin.py install`（需先完全退出 Zotero）。
 >

@@ -16,6 +16,8 @@
 |---|---|
 | **基础权重按发表年份** | 跨度 **15 年**、**动态**（不落库，每次检索实时算，跨年自动更新）、15 年前压到 `0.95`。此前 101 篇里有 **93 篇**权重被硬编码成 `1.0`。见 `offline/schemas.py` 的 `recency_base()`，以及 `raw_weight()` / `weight_multiplier()` 新增的 `base` 参数 |
 | **搜文献 → 列候选表 → 用户挑 → 抓进 Zotero**（v0.24.0） | 见 [`DESIGN.md` 的「获取文献」一节](DESIGN.md#获取文献搜--列候选可点开看--勾选--抓进-zotero)。**抓取交给 Zotero 自己**（`Zotero.Translate.Search` + 自带的附件 resolver），所以**校园网/机构订阅的访问权限天然生效**，而且**不用下载再手工拖** |
+| **打开知识库（分级）**（2026-10-05） | 一篇文献的五个层面（摘要与要点 / 完整档案 / 按页正文 / 图注与表格 / 权重与经验）变成**数据模型**（`offline/kbviews.py` 的 `LEVELS`），面板与 Zotero 右键共用同一份清单（`tools/check_kb_levels.py` 盯两侧一致）。解决的是"目录里是 `22X9PMR6.md`、人认不出是哪篇"。见 [`../ARCHITECTURE.md` 的 B7](../ARCHITECTURE.md) |
+| **模块化重构**（2026-10-05） | 插件 4951 行单文件 → `zotero-plugin/src/*.js` 20 个源文件 + 生成器（运行时仍是单文件，见下）；面板 2805 行单类 → `tools/panels/` 各页签模块。两处都用"逐字比对"证明了是纯搬迁 |
 
 **进行中**
 
@@ -25,7 +27,9 @@
 
 **已定方向、尚未实现**（细节见实施方案）
 
-- 知识层在"摘要级"和"全文级"之间**再加一级**（面向长学位论文）
+- ~~知识层在"摘要级"和"全文级"之间再加一级~~ → **分级视图已落地**（2026-10-05，
+  见上表）。但那是按**产出物**分的五层；"同一篇里按**摘要深度**再分层
+  （逐段 → 逐节 → 全篇）"还没做
 - **多级摘要树** + **知识卡片连线图**（跨文献联系）
 - 每条知识可**回溯原文**的来源审查
 - 与 pdf2zh 的联动（复用其版面分析；"本地模型修复后回灌翻译"待验证）
@@ -76,7 +80,23 @@
     acquire.py           **获取文献**：DOI 归一化 + 派任务给插件 + 把结果讲成人话
                          （它**不下载任何东西**，抓取在 Zotero 进程里做，见上文）
   tools\
-    gui.py               统一管理面板（双击 scripts\0-panel.vbs 打开）
+    gui.py               面板**入口**：组装 App + 命令行自检 + mainloop
+                         （双击 scripts\0-panel.vbs 打开；`--check` 无界面自检）
+    panels\              面板的界面代码，**一个页签一个模块**
+      common.py          公共：路径常量、字体、sys.path 引导、知识库目录说明表
+      base.py            窗口骨架与通用能力（装配、日志、跑子进程、状态刷新）
+      tab_struct.py      「知识库结构」页（含「打开知识库…」入口）
+      tab_experience.py  「经验库」页
+      tab_ai.py          「分类建议」页（文献列表、检索、分类建议与写回）
+      tab_quality.py     「解析健康」页
+      tab_meta.py        「元数据」页
+      tab_env.py         「运行环境」页（服务、同步、侧载、诊断、升级）
+      tab_advanced.py    「高级」页（全量重建、自检、备份、清理、补齐分级文件）
+      browser.py         「打开知识库」的级别选择窗口
+    paper_picker.py      选文献的弹窗（列宽可拖、表头可排序）
+    build_bootstrap.py   ★ 把 zotero-plugin\src\*.js 拼成 bootstrap.js
+                         （改完插件源码必须跑它，否则打包会被拒绝）
+    check_kb_levels.py   ★ 盯"知识库分级清单"在 Python 与 JS 两侧一致
     make_index.py        生成给人看的文献清单 INDEX.md（Markdown 表格）
     kb_admin.py          经验层管理：查看 / 清理测试数据 / 导出导入
     zotero_upgrade.py    Zotero 升级前检查 / 备份 / 升级后核对
@@ -131,7 +151,13 @@
       icon.png / .ico    面板窗口图标（由插件图标渲染而来，见 make_panel_icon.py）
   其余                    调试与一次性排障脚本（**不进 xpi**，路径写死无妨）
   bundle\                接入 DSH 用的 bundle 包（package.json + cordis.patch.yml）
-  zotero-plugin\         插件源码（含 README、settings 面板、诊断脚本）
+  zotero-plugin\         插件（源码 + 生成物 + README、settings 面板、诊断脚本）
+    src\*.js             ★ **源码**：按功能分 20 个文件（00-core … 99-bootstrap）
+                         每个文件用 `Object.assign(ZoteroKB, {…})` 挂成员，
+                         所以单独也是合法 JS，能逐个做语法检查
+    bootstrap.js         ★ **生成物**（由 src\ 拼出来，xpi 里装的是它）
+                         ⚠ 别直接改这里 —— 会被下次生成覆盖；改了 src 要跑
+                         `python tools\build_bootstrap.py`
     icon.svg             插件图标（96×96）：**立着的书 + 斜掠的椭圆轨道**
     toolbar-icon.svg     工具栏/右键菜单的小图标（16×16）：同一意象的简化版，
                          用 `context-fill` 跟随 Zotero 主题自动变色
@@ -170,11 +196,17 @@
   INDEX.md             **给人看的**文献清单（Markdown 表格，带作者年份标题）
   papers\*.md          每篇一份档案（元数据+摘要+笔记+标注+正文首段），按 KEY 命名
   fulltext\*.md        每篇正文，带 `## p.N` 页码锚点
+  views\*.md           每篇的**分级视图**：`<KEY>.tldr.md` / `.figures.md` /
+                       `.weight.md`（面板「打开知识库…」与 Zotero 右键菜单读它）
   inbox\               待确认的经验、以及"扫到哪了"的记录
   logs\                运行日志
   .cache\              嵌入模型缓存
   MANIFEST.json        上次构建的统计与警告
 ```
+
+> `papers\` `fulltext\` `views\` 都是**可重建的派生物**：删掉跑一次
+> 「手动更新」就回来。`views\` 单独补齐用 `python offline\maintain.py views`
+> （面板「高级」页的「补齐知识库分级文件」就是它），不必为了几个小文件做全量重建。
 
 这样重装/换机只要同步 Zotero 那一份就够。位置可以在插件设置里改，
 解析优先级见 `offline/schemas.py` 的 `_resolve_kb_dir`（环境变量 `KB_DIR`
@@ -254,6 +286,8 @@
 小改动的说明**不必**编排成正式文档 —— tag 附注写一行，发布链会拿它当说明：
 
 ```bash
+# 0. 改过插件源码（zotero-plugin/src/*.js）就先重新生成，否则打包会被拒绝
+python tools/build_bootstrap.py
 # 1. 改 zotero-plugin/manifest.json 里的 version（小改动只动最后一位）
 # 2. 同步更新清单，和上一步**同一次提交**（否则 CI 的 --check 会红）
 python tools/make_updates_json.py --tag v0.25.2

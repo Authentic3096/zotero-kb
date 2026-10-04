@@ -7,6 +7,41 @@
 
 ---
 
+## 源码怎么组织（改代码前先看这段）
+
+```
+zotero-plugin/src/00-core.js … 99-bootstrap.js    ← ★ 源码，改这里
+        │  python tools/build_bootstrap.py
+        ▼
+zotero-plugin/bootstrap.js                        ← ★ 生成物，xpi 里装的是它
+```
+
+Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js` 一个
+文件**，所以源码分成 20 个文件之后，运行时仍然必须是一个文件。每个源文件用
+`Object.assign(ZoteroKB, { … })` 把成员挂到插件对象上 —— 好处是**每个文件单独
+也是合法 JS**，能逐个做语法检查。
+
+| 源文件 | 装什么 |
+|---|---|
+| `00-core.js` | 插件对象与 `startup`（运行时状态字段） |
+| `01-lifecycle.js` | `shutdown` / `install` / `uninstall` |
+| `02-paths.js` `03-processes.js` | 路径解析；本地服务与 Ollama 的起停 |
+| `04-prefs.js` `05-server.js` | 首选项；与本地服务通信 |
+| `06-watch.js` `07-classify.js` | 新条目监听；分类建议 |
+| `08-metafill.js` `09-metabatch.js` | 元数据补全；批量补全 / 类型标题修正 |
+| `10-acquire.js` `11-notify.js` `12-dsh.js` | 获取文献；提示窗；发到 DSH |
+| `13-kbopen.js` | **打开知识库（分级）** —— 级别清单与打开文件 |
+| `14-menus.js` | 工具栏按钮与条目右键菜单 |
+| `15-prefpane.js` `16-weightcol.js` | 设置面板；「知识库权重」列 |
+| `17-windowhook.js` `18-taskpoll.js` | 窗口钩子；任务轮询 |
+| `99-bootstrap.js` | Zotero 要调用的顶层生命周期函数 |
+
+⚠ **改完 src 必须跑 `python tools/build_bootstrap.py`**，否则 xpi 里装的还是旧
+代码（插件表现像没改，而 Zotero 的报错没有任何线索）。忘了也不会出事：
+`tools/pack_plugin.py` 打包前会校验并**拒绝出包**，CI 里也有一条会红的检查。
+
+---
+
 ## 它解决什么
 
 以前新加一篇文献要：双击 `1-convert.cmd` → 等构建 → 再自己想归到哪个分类。

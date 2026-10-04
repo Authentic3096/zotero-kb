@@ -1017,6 +1017,70 @@ with zipfile.ZipFile("myplugin.xpi", "w", zipfile.ZIP_DEFLATED) as z:
 > `profile\extensions\<id>.xpi` 是可行的（启动时会重新扫描并更新
 > `extensions.json`）—— 用户已经退出的情况下用它省事。Zotero 开着时无效。
 
+### ⚠ 坑 32：`bootstrap.js` 涨到几千行之后怎么办 —— 拆源码、拼生成物
+
+**症状**：不是报错，是**改不动**。本项目的 `bootstrap.js` 涨到 4951 行 / 227 KB
+的一个对象字面量（110 个函数成员 + 24 个状态字段）+ 6 个顶层函数；改任何一处都要
+在 5000 行里找装配、回调、清理三个地方，而文档里的行号引用（`bootstrap.js:3878`）
+每次挪动都集体失效。
+
+**能拆，但拆法有讲究**：Zotero 的 bootstrapped extension **只加载 xpi 根目录下的
+`bootstrap.js` 一个文件**（`manifest.json` 也必须在根目录）。所以有两种拆法：
+
+| 拆法 | 做法 | 评价 |
+|---|---|---|
+| **A. 运行时多文件加载** | 在 `bootstrap.js` 里用 `Services.scriptloader.loadSubScript(rootURI + "modules/x.js", scope)` 逐个加载 | 真正的模块化，但：① 要把子目录打进 xpi；② **目标 scope 要确认**（`startup()` 里 `this` 不可靠，见坑 2）。这两点都没实测过，属于在最容易黑箱失败的地方引入新失败模式 |
+| **B. 源码分文件 + 生成单文件** ← 本项目选的 | 源码放 `src/*.js`，用生成器拼成 `bootstrap.js`，**运行时与拆分前完全一样** | 零新增运行时风险；代价是多一条"改源码要重新生成"的规矩 |
+
+**做法 B 的关键细节**：
+
+1. **每个源文件单独必须是合法 JS**，所以用 `Object.assign(ZoteroKB, { … })`
+   挂成员，而**不是**把对象字面量切成片段（碎片文件单独 `node --check` 会报错，
+   编辑器里满屏红）：
+   ```js
+   // src/04-prefs.js
+   Object.assign(ZoteroKB, {
+     registerPrefs: function () { … },
+     getPref: function (key, fallback) { … },
+   });
+   ```
+   `00-core.js` 自己写 `var ZoteroKB = { … };`（状态字段 + `startup`），
+   其余模块全部 `Object.assign`。数组/字符串这类数据成员也可以这么挂
+   （本项目用它挂了 `KB_LEVELS` 常量）。
+2. **对象字面量会在 `00-core.js` 末尾提前收口**（`};`），其余成员靠
+   `Object.assign` 注入 —— 这是拆分带来的**唯一**结构性改动，值得单独记一笔。
+3. **顶层函数声明必须留在同一个文件里**：`startup` / `shutdown` /
+   `onMainWindowLoad` 等要走 `scope[method]`（见「2. bootstrap.js 生命周期」），
+   所以它们所在的 `99-bootstrap.js` 必须被拼进生成物，且**不要**包 IIFE。
+4. **生成器要能自证同步**：`build_bootstrap.py --check` 只比对不写，
+   接进 CI；`pack_plugin.py` 打包前再验一次，**不同步就拒绝出包**。
+   为什么不靠人记得跑 —— 忘了生成的症状是"插件像没改"，而 Zotero 的报错
+   没有任何线索，这是本项目最难查的一类事故。
+5. **打包器要显式排除源码目录**（本项目里 `collect_entries` 只收根目录下的
+   **文件**，天然跳过 `src/`，但仍然显式写出来 + 注释，防止以后有人改成递归）。
+6. **等价性怎么证明**（给"这是纯搬迁"一个可复核的证据，而不是嘴上说）：
+   在 node 的 `vm` 里分别执行新旧两份 `bootstrap.js`（顶层没有会执行的语句，
+   所以执行是安全的），逐个比较 `ZoteroKB` 上的成员：**名字集合相同、
+   `String(fn)` 逐字相同、状态字段初值相同、顶层函数齐备**。
+   这个比文本 diff 强的地方在于：它同时验证了"`Object.assign` 的包装真的把每个
+   成员都挂上去了"—— 漏包一个模块，成员集合就会少一截。
+
+### ⚠ 坑 33：`menupopup` 里有一个 `disabled` 的 menuitem，整个子菜单就点不开
+
+写二级菜单时最自然的做法是"文件还没生成就把那一项置灰"。**不要这么做**：
+
+```js
+// ✗ 子菜单会点不开（鼠标悬停刚展开就被自己拆了 / 或者干脆弹不出来）
+mi.setAttribute("disabled", "true");
+```
+
+本机实测：`menupopup` 里只要存在 disabled 的 `menuitem`，整个子菜单就展不开
+（本项目在"选择已有对话："/「打开知识库」两处都碰到过，也在菜单分组标题上
+碰到过 —— 分组标题原来写成 disabled 的 menuitem，结果同样点不开）。
+
+**改法**：文案里说明（`label + "（还没生成）"`），点击时给一句提示；
+分组标题用**不可聚焦的普通 menuitem**（`tabindex="-1"` + 样式），不要用 disabled。
+
 ### ⚠ 坑 22：`preferences.xhtml` 不能带 `<?xml?>` 声明 —— 面板点进去一片空白
 
 **最难查的一类**：设置窗口左侧能看到你的面板项，点进去**一片空白、无报错**。

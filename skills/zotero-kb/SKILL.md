@@ -33,6 +33,18 @@ description: 检索和阅读本机 Zotero 文献知识库，并记录使用经�
 | 资源 `zotero-kb://item/full/{key}` | 全文（篇幅大，慎用） |
 | 资源 `zotero-kb://collections` | 分类清单 |
 
+**同一份内容在磁盘上也是文件**（给了 key 就能直接用 read 工具读，
+不必绕 MCP）—— 这在"用户要自己打开某一篇的某一层"时最方便，
+面板的「打开知识库…」和 Zotero 的右键「打开知识库」读的就是同一批路径：
+
+| 层面 | 文件（相对知识库目录） |
+|---|---|
+| 摘要与要点 | `views\<key>.tldr.md` |
+| 完整档案 | `papers\<key>.md` |
+| 按页正文 | `fulltext\<key>.md` |
+| 图注与表格 | `views\<key>.figures.md`（这篇没有图表时不存在） |
+| 权重与经验 | `views\<key>.weight.md` |
+
 ## 使用纪律
 
 1. **先搜后读**：任何与文献相关的问题，第一步都是 `kb_search`。

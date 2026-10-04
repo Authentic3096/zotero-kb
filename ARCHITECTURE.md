@@ -346,7 +346,8 @@ parts = re.split(r"(?<=[。！？；.!?;])\s*", para)
   定位不到就标 `verified=False`（`metafill.py:1347-1376`）。
 - **离线侧不写回任何东西**（模块红线，`metafill.py:21-22`），只由本地服务的
   `/metafill` 端点暴露建议；真正落库在 Zotero 插件里 —— 写前**再查一次**当前值仍为空，
-  再 `setField` / `setCreators` + `saveTx()`（`zotero-plugin/bootstrap.js:1965-1983`）。
+  再 `setField` / `setCreators` + `saveTx()`
+  （`zotero-plugin/src/08-metafill.js` 的 `applyMeta`）。
 
 #### A7. 增量还是全量
 
@@ -499,55 +500,113 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 
 #### B6. Zotero 插件的几个关键机制
 
-`zotero-plugin/bootstrap.js`（约 4950 行，bootstrapped extension，Zotero 7~10）。
+插件是 **bootstrapped extension**（Zotero 7~10）。
+**源码在 `zotero-plugin/src/*.js`，按功能分 20 个文件**；`zotero-plugin/bootstrap.js`
+是它们拼出来的**生成物**（`tools/build_bootstrap.py`，xpi 里装的就是它）——
+原因见「五、目录与归属」里那一段。
 
 **启动是"分步执行 + 逐步记录"**：`registerPrefs → registerPrefObserver →
 registerPrefPane → registerNotifier → registerWeightColumn → startTaskPolling`，
 每步成败进 `steps` 并写进状态文件 —— 因为 Zotero 的调试日志重启即失
-（`bootstrap.js:64-81, 143-155`）。
+（`src/00-core.js` 的 `startup`）。
 
 > 工具栏按钮与右键菜单**在 `startup` 里也要注册一次**：实测 `onMainWindowLoad`
 > 在 Zotero 启动时**从未被调用**（那时主窗口已存在），该钩子只对"插件启动后新开的窗口"
-> 触发（`bootstrap.js:83-113`）。
+> 触发（`src/00-core.js` 的 `startup` 里那段重试）。
 
 **「知识库权重」列**：`Zotero.ItemTreeManager.registerColumn`。关键约束是
 ItemTree 的 `dataProvider` **同步且逐行调用**，不能在里头发网络请求
 （几百行会打爆服务）—— 所以启动/刷新时拉一次 `GET /weights` 全量进 `weightsCache`，
-provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
+provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`）。
 
-**右键菜单五组**（每次 `popupshowing` 重建，并判断 `event.target !== popup`
-以免子菜单冒泡把自己的菜单拆掉，`bootstrap.js:3878-3899`）：
+**右键菜单六组**（每次 `popupshowing` 重建，并判断 `event.target !== popup`
+以免子菜单冒泡把自己的菜单拆掉，`src/14-menus.js` 的 `registerItemMenu`）：
 ① 发送到 DSH（新建/已有对话）② 分类建议 ③ 标为重点/取消
-④ 重建这一篇的知识库条目（专治"正文提取坏了但版本号没变、增量会跳过"）
-⑤ 补全元数据。
+④ 补全元数据 ⑤ 重建这一篇的知识库条目（专治"正文提取坏了但版本号没变、
+增量会跳过"）⑥ **打开知识库（分级）**—— 二级菜单列这一篇的五个层面
+（摘要与要点 / 完整档案 / 按页正文 / 图注与表格 / 权重与经验），点了直接打开
+那个 md，见下面 B7。
 
 **"发送到 DSH"走文件信箱，不走 HTTP**：往 `~/.dsh/zotero-bridge/` 投 JSON，
 先写 `.tmp` 再原子改名，然后每 500ms 探 `results/<id>.json`
-（`bootstrap.js:3379-3415`）。为什么不用 HTTP 写在注释里：DSH 的 desktop profile
+（`src/12-dsh.js` 的 `bridgeRequest`）。为什么不用 HTTP 写在注释里：DSH 的 desktop profile
 **没有 `webServer` 服务**，走 `/api` 也不行 —— 那是"受信任 + 已认证"专用通道，
-外部程序一律 401（`bootstrap.js:3370-3377`）。
+外部程序一律 401（`src/12-dsh.js` 的 `bridgeDir` 那一段）。
 载荷**只发"解析后的存放路径"，不发正文** —— 正文已在 `papers/<key>.md` 与
 `fulltext/<key>.md`，AI 有读文件的工具，把正文塞进消息只是白烧 token
-（`bootstrap.js:3428-3436`）。
+（`src/12-dsh.js` 的 `sendToDSH`）。
 
 **任务轮询用 `Services.tm` 定时器 + setTimeout 递归，不用 `setInterval`**：
 实测 `setInterval` 创建成功但**回调从不触发**（状态文件里 `taskPolling=true`
 而 `tickCount=0`），链式 setTimeout 也不可靠，所以主路径换成 nsITimer，
-哪条路生效记进状态文件的 `delayBy`（`bootstrap.js:4628-4730`）。
+哪条路生效记进状态文件的 `delayBy`（`src/18-taskpoll.js` 的 `startTaskPolling`）。
 每 2 个 tick（约 4 秒）刷一次权重缓存（原来 30 秒，用户在别处改权重后
 要等半分钟才跟上、像"没生效"）；每 15 个 tick（约 30 秒）才写一次状态文件，
-因为那是磁盘 IO（`bootstrap.js:4759-4772`）。状态文件在 `kb/plugin-status.json`，
+因为那是磁盘 IO（`src/18-taskpoll.js` 的 `runTask`）。状态文件在 `kb/plugin-status.json`，
 **`tickCount` 在涨就说明轮询活着**。
 
-#### B7. 管理面板
+#### B7. 打开知识库（分级）：把"找文件"变成两次点选
 
-`tools/gui.py`，**tkinter/ttk**，底部常驻日志区。七个页签（`gui.py:435-464`）：
+**问题**：知识库目录里是 `papers/22X9PMR6.md`、`views/7X23G52Y.tldr.md` ——
+文件名是 Zotero 的条目 key，**人认不出是哪篇**。想打开某一篇的某一层，
+只能先记 key、再去目录里翻；而目录根下最显眼的是 `index.db` 和 `INDEX.md`，
+所以用户的原话是"打开文件夹后仍然是只有索引，看不见文献的名"。
+
+**做法**：给"一篇文献有几层可看"建立数据模型，三个消费方共用一份定义：
+
+| 级别 | 文件 | 内容 |
+|---|---|---|
+| 摘要与要点 | `views/<key>.tldr.md` | 元数据 + 结构化字段 + 摘要 + 笔记要点 + 使用经验 |
+| 完整档案 | `papers/<key>.md` | 元数据 + 摘要 + 每页首段 + 笔记与标注 |
+| 按页正文 | `fulltext/<key>.md` | 带 `## p.N` 锚点的正文 |
+| 图注与表格 | `views/<key>.figures.md` | 散在各页末尾的图注与表格汇总成一份 |
+| 权重与经验 | `views/<key>.weight.md` | 检索权重、重点标记、人工分、这篇的全部经验 |
+
+定义在 `offline/kbviews.py` 的 `LEVELS`（**唯一事实来源**）：
+
+- **面板**：「知识库结构」页的「打开知识库…」→ 先弹文献列表（复用已有的
+  `PaperPicker`：作者/年份/标题、可搜索可排序）→ 选中一篇再列五个级别
+  （`tools/panels/browser.py` 的 `LevelPicker`）→ 双击用系统默认程序打开那个 md。
+- **Zotero 右键**：第 ⑥ 组「打开知识库」二级菜单列同样的五个级别
+  （`src/13-kbopen.js` 的 `KB_LEVELS` 是 Python 那份的**镜像**，
+  由 `tools/check_kb_levels.py` 盯着 id/标签/路径模板三者一致）；
+  缺文件的级别在文案里标「（还没生成）」而**不设 disabled**
+  —— 本机实测 menupopup 里只要有 disabled 的 menuitem，整个子菜单就点不开。
+- **MCP**：资源 `zotero-kb://item/tldr/{key}` 的渲染实现就是
+  `kbviews.render("tldr", …)`（原来写在 `online/server.py`，搬过去避免两份实现漂移）。
+
+**两个不显然的决定**：
+
+1. **视图文件在构建时生成，不在"打开时"现生成**。Zotero 右键菜单是**同步**
+   构建的（弹出来那一刻不能等网络、也不能等 Python 起进程），它只能靠
+   "文件在不在"决定显示什么。所以 `offline/convert.py` 在一批条目**全部提交
+   之后**统一生成；单独补齐用 `offline/maintain.py views`（面板「高级」页的
+   「补齐知识库分级文件」就是它）。
+2. **打开文件走四级降级链**（`src/13-kbopen.js` 的 `openKbPath`）：
+   `Zotero.launchURL` → `外部协议服务` → `面板的 pythonw gui.py --open <路径>`
+   （`os.startfile`，本机一直在用、确定可用）→ `Zotero.File...reveal()`
+   （保底：在文件管理器里选中它）。为什么写成链式而不是挑一个：沙箱里这些
+   入口的可用性随版本变，而链式能保证最坏情况也有确定可用的兜底。
+
+`views/` 与 `papers/`、`fulltext/` 同待遇：**可重建的派生物**，删了跑一次
+构建就回来；条目被删除时 `_purge_key` 会连它一起清掉。
+
+#### B8. 管理面板
+
+`tools/gui.py` 只是**入口**（组装 App + 命令行自检 + mainloop）；
+界面代码按"一个页签一个模块"在 `tools/panels/` 下，公共的路径与字体在
+`tools/panels/common.py`（`bootstrap.js` 与 `schemas.resolve_project_root()`
+都拿 `tools/gui.py` 当"项目根在哪"的判据，所以它必须继续存在）。
+
+**tkinter/ttk**，底部常驻日志区。七个页签（`tools/panels/base.py` 的
+`_build_tabs`）：
 **知识库结构**（逐项写清"存的是什么、占多少、能不能删"）、**经验库**、
 **分类建议**、**运行环境**（项目目录 / Python / Ollama 三个位置 + 检测报告 ——
 面板打不开九成是这三者之一不对）、**解析健康**、**元数据**、**高级**
-（侧载安装、诊断、打包、复制 token 这类一次性功能集中在这里，不挡日常操作）。
+（侧载安装、诊断、打包、复制 token、补齐分级文件这类功能集中在这里，
+不挡日常操作）。
 
-#### B8. DSH 侧接入：bundle 与模板
+#### B9. DSH 侧接入：bundle 与模板
 
 `bundle/` 是一个 DSH bundle，往 loader 里 `insert` 一条 `dsh-mcp-client` 配置。
 三条设计理由都写在模板注释里（`bundle/cordis.patch.yml.tmpl:4-33`）：
@@ -573,24 +632,35 @@ provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
 │   ├── offline\                     离线管道：读 Zotero、清洗、切片、向量
 │   │   ├── zreader.py               只读快照（含 WAL）
 │   │   ├── converter.py             清洗 / HTML→MD / 按页切块
-│   │   ├── convert.py               CLI 构建入口
+│   │   ├── convert.py               CLI 构建入口（收尾时生成分级视图）
+│   │   ├── kbviews.py              ★ 分级视图：LEVELS + 渲染 + 落盘（唯一事实来源）
 │   │   ├── judge.py                 本地小模型（Ollama）调用
 │   │   ├── learn.py                 从会话记录里挖经验
-│   │   ├── maintain.py              check / stats / backup / reindex-fst / vacuum
+│   │   ├── maintain.py              check / stats / backup / views / reindex-fst / vacuum
 │   │   └── schemas.py               数据契约 + 权重公式（唯一实现处）
 │   ├── online\                      在线服务
 │   │   ├── searcher.py              混合检索 + 经验查询（唯一读库入口）
-│   │   ├── server.py                MCP 服务器（8 工具 + 4 资源）
+│   │   ├── server.py                MCP 服务器（13 工具 + 4 资源）
 │   │   ├── query.py                 中文分词 / 查询改写 / 覆盖率
 │   │   └── localserver.py           给 Zotero 插件的 HTTP 服务（:8765）
 │   ├── kb\                          数据（可迁移）
 │   │   ├── index.sqlite             ★ 单一事实来源
 │   │   ├── papers\*.md              每篇文献的 Markdown
 │   │   ├── fulltext\                按页正文
+│   │   ├── views\*.md               ★ 分级视图（摘要与要点 / 图注与表格 / 权重与经验）
 │   │   ├── MANIFEST.json            构建清单
 │   │   └── taxonomy-plan.json       分类重整方案
 │   ├── tools\                       管理工具（面板、升级、同步、打包、诊断…）
+│   │   ├── gui.py                   面板**入口**（组装 App + 命令行自检 + mainloop）
+│   │   ├── panels\                  ★ 面板各页签（base / tab_* / browser / common）
+│   │   ├── paper_picker.py          选文献的弹窗（列宽可拖、可排序）
+│   │   ├── build_bootstrap.py       ★ 把 src\*.js 拼成 bootstrap.js
+│   │   ├── check_kb_levels.py       ★ 盯分级清单在 Python 与 JS 两侧一致
+│   │   └── audit_panel.py           面板体检（按钮背后真的有东西吗）
 │   ├── zotero-plugin\               ★ Zotero 插件源码 + 诊断脚本
+│   │   ├── src\*.js                 ★ 按功能拆的源码（20 个文件）
+│   │   └── bootstrap.js             ★ 生成物（xpi 里装的是它，别直接改）
+│   ├── tests\                       本机跑的测试（要真实知识库）
 │   ├── bundle\                      接入 DSH 的 MCP bundle
 │   ├── skills\                      给 DSH 的技能（使用规则 + 插件开发经验）
 │   └── scripts\                     双击用的批处理 / VBS
@@ -603,6 +673,31 @@ provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
 ├── skills\                          技能（从 <项目目录的上级>\...\skills 同步过来）
 └── zotero-bridge\                   文件信箱（requests / results / done）
 ```
+
+### 插件为什么要"源码多文件 + 生成单文件"
+
+Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js` 一个
+文件**（`manifest.json` 也必须在根目录）。所以源码分成 20 个文件之后，运行时
+仍然必须是一个文件：
+
+```
+zotero-plugin/src/00-core.js … 99-bootstrap.js
+        │  python tools/build_bootstrap.py
+        ▼
+zotero-plugin/bootstrap.js     ← xpi 里装的是它
+```
+
+每个源文件用 `Object.assign(ZoteroKB, { … })` 把成员挂到插件对象上，所以
+**每个文件单独也是合法 JS**，能逐个做语法检查（`tools/check_js_syntax.py`）。
+
+为什么不用运行时 `Services.scriptloader.loadSubScript` 真多文件加载：
+① 往 xpi 里加子目录是新的未知（本项目在"装不上、报错又没有线索"上吃过很多次）；
+② 沙箱里 `loadSubScript` 的目标 scope 没实测过，属于在最容易黑箱失败的地方
+引入新失败模式。拼接法让**运行时与拆分前完全一样**。
+
+代价是多了一条"改源码要重新生成"的规矩 —— 这条规矩由三道闸门保证：
+CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
+以及 `pack_plugin.py` 打包前的硬性拒绝（**不同步就不出包**）。
 
 ---
 
@@ -643,22 +738,24 @@ provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
 
 ---
 
-## 八、当前状态（2026-10-04 实测）
+## 八、当前状态（2026-10-05 实测）
 
 > 数字会变，**要看最新值请跑 `3-maintain.cmd stats` 或在 AI 里调 `kb_stats`**；
 > 这一节的作用是让读者对量级有个概念。
 
 | 部件 | 状态 | 证据 |
 |---|---|---|
-| 知识库 | ✅ 95 条目 / 3657 切片 / 3657 向量 / 经验 11 条 | `3-maintain.cmd` |
+| 知识库 | ✅ 95 条目 / 3657 切片 / 3657 向量 / 经验 11 条 / 分级视图 275 份 | `3-maintain.cmd` |
 | MCP 接入 | ✅ **13 工具 + 4 资源** | AI 里 `kb_search` 等工具可直接调用 |
 | 混合检索 | ✅ 中文短语召回 + 向量 + RRF + 权重上浮 | 关键词与语义两路实测均可用 |
 | 分类重整 | ✅ 6 个顶层分类，中英重复已消除 | `zotero_sync.py verify` |
-| Zotero 插件 | ✅ 自动切片 + 分类建议 + 权重列 + 抓取 | 插件验证 30/30；实测分类置信度 0.98 |
+| Zotero 插件 | ✅ 自动切片 + 分类建议 + 权重列 + 抓取 + **打开知识库（分级）** | 插件验证 30/30；实测分类置信度 0.98 |
 | 本地服务 | ✅ 67 项自检 | `localserver.py --test` |
-| 测试 | ✅ 13 个测试文件全过（0 失败）+ 本地服务 67 项自检。⚠ 断言**条数不固定**（约 600）：`test_matching.py` 抽样真实库，13~18 间浮动 | `tests\test_*.py` |
+| 测试 | ✅ 14 个测试文件全过（0 失败）+ 本地服务 67 项自检。⚠ 断言**条数不固定**（约 600）：`test_matching.py` 抽样真实库，13~18 间浮动 | `tests\test_*.py` |
 | DSH 侧收件箱 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
 | **获取文献（需求 9）** | ✅ **真机多轮验收** | 见链路 5；本地模型分类打标签实测可用 |
+| **打开知识库（分级）** | ✅ 面板与 Zotero 右键两处都能用（2026-10-05） | 见 B7；分级视图 275 份已生成 |
+| **代码模块化** | ✅ 插件 20 个源文件 / 面板 9 个页签模块（2026-10-05） | 两处都用"逐字比对"证明是纯搬迁 |
 
 **13 个 MCP 工具**：`kb_search` / `kb_item` / `kb_fulltext` / `kb_figures` /
 `kb_experience_add` / `kb_experience_query` / `kb_weight_set` / `kb_reindex` /
@@ -674,11 +771,15 @@ provider 只做 O(1) 查表（`bootstrap.js:4352-4419`）。
 
 ## 九、下一步（按价值排序）
 
-1. **让 DSH 侧收件箱生效** —— 重启 DSH（文件信箱版不再依赖 webServer）
-2. **Zotero 侧「发送到 DSH」右键菜单** —— 选对话/新建对话，发文献+知识库摘要
-3. **管理面板入口挪到 Zotero 工具栏** —— 像沉浸式翻译那样，点击打开面板
-4. **知识库迁到 Zotero 数据目录** —— 跟着 Zotero 走，换机器只搬一个目录
-5. （长期）**经验回流自动化** —— 会话结束时自动挖经验，减少手工记录
+1. **同一篇里按"摘要深度"再分层** —— 现在的五个级别是按**产出物**分的
+   （摘要 / 档案 / 正文 / 图表 / 权重）；长学位论文还需要"逐段 → 逐节 → 全篇"
+   这种按**深度**的分级
+2. **多级摘要树 + 知识卡片连线图** —— 跨文献的联系（哪几篇在讲同一件事、
+   谁的结论被谁引用）
+3. **每条知识可回溯原文的来源审查** —— 模型引用某条知识时能指到具体页码
+4. **经验回流自动化** —— 会话结束时自动挖经验，减少手工记
+5. **PDF 解析路线对照实验** —— BabelDOC IL vs 现有 PyMuPDF（双栏带公式 /
+   含表格 / 扫描件 三类样本，外加"改 IL 后能否渲染回 PDF"）
 
 ---
 
