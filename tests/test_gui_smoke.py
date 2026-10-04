@@ -78,10 +78,23 @@ titles = [app.notebook.tab(t, "text").strip() for t in tabs]
 #   本轮加了「元数据」页 → 7 个）。
 #   所以断言写成"至少"这些页都在，而不是卡死总数 ——
 #   否则每加一页都要改测试，久了就没人认真看这个测试了。
-check("标签页 ≥ 7", len(tabs) >= 7, str(titles))
+check("标签页 ≥ 8", len(tabs) >= 8, str(titles))
 for want in ("知识库结构", "经验库", "分类建议", "运行环境", "解析健康",
-             "元数据", "高级"):
+             "元数据", "高级", "提示词"):
     check(f"有「{want}」页", want in titles, str(titles))
+
+# 提示词页（本轮新增）：模型在按什么话术干活，用户得看得见、改得动。
+# ⚠ 按**控件**与**回调**查，而不是查方法名 —— 方法在但控件没画出来，
+#   用户一样用不上（这一条是本项目踩过多次的老毛病）。
+check("提示词页有下拉框", getattr(app, "prompt_combo", None) is not None)
+check("提示词页有 system 编辑框", getattr(app, "prompt_system", None) is not None)
+check("提示词页有 user 编辑框", getattr(app, "prompt_user", None) is not None)
+check("提示词页列出了全部提示词",
+      len(getattr(app, "prompt_combo", None).cget("values") or ()) >= 9,
+      str(getattr(app, "prompt_combo", None).cget("values")))
+for fn in ("do_prompt_refresh", "do_prompt_load", "do_prompt_save",
+           "do_prompt_reset", "do_prompt_probe"):
+    check(f"提示词页有回调 {fn}", callable(getattr(app, fn, None)))
 
 # 用户明确要的两页必须在：知识库结构表（各文件夹存什么）、运行环境（三个路径）
 check("结构表控件存在", getattr(app, "struct_tree", None) is not None)
@@ -91,6 +104,16 @@ check("解析健康页有检查按钮", getattr(app, "q_check_btn", None) is not
 check("解析健康页有修复按钮", getattr(app, "q_fix_btn", None) is not None)
 check("解析健康页有「重建+修复」按钮",
       getattr(app, "q_chain_btn", None) is not None)
+# 逐段检查的进度与正文修正（窗格那条链的产物）也要在面板里管得着：
+# 改错了要能撤销、进度乱了要能清空。
+check("解析健康页有「逐段进度与正文修正」按钮",
+      getattr(app, "q_para_btn", None) is not None)
+check("有 do_para_review 回调", callable(getattr(app, "do_para_review", None)))
+try:
+    from panels.para_review import ParaReview  # noqa: F401
+    check("逐段复核窗能 import", True)
+except Exception as exc:      # noqa: BLE001
+    check("逐段复核窗能 import", False, str(exc))
 check("解析健康页有图表开关", getattr(app, "q_figures_var", None) is not None)
 check("运行环境三个路径都有显示", len(getattr(app, "env_vars", {})) == 3,
       str(list(getattr(app, "env_vars", {}).keys())))
@@ -120,6 +143,30 @@ check("有「补齐知识库分级文件」按钮（高级页）",
       any("补齐" in t for t in _btns), str(sorted(set(_btns))[:24]))
 check("「打开知识库…」有回调", callable(getattr(app, "open_kb_browser", None)))
 check("「补齐分级文件」有回调", callable(getattr(app, "do_views", None)))
+
+# 经验库页（本轮新增三个入口：编辑、体检、手动选会话）。
+# 用户的诉求是"经验用户难以直接修改和添加" —— 所以按钮**必须画出来**，
+# 光有方法名不算（本项目踩过"方法在、按钮没画"的坑）。
+_exp_btns = [t for t in _btns if t in ("修改/增添经验…", "经验体检", "选择会话…")]
+check("经验库页有「修改/增添经验…」按钮", "修改/增添经验…" in _btns, str(_exp_btns))
+check("经验库页有「经验体检」按钮", "经验体检" in _btns, str(_exp_btns))
+check("经验库页有「选择会话…」按钮", "选择会话…" in _btns, str(_exp_btns))
+for fn in ("do_exp_edit", "do_exp_checkup", "do_exp_delete", "do_pick_sessions"):
+    check(f"经验库页有回调 {fn}", callable(getattr(app, fn, None)))
+check("经验库页有体检清单控件",
+      getattr(app, "exp_suspect_list", None) is not None)
+# 编辑器与选会话对话框要能 import（它们的 import 失败只在点按钮时才暴露，
+# 那时候用户看到的是"点了没反应"）
+try:
+    from panels.exp_editor import ExperienceEditor, SessionPicker  # noqa: F401
+    check("经验编辑器/会话选择器能 import", True)
+except Exception as exc:      # noqa: BLE001
+    check("经验编辑器/会话选择器能 import", False, str(exc))
+# 队列泵要认 "call"：后台线程把结果交给主线程控件全靠它，
+# 少了这个分支消息会被**静默丢掉**（表现是"点了没反应"）。
+check("队列泵支持 call（跨线程回主线程）",
+      '"call"' in open(os.path.join(ROOT, "tools", "panels", "base.py"),
+                       encoding="utf-8").read())
 
 # 元数据页（本轮新增，"一键补全"就在这里）
 check("元数据页有结果表", getattr(app, "meta_tree", None) is not None)

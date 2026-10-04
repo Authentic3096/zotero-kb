@@ -319,6 +319,59 @@ pages（起止页码）{creator_hint}。
 # 给界面用：这一条提示词"用在哪"
 FIELDS = ("system", "user")
 
+# 「试跑」用的样例占位符取值（面板上那个按钮）。
+# 为什么要有它：提示词改坏了最典型的症状是"模型开始胡说"，而那要等到真实
+# 任务里才发现。给一条固定的样例，改完立刻能看模型怎么回、JSON 解析过不过。
+SAMPLES: dict[str, dict] = {
+    "tag": {"title": "示例标题：磁偶极子反演的初值敏感性",
+            "abstract": "本文比较了联合反演与位置-磁矩分离反演的初值敏感性。"},
+    "summary": {"title": "示例标题", "text": "示例正文：我们提出了一种分离求解方法…"},
+    "extract": {"text": "我试了位置-磁矩分离，误差从 19.78% 降到 0.000000%。"},
+    "metafill": {"text": "示例首页正文：2025 年 12 月，DOI: 10.1234/abc.2025.001",
+                 "creator_hint": "", "creator_rules": ""},
+    "chat": {"context": "【摘要级视图】本文提出…", "history": "（还没聊过）",
+             "question": "这篇用了什么方法？"},
+    "para": {"page": 1, "signals": "symbol_ratio=0.02; cjk_ratio=0.9",
+             "prev_tail": "（这一页的第一段）", "next_head": "（这一页的最后一段）",
+             "text": "示例段落：本文提出了一种分离求解方法，实测误差更小。"},
+    "propose": {"key": "AAAA1111", "instruction": "把这次讨论整理一下",
+                "transcript": "我：分离求解试过了，误差小很多。\n模型：那可以记一条经验。"},
+    "draft": {"text": "我用分离求解试了一下，误差比联合反演小很多。"},
+    "chunks": {"fragments": "[片段 1]\n示例正文，看起来是正常的中文段落。"},
+}
+
+# 哪些提示词要求模型回 JSON（试跑时用 json_mode，并展示解析结果）
+JSON_PROMPTS = ("tag", "summary", "extract", "metafill", "para", "propose",
+                "draft", "chunks")
+
+
+def probe(pid: str, model: str = "") -> dict:
+    """拿样例跑一次，返回提示词全文 + 模型输出 + JSON 解析结果。
+
+    面板的「试跑」用这个。**不改任何文件**。
+    """
+    import judge
+
+    if pid not in SPECS:
+        return {"ok": False, "error": f"没有这一条提示词：{pid}"}
+    sample = SAMPLES.get(pid, {})
+    prompt = render(pid, **sample)
+    want_json = pid in JSON_PROMPTS
+    res = judge.generate(prompt, system=get(pid, "system"), model=model,
+                         json_mode=want_json, temperature=0.0, timeout=240.0)
+    out = {"ok": bool(res.get("ok")), "pid": pid, "prompt": prompt,
+           "system": get(pid, "system"), "want_json": want_json,
+           "output": res.get("text") or "",
+           "model": res.get("model") or "", "error": res.get("error") or ""}
+    if want_json and res.get("ok"):
+        good, data = judge.parse_json(res.get("text") or "")
+        out["json_ok"] = bool(good)
+        out["parsed"] = json.dumps(data, ensure_ascii=False, indent=1)[:1200] \
+            if good else ""
+        if not good:
+            out["error"] = "模型输出不是合法 JSON（这一条会被调用方判失败）"
+    return out
+
 
 def default(pid: str, field_name: str = "system") -> str:
     """注册表里的默认话术。"""

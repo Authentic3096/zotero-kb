@@ -60,10 +60,11 @@ from panels.tab_quality import QualityTab
 from panels.tab_meta import MetaTab
 from panels.tab_env import EnvTab
 from panels.tab_advanced import AdvancedTab
+from panels.tab_prompts import PromptsTab
 
 
 class App(AppBase, StructTab, ExperienceTab, AiTab, QualityTab,
-          MetaTab, EnvTab, AdvancedTab):
+          MetaTab, EnvTab, AdvancedTab, PromptsTab):
     """管理面板主窗口。
 
     方法按页签分在 panels/ 下的各个 mixin 里；这里只把它们拼起来 ——

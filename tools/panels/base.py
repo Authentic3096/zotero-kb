@@ -270,6 +270,7 @@ class AppBase:
         self.tab_quality = ttk.Frame(nb)
         self.tab_meta = ttk.Frame(nb)
         self.tab_adv = ttk.Frame(nb)
+        self.tab_prompts = ttk.Frame(nb)
         nb.add(self.tab_struct, text="  知识库结构  ")
         nb.add(self.tab_exp, text="  经验库  ")
         nb.add(self.tab_ai, text="  分类建议  ")
@@ -277,6 +278,7 @@ class AppBase:
         nb.add(self.tab_quality, text="  解析健康  ")
         nb.add(self.tab_meta, text="  元数据  ")
         nb.add(self.tab_adv, text="  高级  ")
+        nb.add(self.tab_prompts, text="  提示词  ")
         self.notebook = nb
 
         self._build_struct_tab()
@@ -287,6 +289,7 @@ class AppBase:
 
         self._build_env_tab()
         self._build_advanced_tab()
+        self._build_prompts_tab()
 
 
     # ================================================================ 元数据页
@@ -451,6 +454,18 @@ class AppBase:
                 elif kind == "dialog":
                     title, body = payload
                     self._show_dialog(title, body)
+                elif kind == "call":
+                    # 后台线程把结果交给**主线程**的 Tk 控件时用这个。
+                    # 为什么必须走队列：Tk 的控件只能在主线程改，直接在线程里
+                    # 改会随机崩/无反应（见 refresh_status 的同一句说明）。
+                    # ⚠ 加这个分支之前，别处用 ("call", …) 发消息会**被静默
+                    #   忽略**（队列泵只认下面那几种 kind，其余直接丢掉）——
+                    #   表现是"点了按钮没反应"，没有任何报错。
+                    fn, arg = payload
+                    try:
+                        fn(arg)
+                    except Exception as exc:      # noqa: BLE001
+                        self.say(f"[{ts()}] 回调出错：{type(exc).__name__}: {exc}")
                 elif kind == "done":
                     title, code, callback = payload
                     flag = "✓" if code == 0 else f"✗ 退出码 {code}"

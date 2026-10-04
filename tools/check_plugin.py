@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -424,16 +425,24 @@ def main() -> int:
     # 为什么值得单独跑一遍：插件里"字段名写错/名字写错"在 Zotero 里**没有任何
     # 报错**，只表现为"按钮点了没反应"或"窗格空白" —— 而真机验证要重启 Zotero。
     print("\n[桩环境结构验证]")
-    node = shutil.which("node") or os.environ.get("DSH_NODE")
+    # 找 node：**不写死任何本机路径**（这是要公开的仓库，audit_release 会拦）。
+    # 顺序：环境变量 → PATH → 标准安装位置 → DSH 运行时自带的那个
+    # （最后一条的路径在运行时拼出来，文件里没有用户名）。
+    node = os.environ.get("KB_NODE", "") or shutil.which("node") or ""
     if not node:
-        for cand in (r"C:\Users\17326\.dsh\dsh-runtimes\dsh-primary-runtime"
-                     r"\dependencies\node\bin\node.exe",):
-            if os.path.exists(cand):
-                node = cand
-                break
+        cands = [
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "nodejs",
+                         "node.exe"),
+            os.path.join(os.environ.get("ProgramFiles", ""), "nodejs", "node.exe"),
+        ]
+        dsh_home = os.environ.get("DSH_HOME") or os.path.expanduser("~/.dsh")
+        cands += glob.glob(os.path.join(dsh_home, "dsh-runtimes", "*",
+                                        "dependencies", "node", "bin", "node.exe"))
+        node = next((c for c in cands if c and os.path.exists(c)), "")
     script = os.path.join(HERE, "verify_bootstrap.js")
     if not node or not os.path.exists(script):
-        print("  [--] 没有 node 或没有 verify_bootstrap.js，跳过")
+        print("  [--] 没找到 node（或没有 verify_bootstrap.js），跳过"
+              "（CI 的 runner 自带 node，会跑这一项）")
     else:
         r = subprocess.run([node, script], capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
