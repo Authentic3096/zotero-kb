@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import ast
+import glob
 import os
 import re
 import sys
@@ -25,9 +26,34 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 GUI = os.path.join(HERE, "gui.py")
+PANELS = os.path.join(HERE, "panels")
 
 PASS = FAIL = 0
 PROBLEMS: list[str] = []
+
+
+def panel_files() -> list[str]:
+    """面板的全部源码：入口 + panels/ 下的页签模块。
+
+    ⚠ 必须**都扫**：拆成包以后 `do_*` 回调散在各个 mixin 里，只看 gui.py
+      的话每个按钮都会被判成"没有定义"（那是最典型的"审计器改一半"）。
+    """
+    return [GUI] + sorted(glob.glob(os.path.join(PANELS, "*.py")))
+
+
+def panel_source() -> str:
+    """把面板源码拼成一份文本，供正则/ast 检查。
+
+    为什么要删 `from __future__ import ...`：拼起来的文本里，它出现在中间就是
+    SyntaxError（那条 import 必须在文件开头），会让整个 ast.parse 崩掉。
+    它对本脚本要查的东西没有任何影响。
+    """
+    parts = []
+    for path in panel_files():
+        text = open(path, encoding="utf-8").read()
+        text = re.sub(r"^from __future__ import .*$", "", text, flags=re.M)
+        parts.append(f"# ===== {os.path.relpath(path, ROOT)} =====\n{text}")
+    return "\n".join(parts)
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -54,7 +80,10 @@ def main() -> int:
     print("=" * 70)
     print("管理面板体检")
     print("=" * 70)
-    src = open(GUI, encoding="utf-8").read()
+    src = panel_source()
+    files = panel_files()
+    print(f"  扫描 {len(files)} 个文件："
+          + "、".join(os.path.relpath(f, ROOT) for f in files))
     tree = ast.parse(src)
 
     # ---------------- 1. 回调方法都存在吗
