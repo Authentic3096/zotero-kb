@@ -150,7 +150,11 @@ def main() -> int:
     if args:
         files = [a if os.path.isabs(a) else os.path.join(PLUGIN, a) for a in args]
     else:
+        # ⚠ 两层都要扫：插件运行时的源码在 src/ 下（bootstrap.js 是它拼出来的
+        #   生成物），根目录那层放的是 manifest / 设置面板 / 诊断脚本。
+        #   只扫根目录的话，`src/*.js` 里的语法错要等到打包+装进 Zotero 才发现。
         files = sorted(glob.glob(os.path.join(PLUGIN, "*.js")))
+        files += sorted(glob.glob(os.path.join(PLUGIN, "src", "*.js")))
         files = [f for f in files if not f.endswith(".bak-iife")]
 
     print("=" * 64)
@@ -166,7 +170,8 @@ def main() -> int:
             print(f"  [--] {os.path.basename(f)} 不存在")
             continue
         ok, msg = check(f)
-        print(f"  {'[OK]' if ok else '[XX]'} {os.path.basename(f):28} {msg}")
+        label = os.path.relpath(f, PLUGIN).replace(os.sep, "/")
+        print(f"  {'[OK]' if ok else '[XX]'} {label:28} {msg}")
         if not ok:
             bad += 1
     print()

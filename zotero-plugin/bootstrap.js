@@ -1,3 +1,10 @@
+// ⚠ 本文件由 tools/build_bootstrap.py 从 zotero-plugin/src/*.js 生成，
+//    不要直接改这里 —— 改 src/ 下的源文件，再跑：
+//        python tools/build_bootstrap.py
+//    改完没重新生成的话，打包前会被拒绝（tools/pack_plugin.py 会校验）。
+//    源码共 20 个文件，清单在 build_bootstrap.py 的 SRC_ORDER。
+
+// ===== src/00-core.js =====
 /* eslint-disable no-undef */
 /**
  * Zotero 文献知识库插件（bootstrapped extension，Zotero 7+ 与 10 通用）。
@@ -19,6 +26,13 @@
  *   嵌入模型、Ollama 都在那边，插件里重写一遍不现实。
  */
 
+
+/**
+ * 00-core.js —— 插件对象与启动：运行时状态字段、`startup`
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
 var ZoteroKB = {
   id: null,
   version: null,
@@ -40,6 +54,7 @@ var ZoteroKB = {
   lastTickAt: "",       // 最后一次心跳时间
   timerDiag: null,      // 定时器可用性自诊断结果
   mainWindow: null,     // onMainWindowLoad 传进来的主窗口
+
 
   // ================================================================ 生命周期
 
@@ -154,20 +169,94 @@ var ZoteroKB = {
       } catch (e2) { /* 连写文件都失败，只能靠 debug 日志 */ }
     }
   },
+};
 
-  // ================================================================ Ollama 生命周期
+// ===== src/01-lifecycle.js =====
+/**
+ * 01-lifecycle.js —— 卸载与关闭：`shutdown` / `install` / `uninstall`
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
-  /**
-   * Ollama 的"谁启动、谁负责关"标记文件。
-   *
-   * 为什么要独立文件：Zotero 插件和 DSH 插件都想管 Ollama。如果共用一个标记，
-   * 一边关闭就会把另一边启动的也关掉（比如 DSH 退出时把 Zotero 正在用的关了）。
-   * 各记各的，谁启动谁负责收尾，互不干扰。
-   *
-   * 为什么不用 prefs：prefs 是持久化的，Zotero 崩溃时来不及清标记，
-   * 下次启动就会"误以为是自己启动的"而去关一个不是自己开的 Ollama。
-   * 每次开机/每次启动都重判 + 用文件标记，能自然自愈。
-   */
+  shutdown: function () {
+    // 同 startup：Zotero 调 shutdown() 时 `this` 同样不可靠，用闭包引用
+    var self = ZoteroKB;
+    self.alive = false;
+    // 关掉可能还开着的进度提示（不留孤儿窗口）
+    try { self.closeProgress(); } catch (e) { /* ignore */ }
+    // Ollama 收尾：只有"标记文件在"（= 是我们拉起来的）才关。
+    // 放在最前面 —— Zotero 关闭时留给 shutdown 的时间有限，先做要紧的。
+    try { self.ollamaOnShutdown(); } catch (e) { /* ignore */ }
+    // 本地服务同理：只关我们自己拉起的那一个（随弃随关）
+    try { self.serverOnShutdown(); } catch (e) { /* ignore */ }
+    try {
+      if (Zotero.ZoteroKB === self) delete Zotero.ZoteroKB;
+    } catch (e) { /* ignore */ }
+    try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
+    try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
+    try {
+      if (self.notifyIDs && self.notifyIDs.length) {
+        self.notifyIDs.forEach((id) => Zotero.Notifier.unregisterObserver(id));
+        self.notifyIDs = [];
+      }
+    } catch (e) { Zotero.logError(e); }
+    try {
+      if (self.prefObserver) {
+        Zotero.Prefs.unregisterObserver(self.prefObserver);
+        self.prefObserver = null;
+      }
+    } catch (e) { Zotero.logError(e); }
+    Zotero.debug("[zotero-kb] 已卸载");
+  },
+
+
+  install: function () {},
+
+  uninstall: function () {},
+
+  // ================================================================ 首选项
+
+  PREFS: {
+    server: "zotero-kb.server",
+    token: "zotero-kb.token",
+    model: "zotero-kb.model",
+    autoProcess: "zotero-kb.autoProcess",
+    categories: "zotero-kb.categories",
+    // ---- 模型来源（支持多后端）
+    provider: "zotero-kb.provider",     // ollama | openai
+    apiModel: "zotero-kb.apiModel",     // 如 deepseek-chat
+    apiKey: "zotero-kb.apiKey",
+    apiBaseUrl: "zotero-kb.apiBaseUrl",
+    // 从 DSH 导入文献前是否先弹确认框（**默认关**）。
+    //
+    // ⚠ 这里原来默认是 true，被用户否掉了。用户的原话：
+    //   "查询文献都是在dsh中做，那下载列表最好也是通过dsh的对话中显示，
+    //    这样才是更符合使用习惯的"
+    //   —— 搜索、列表、挑选本来就在 DSH 对话里完成，再弹一个 Zotero 模态框
+    //   等于把一次连贯的对话中断成两个界面。**确认应该在用户做选择的地方。**
+    //   所以：确认与回报都挪到 DSH 对话里，Zotero 这边默认静默入库。
+    //   想要老行为的人可以在设置面板把这个勾打开。
+    acquireConfirm: "zotero-kb.acquireConfirm",
+    // 从 DSH 导入的文献，落库后是否走一遍**本地模型的分类/打标签**流程。
+    //
+    // 用户明确要这一步（"填进去后走本地大模型自动打标签分类的流程"）。
+    // 一次性全部算完、再用**一个**汇总框问（见 askApplyBatch）——
+    // 不用每篇弹一次：抓 5 篇弹 5 个模态框，点完"添加"还要连点 5 次。
+    acquireAutoClassify: "zotero-kb.acquireAutoClassify",
+  },
+});
+
+// ===== src/02-paths.js =====
+/**
+ * 02-paths.js —— 路径解析：知识库、项目根、Python、Ollama、桥接信箱都在哪
+ * 一律**不写死**：能问服务的就问服务，能探测的就探测
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
   // ================================================================ 路径解析
 
   /**
@@ -192,6 +281,7 @@ var ZoteroKB = {
     //   "服务没连上，请先在设置里填位置" —— 比指到一个不存在的目录好。
     return "";
   },
+
 
   /**
    * 记住服务端告诉我们的运行环境（healthCheck 时调用）。
@@ -218,6 +308,7 @@ var ZoteroKB = {
     }
     if (info.kb_dir) this.rememberKbDir(info.kb_dir);
   },
+
 
   /**
    * 弹「选择文件夹」对话框。返回 Promise<string>（取消则空串）。
@@ -263,6 +354,7 @@ var ZoteroKB = {
     });
   },
 
+
   /** 弹「选择文件」对话框（选 python.exe / ollama.exe 用）。 */
   pickFile: function (title, filterTitle, filterExt) {
     return new Promise(function (resolve) {
@@ -297,6 +389,7 @@ var ZoteroKB = {
     });
   },
 
+
   /**
    * 把运行环境配置推给服务端，让它落盘到 <项目>\kb-location.json。
    *
@@ -314,6 +407,7 @@ var ZoteroKB = {
     }
   },
 
+
   /** 从服务端取运行环境诊断（设置面板「检测」按钮用）。 */
   kbEnvReport: async function () {
     var self = ZoteroKB;
@@ -323,6 +417,7 @@ var ZoteroKB = {
       return { ok: false, error: String((e && e.message) || e) };
     }
   },
+
 
   /** 记住服务端给的知识库位置（healthCheck 时调用）。 */
   rememberKbDir: function (dir) {
@@ -336,6 +431,7 @@ var ZoteroKB = {
     } catch (e) { /* ignore */ }
   },
 
+
   /**
    * @deprecated 保留仅为兼容旧调用点。
    * 服务端报的项目根**不再**写进用户设置键（那样会覆盖用户填的值），
@@ -344,6 +440,7 @@ var ZoteroKB = {
   rememberProjectRoot: function () {
     // 故意不写任何东西：写用户键会让「用户在设置里填的」被服务端的值顶掉。
   },
+
 
   /**
    * 项目根目录（放 .venv / tools\gui.py 的地方）。
@@ -364,6 +461,7 @@ var ZoteroKB = {
       return false;
     }
   },
+
 
   projectRoot: function () {
     // 1) 用户在设置面板里指定的（唯一权威来源）
@@ -401,6 +499,7 @@ var ZoteroKB = {
     return "";   // 找不到就返回空，让调用方报"该去哪设置"，不要瞎猜一个
   },
 
+
   /** 项目里的 Python 解释器（优先 pythonw，无控制台窗口）。 */
   pythonExe: function () {
     // 0) 用户显式指定的最优先
@@ -423,6 +522,7 @@ var ZoteroKB = {
     } catch (e) { /* ignore */ }
     return root ? root + cands[0] : "";   // 不存在也返回它，让上层报明确的错
   },
+
 
   /** Ollama 可执行文件位置：用户指定 > 标准安装位置。 */
   ollamaPaths: function () {
@@ -454,6 +554,7 @@ var ZoteroKB = {
     return { app: base + "\\ollama app.exe", exe: base + "\\ollama.exe" };
   },
 
+
   /** DSH 侧收件箱目录（默认在用户主目录下）。 */
   bridgeDirPath: function () {
     let home = "";
@@ -473,9 +574,11 @@ var ZoteroKB = {
     return home + "\\.dsh\\zotero-bridge";
   },
 
+
   ollamaFlagPath: function () {
     return this.kbDir() + "\\ollama-owned-by-zotero.flag";
   },
+
 
   /**
    * 本地服务（:8765）的归属标记。
@@ -487,6 +590,30 @@ var ZoteroKB = {
   serverFlagPath: function () {
     return this.kbDir() + "\\server-owned-by-zotero.flag";
   },
+});
+
+// ===== src/03-processes.js =====
+/**
+ * 03-processes.js —— 本地服务与 Ollama 进程的起停（带 flag 文件，不抢别人的进程）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
+  // ================================================================ Ollama 生命周期
+
+  /**
+   * Ollama 的"谁启动、谁负责关"标记文件。
+   *
+   * 为什么要独立文件：Zotero 插件和 DSH 插件都想管 Ollama。如果共用一个标记，
+   * 一边关闭就会把另一边启动的也关掉（比如 DSH 退出时把 Zotero 正在用的关了）。
+   * 各记各的，谁启动谁负责收尾，互不干扰。
+   *
+   * 为什么不用 prefs：prefs 是持久化的，Zotero 崩溃时来不及清标记，
+   * 下次启动就会"误以为是自己启动的"而去关一个不是自己开的 Ollama。
+   * 每次开机/每次启动都重判 + 用文件标记，能自然自愈。
+   */
+
 
   /** 本地服务是否响应（问 /health，不需要 token）。 */
   serverUp: async function () {
@@ -499,6 +626,7 @@ var ZoteroKB = {
       return false;
     }
   },
+
 
   /** 拉起本地服务（不经控制台窗口）。 */
   serverStart: function () {
@@ -536,6 +664,7 @@ var ZoteroKB = {
       }
     }
   },
+
 
   /**
    * Zotero 启动时：确保本地服务可用（**随用随取**）。
@@ -584,6 +713,7 @@ var ZoteroKB = {
     }
   },
 
+
   /**
    * Zotero 关闭时：**只关自己启动的那个**（随弃随关）。
    *
@@ -621,6 +751,7 @@ var ZoteroKB = {
     } catch (e) { /* ignore */ }
   },
 
+
   /** Ollama 的 API 是否响应（比看进程更可靠：能确认服务真的可用）。 */
   ollamaUp: async function () {
     try {
@@ -632,6 +763,7 @@ var ZoteroKB = {
       return false;
     }
   },
+
 
   /** 启动 Ollama（先试托盘应用，再试 serve）。 */
   ollamaStart: function () {
@@ -670,6 +802,7 @@ var ZoteroKB = {
     Zotero.debug("[zotero-kb] 找不到 ollama：" + app);
     return false;
   },
+
 
   /**
    * Zotero 启动时：确保 Ollama 可用。
@@ -710,6 +843,7 @@ var ZoteroKB = {
       Zotero.debug("[zotero-kb] Ollama 处理失败：" + e);
     }
   },
+
 
   /**
    * Zotero 关闭时：**只关自己启动的那个**。
@@ -763,71 +897,16 @@ var ZoteroKB = {
     } catch (e) { /* ignore */ }
     Zotero.debug("[zotero-kb] 已关闭由本插件启动的 Ollama");
   },
+});
 
-  shutdown: function () {
-    // 同 startup：Zotero 调 shutdown() 时 `this` 同样不可靠，用闭包引用
-    var self = ZoteroKB;
-    self.alive = false;
-    // 关掉可能还开着的进度提示（不留孤儿窗口）
-    try { self.closeProgress(); } catch (e) { /* ignore */ }
-    // Ollama 收尾：只有"标记文件在"（= 是我们拉起来的）才关。
-    // 放在最前面 —— Zotero 关闭时留给 shutdown 的时间有限，先做要紧的。
-    try { self.ollamaOnShutdown(); } catch (e) { /* ignore */ }
-    // 本地服务同理：只关我们自己拉起的那一个（随弃随关）
-    try { self.serverOnShutdown(); } catch (e) { /* ignore */ }
-    try {
-      if (Zotero.ZoteroKB === self) delete Zotero.ZoteroKB;
-    } catch (e) { /* ignore */ }
-    try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
-    try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
-    try {
-      if (self.notifyIDs && self.notifyIDs.length) {
-        self.notifyIDs.forEach((id) => Zotero.Notifier.unregisterObserver(id));
-        self.notifyIDs = [];
-      }
-    } catch (e) { Zotero.logError(e); }
-    try {
-      if (self.prefObserver) {
-        Zotero.Prefs.unregisterObserver(self.prefObserver);
-        self.prefObserver = null;
-      }
-    } catch (e) { Zotero.logError(e); }
-    Zotero.debug("[zotero-kb] 已卸载");
-  },
-
-  install: function () {},
-  uninstall: function () {},
-
-  // ================================================================ 首选项
-
-  PREFS: {
-    server: "zotero-kb.server",
-    token: "zotero-kb.token",
-    model: "zotero-kb.model",
-    autoProcess: "zotero-kb.autoProcess",
-    categories: "zotero-kb.categories",
-    // ---- 模型来源（支持多后端）
-    provider: "zotero-kb.provider",     // ollama | openai
-    apiModel: "zotero-kb.apiModel",     // 如 deepseek-chat
-    apiKey: "zotero-kb.apiKey",
-    apiBaseUrl: "zotero-kb.apiBaseUrl",
-    // 从 DSH 导入文献前是否先弹确认框（**默认关**）。
-    //
-    // ⚠ 这里原来默认是 true，被用户否掉了。用户的原话：
-    //   "查询文献都是在dsh中做，那下载列表最好也是通过dsh的对话中显示，
-    //    这样才是更符合使用习惯的"
-    //   —— 搜索、列表、挑选本来就在 DSH 对话里完成，再弹一个 Zotero 模态框
-    //   等于把一次连贯的对话中断成两个界面。**确认应该在用户做选择的地方。**
-    //   所以：确认与回报都挪到 DSH 对话里，Zotero 这边默认静默入库。
-    //   想要老行为的人可以在设置面板把这个勾打开。
-    acquireConfirm: "zotero-kb.acquireConfirm",
-    // 从 DSH 导入的文献，落库后是否走一遍**本地模型的分类/打标签**流程。
-    //
-    // 用户明确要这一步（"填进去后走本地大模型自动打标签分类的流程"）。
-    // 一次性全部算完、再用**一个**汇总框问（见 askApplyBatch）——
-    // 不用每篇弹一次：抓 5 篇弹 5 个模态框，点完"添加"还要连点 5 次。
-    acquireAutoClassify: "zotero-kb.acquireAutoClassify",
-  },
+// ===== src/04-prefs.js =====
+/**
+ * 04-prefs.js —— 首选项：默认值、读取、变更监听
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   registerPrefs: function () {
     // 默认值可以在这里设，也可以走 prefs.js 前缀注册。
@@ -849,6 +928,7 @@ var ZoteroKB = {
     }
   },
 
+
   getPref: function (key, fallback) {
     try {
       const v = Zotero.Prefs.get(key);
@@ -857,6 +937,7 @@ var ZoteroKB = {
       return fallback;
     }
   },
+
 
   registerPrefObserver: function () {
     const self = this;
@@ -870,12 +951,23 @@ var ZoteroKB = {
     Zotero.Prefs.registerObserver(this.PREFS.server, this.prefObserver);
     Zotero.Prefs.registerObserver(this.PREFS.token, this.prefObserver);
   },
+});
+
+// ===== src/05-server.js =====
+/**
+ * 05-server.js —— 与本地服务通信：`baseURL` / `request` / `healthCheck`
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 与服务通信
 
   baseURL: function () {
     return this.getPref(this.PREFS.server, "http://127.0.0.1:8765").replace(/\/+$/, "");
   },
+
 
   request: async function (method, path, body) {
     const url = this.baseURL() + path;
@@ -940,6 +1032,7 @@ var ZoteroKB = {
     }
   },
 
+
   healthCheck: async function () {
     try {
       const info = await this.request("GET", "/health");
@@ -976,6 +1069,16 @@ var ZoteroKB = {
     }
     return this.serverOk;
   },
+});
+
+// ===== src/06-watch.js =====
+/**
+ * 06-watch.js —— 新条目监听：条目保存时自动送进知识库（切片 + 索引 + 向量）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 新条目监听
 
@@ -993,6 +1096,7 @@ var ZoteroKB = {
       callback, ["item"], "zotero-kb", 1
     ));
   },
+
 
   onNotify: function (event, type, ids, extraData) {
     // ⚠ 这里必须用闭包里的 self：
@@ -1013,6 +1117,7 @@ var ZoteroKB = {
       }, 2500);
     }
   },
+
 
   /** 新文献的主流程：查知识库状态 → 需要则送切片 → 要分类建议 → 询问用户 */
   handleNewItem: async function (item) {
@@ -1067,6 +1172,7 @@ var ZoteroKB = {
     }
   },
 
+
   waitJob: async function (jobId, maxSeconds) {
     const deadline = Date.now() + (maxSeconds || 30) * 1000;
     while (Date.now() < deadline) {
@@ -1083,6 +1189,16 @@ var ZoteroKB = {
     }
     return null;
   },
+});
+
+// ===== src/07-classify.js =====
+/**
+ * 07-classify.js —— 分类建议：让本地模型判断该归到哪个分类，可一键应用或对话调整
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 分类建议
 
@@ -1101,6 +1217,7 @@ var ZoteroKB = {
     };
   },
 
+
   configuredCategories: function () {
     // 设置里可以填「分类名,分类名」手动指定；留空则用知识库现有的
     const raw = this.getPref(this.PREFS.categories, "");
@@ -1108,6 +1225,7 @@ var ZoteroKB = {
     return String(raw).split(/[,，\n]/).map((s) => s.trim())
       .filter(Boolean).map((name) => ({ name: name }));
   },
+
 
   /**
    * 只问模型要分类建议，**不弹任何窗**。拿不到就返回 null。
@@ -1153,6 +1271,7 @@ var ZoteroKB = {
     }
   },
 
+
   suggestFor: async function (item, feedback, previous) {
     const meta = this.buildMeta(item);
     if (!meta.title && !meta.abstract) return;
@@ -1165,6 +1284,7 @@ var ZoteroKB = {
     }
     this.askApply(item, res, feedback);
   },
+
 
   /**
    * 一批新文献的**汇总**分类确认（从 DSH 导入时用）。
@@ -1238,6 +1358,7 @@ var ZoteroKB = {
     return { applied: 0, skipped: list.length, done: true };
   },
 
+
   /**
    * 标重点 / 取消重点（右键菜单用）。
    *
@@ -1283,6 +1404,7 @@ var ZoteroKB = {
       self.notify("操作失败", err || "服务端没有响应", null, true);
     }
   },
+
 
   /**
    * 弹窗：显示推荐 → 可「调整」让模型重来 → 满意了「应用」。
@@ -1364,6 +1486,7 @@ var ZoteroKB = {
     // choice === 2：跳过，什么都不做
   },
 
+
   /** 真正写回 Zotero：分类（归属到 collections）+ 标签 */
   applySuggestion: async function (item, categoryName, tags, addTags) {
     const done = [];
@@ -1390,6 +1513,7 @@ var ZoteroKB = {
       this.notify("写回失败", String(e), null, true);
     }
   },
+
 
   /** 找到或创建分类。只建顶层（用户要求最多两层），不嵌套。 */
   ensureCollection: async function (name) {
@@ -1421,6 +1545,16 @@ var ZoteroKB = {
       return null;
     }
   },
+});
+
+// ===== src/08-metafill.js =====
+/**
+ * 08-metafill.js —— 元数据补全（单篇）：从 PDF 首页找缺的字段，逐条带证据确认
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 元数据补全
 
@@ -1520,6 +1654,7 @@ var ZoteroKB = {
     this.askApplyMeta(item, res);
   },
 
+
   /**
    * 建议的"行文本"：字段 → 建议值　〔来源·置信〕＋ 原文证据 ＋ 补充说明。
    *
@@ -1565,6 +1700,7 @@ var ZoteroKB = {
     this.metaNotes(sug).forEach((n) => { line += "\n     " + n; });
     return line;
   },
+
 
   /**
    * 服务端在建议里附带的"值之外的信息"，逐条列出来（没有就是空数组）。
@@ -1615,6 +1751,7 @@ var ZoteroKB = {
     return out;
   },
 
+
   /**
    * 从建议里取出**给人看**的作者姓名列表。
    *
@@ -1640,6 +1777,7 @@ var ZoteroKB = {
     return String((sug && sug.value) || "").split(/[;；]/)
       .map((s) => s.trim()).filter((s) => s);
   },
+
 
   /**
    * 从建议里取出**能交给 `item.setCreators()`** 的数组（没有就返回空数组）。
@@ -1679,6 +1817,7 @@ var ZoteroKB = {
     return out;
   },
 
+
   /**
    * "一条建议都没有"时的说明文本。
    *
@@ -1712,6 +1851,7 @@ var ZoteroKB = {
                                  : ("没用到 —— " + (m.reason || "未知原因"))));
     return lines.join("\n");
   },
+
 
   /**
    * 弹窗：先给"总览"（照分类建议那套 confirmEx 的样式），再按用户选择走。
@@ -1789,6 +1929,7 @@ var ZoteroKB = {
     this.applyMeta(item, sugs).catch((e) => Zotero.logError(e));
   },
 
+
   /**
    * 逐条确认用的单字段对话框：**一个勾选框，默认勾上**。
    *
@@ -1848,6 +1989,7 @@ var ZoteroKB = {
     if (!checkbox.value) return "no";       // 勾被取消了 → 等同于跳过
     return "yes";
   },
+
 
   /**
    * 把用户勾选的字段写回 Zotero（**唯一**的写入点）。
@@ -2018,6 +2160,16 @@ var ZoteroKB = {
       changed ? ("元数据已写入 " + done.length + " 项") : "元数据没有写入任何项",
       "《" + this.itemLabel(item) + "》\n\n" + body.join("\n\n"));
   },
+});
+
+// ===== src/09-metabatch.js =====
+/**
+ * 09-metabatch.js —— 批量补全 / 批量写回 / 类型与标题修正
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 批量写回（面板发起）
 
@@ -2067,6 +2219,7 @@ var ZoteroKB = {
    * "没有列进来的"，用户看得见，不会以为是漏了）。
    */
   BATCH_ALLOWED_FIELDS: ["date", "DOI", "volume", "issue", "pages"],
+
 
   /**
    * 【面板「一键采用」的执行端 —— 见下方 metaFillMany 的说明】
@@ -2185,6 +2338,7 @@ var ZoteroKB = {
     return out;
   },
 
+
   // ================================================================ 批量补全（多选）
 
   /**
@@ -2295,6 +2449,7 @@ var ZoteroKB = {
     self.reportMetaBatch(out, built.extras);
   },
 
+
   /**
    * 把逐篇的 `/metafill` 结果汇总成"批量写入计划" + "没写进去的那些为什么"。
    *
@@ -2335,6 +2490,7 @@ var ZoteroKB = {
     }
     return { plan: plan, extras: extras };
   },
+
 
   /**
    * 批量写入的**汇总确认框**。
@@ -2405,6 +2561,7 @@ var ZoteroKB = {
     );
   },
 
+
   /** 批量写入的结果回报（成功/跳过/失败 + 没写进去的那些为什么）。 */
   reportMetaBatch: function (out, extras) {
     const body = [];
@@ -2459,6 +2616,7 @@ var ZoteroKB = {
   /** 浏览器"保存网页"最常产生的类型（只有这几种才值得怀疑"它其实是论文"）。 */
   WEBISH_TYPES: ["webpage", "blogPost", "forumPost"],
 
+
   /**
    * 本地初判：这条像不像"先存了网页、后来挂上 PDF"。
    *
@@ -2477,6 +2635,7 @@ var ZoteroKB = {
       return false;
     }
   },
+
 
   /**
    * 类型/标题修正的确认框。
@@ -2541,6 +2700,7 @@ var ZoteroKB = {
     );
     return choice === 0;
   },
+
 
   /**
    * 应用类型/标题修正（**用户确认之后**才调用）。
@@ -2683,6 +2843,7 @@ var ZoteroKB = {
     return report;
   },
 
+
   /** 把 applyTypeFix 的结果讲给用户听（成功几项 / 跳过几项 / 失败几项 + 验证）。 */
   reportTypeFix: function (report) {
     const body = [];
@@ -2733,6 +2894,16 @@ var ZoteroKB = {
    * 用时间戳是为了让标记能自己过期，不会永久吞掉以后手工添加时的分类建议。
    */
   acquiredIDs: {},
+});
+
+// ===== src/10-acquire.js =====
+/**
+ * 10-acquire.js —— 获取文献：DSH 搜好并挑好，由 Zotero 自己抓进库
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   /**
    * DSH 侧搜好、用户挑过之后，把 DOI 列表交给 **Zotero 自己的抓取链路**入库。
@@ -2947,6 +3118,7 @@ var ZoteroKB = {
     return report;
   },
 
+
   /**
    * 解析 DSH 侧发来的载荷。
    * 形状：{ items:[{doi,title}], collectionID?:number, findPdf?:bool,
@@ -2973,6 +3145,7 @@ var ZoteroKB = {
     };
   },
 
+
   /** DOI 归一化。优先用 Zotero 自己的 cleanDOI（它认得 10.xxxx/... 的各种写法）。 */
   cleanDoi: function (s) {
     const raw = String(s == null ? "" : s).trim();
@@ -2984,6 +3157,7 @@ var ZoteroKB = {
     const m = raw.match(/10\.\d{4,9}\/[^\s"'<>]+/);
     return m ? m[0].replace(/[.,;)]+$/, "") : "";
   },
+
 
   /** 全库 DOI → item.key 映射，用来去重。821 条实测 2ms。 */
   doiIndex: async function (libraryID) {
@@ -3002,6 +3176,7 @@ var ZoteroKB = {
     }
     return map;
   },
+
 
   /**
    * 按 DOI 抓元数据，**只翻译不保存**。
@@ -3036,6 +3211,7 @@ var ZoteroKB = {
     return { ok: true, json, translators: names };
   },
 
+
   /** 预览对象 → 一句话摘要（对话框和回报都用它）。 */
   describeAcquireJson: function (json) {
     const j = json || {};
@@ -3054,6 +3230,7 @@ var ZoteroKB = {
     };
   },
 
+
   /** 目标分类：显式给了就用给的，否则用 Zotero 里**当前选中**的分类。 */
   acquireTargetCollection: function (collectionID) {
     try {
@@ -3070,6 +3247,7 @@ var ZoteroKB = {
     return null;
   },
 
+
   /**
    * 存一篇（**这是本文件里除"元数据补全"之外唯一的写库路径**）。
    *
@@ -3085,6 +3263,7 @@ var ZoteroKB = {
     await item.saveTx();
     return item;
   },
+
 
   /**
    * 给刚入库的条目找 PDF —— 走 Zotero 自带的 resolver 链。
@@ -3128,6 +3307,7 @@ var ZoteroKB = {
       return out;
     }
   },
+
 
   /**
    * 抓取前的确认框（**默认不弹**，见 PREFS.acquireConfirm 的注释）。
@@ -3201,6 +3381,7 @@ var ZoteroKB = {
     return { go: choice === 0, remember: choice === 0 && !!checkbox.value };
   },
 
+
   /** 失败原因说人话（对话框与回报共用，避免两处不一致）。 */
   acquireWhyText: function (why) {
     switch (why) {
@@ -3211,6 +3392,7 @@ var ZoteroKB = {
       default: return why || "未知原因";
     }
   },
+
 
   // ---- 抓取进度窗（拿不到就静默降级，不能因为提示挂了把抓取带崩）
 
@@ -3230,6 +3412,7 @@ var ZoteroKB = {
     }
   },
 
+
   acquireProgressSet: function (pw, i, n, text) {
     if (!pw || !pw._kbLine) return;
     try {
@@ -3237,6 +3420,7 @@ var ZoteroKB = {
       pw._kbLine.setText(text.slice(0, 90));
     } catch (e) { /* ignore */ }
   },
+
 
   acquireProgressDone: function (pw, report) {
     if (!pw || !pw._kbLine) return;
@@ -3250,6 +3434,7 @@ var ZoteroKB = {
       pw.startCloseTimer(8000);
     } catch (e) { /* ignore */ }
   },
+
 
   // ---------------------------------------------------------------- 兜底：把下好的 PDF 挂上去
 
@@ -3313,6 +3498,16 @@ var ZoteroKB = {
     out.attached = out.results.filter((r) => r.status === "attached").length;
     return out;
   },
+});
+
+// ===== src/11-notify.js =====
+/**
+ * 11-notify.js —— 提示：进度窗与通知（ProgressWindow 的使用纪律都在这）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 提示
 
@@ -3337,6 +3532,7 @@ var ZoteroKB = {
     self._progressWin = null;
   },
 
+
   /** 建一条新的进度提示（会自动关掉上一条）。 */
   newProgress: function (headline, text) {
     var self = ZoteroKB;
@@ -3349,6 +3545,7 @@ var ZoteroKB = {
     return pw;
   },
 
+
   notify: function (title, text, _win, isError) {
     var self = ZoteroKB;
     try {
@@ -3359,6 +3556,16 @@ var ZoteroKB = {
       Zotero.debug("[zotero-kb] " + title + " — " + text);
     }
   },
+});
+
+// ===== src/12-dsh.js =====
+/**
+ * 12-dsh.js —— 发到 DSH：文件信箱通道（不走 HTTP，见 ARCHITECTURE.md）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 发到 DSH
 
@@ -3366,6 +3573,7 @@ var ZoteroKB = {
   bridgeDir: function () {
     return this.bridgeDirPath();
   },
+
 
   /**
    * 给 DSH 侧收件箱投一个请求文件，等它写回结果。
@@ -3414,6 +3622,7 @@ var ZoteroKB = {
              hint: "检查 DSH 是否在运行、插件是否已装载" };
   },
 
+
   /** 拉取 DSH 的对话列表（只读）。 */
   listDSHSessions: async function () {
     var self = ZoteroKB;
@@ -3424,6 +3633,7 @@ var ZoteroKB = {
       return [];
     }
   },
+
 
   /**
    * 把选中的文献发到 DSH 对话。
@@ -3556,6 +3766,24 @@ var ZoteroKB = {
       self.notify("发送出错", String(e), null, true);
     }
   },
+});
+
+// ===== src/13-kbopen.js =====
+/**
+ * 13-kbopen.js —— 打开知识库（分级）：级别清单、定位文件、交给系统打开
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+
+// ===== src/14-menus.js =====
+/**
+ * 14-menus.js —— 工具栏按钮与条目右键菜单（菜单项都是每次弹出时现建）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 工具栏按钮 / 右键菜单
 
@@ -3612,6 +3840,7 @@ var ZoteroKB = {
     }
   },
 
+
   /**
    * 带控制台的 Python —— 跑命令行脚本、要拿输出时用它。
    *
@@ -3629,6 +3858,7 @@ var ZoteroKB = {
     if (alt !== py && self._exists(alt)) return alt;
     return py;
   },
+
 
   /**
    * 跑一段 Python 并等它结束。返回 `{code, out}`（`out` 恒为空串，见下）。
@@ -3664,6 +3894,7 @@ var ZoteroKB = {
     const { exitCode } = await proc.wait();
     return { code: exitCode, out: "" };
   },
+
 
   /**
    * 从 `MANIFEST.json` 读这次构建的关键结果（**不要解析 stdout**）。
@@ -3701,6 +3932,7 @@ var ZoteroKB = {
     }
   },
 
+
   /** 这一条在 Zotero 里有没有 PDF 附件。 */
   itemHasPdf: function (item) {
     try {
@@ -3714,6 +3946,7 @@ var ZoteroKB = {
     }
   },
 
+
   /** 条目的显示名（弹窗里列清单用）。 */
   itemLabel: function (item) {
     try {
@@ -3722,6 +3955,7 @@ var ZoteroKB = {
       return String((item && item.key) || "");
     }
   },
+
 
   /**
    * 需要用户点「确定」的模态提示。
@@ -3739,6 +3973,7 @@ var ZoteroKB = {
       self.notify(title, text, null, true);
     }
   },
+
 
   /**
    * 逐篇重建知识库条目。**没有 PDF 附件的跳过并弹窗告知。**
@@ -3796,6 +4031,7 @@ var ZoteroKB = {
     }
   },
 
+
   /** 启动管理面板（Python/Tkinter）。已开着就不重复启动。 */
   openPanel: function () {
     var self = ZoteroKB;
@@ -3851,6 +4087,7 @@ var ZoteroKB = {
       self.notify("打开面板失败", String(e), null, true);
     }
   },
+
 
   /**
    * 给条目右键菜单加「发送到 DSH」。
@@ -4236,6 +4473,16 @@ var ZoteroKB = {
       Zotero.logError(e);
     }
   },
+});
+
+// ===== src/15-prefpane.js =====
+/**
+ * 15-prefpane.js —— 设置面板注册与运行状态文件（排错靠它）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 设置面板
 
@@ -4303,6 +4550,7 @@ var ZoteroKB = {
     }
   },
 
+
   /** 把运行状态写到文件，方便从 Python 侧和排障时查看。 */
   writeStatusFile: function (extra) {
     var self = ZoteroKB;
@@ -4346,6 +4594,16 @@ var ZoteroKB = {
       Zotero.debug("[zotero-kb] 写状态文件失败：" + e);
     }
   },
+});
+
+// ===== src/16-weightcol.js =====
+/**
+ * 16-weightcol.js —— 文献列表里的「知识库权重」自定义列
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 权重列
 
@@ -4467,6 +4725,7 @@ var ZoteroKB = {
     }
   },
 
+
   /**
    * 让文献列表重画（权重变化后星号/颜色要立刻更新）。
    *
@@ -4521,6 +4780,7 @@ var ZoteroKB = {
     return done;
   },
 
+
   /** 拉取全量权重映射填进内存缓存（供同步的 dataProvider 查表）。 */
   refreshWeights: async function () {
     try {
@@ -4550,6 +4810,7 @@ var ZoteroKB = {
     return false;
   },
 
+
   /** 注销权重列（插件卸载/禁用时调用，避免留下悬空列）。 */
   unregisterWeightColumn: function () {
     try {
@@ -4561,6 +4822,16 @@ var ZoteroKB = {
     } catch (e) { Zotero.logError(e); }
     this.weightColumnKey = null;
   },
+});
+
+// ===== src/17-windowhook.js =====
+/**
+ * 17-windowhook.js —— 主窗口加载/卸载钩子（窗口重建时把 UI 带回来）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 窗口钩子
 
@@ -4593,6 +4864,7 @@ var ZoteroKB = {
     } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里启动轮询失败：" + e); }
   },
 
+
   onMainWindowUnload: function (win) {
     var self = ZoteroKB;
     Zotero.debug("[zotero-kb] onMainWindowUnload");
@@ -4612,6 +4884,16 @@ var ZoteroKB = {
     // （只停轮询，列注册保留 —— 下次 onMainWindowLoad 会复用）
     try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
   },
+});
+
+// ===== src/18-taskpoll.js =====
+/**
+ * 18-taskpoll.js —— 任务轮询与内建命令（DSH 侧派活、这边执行）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
+Object.assign(ZoteroKB, {
 
   // ================================================================ 任务轮询
 
@@ -4783,6 +5065,7 @@ var ZoteroKB = {
                  + INTERVAL + "ms）");
   },
 
+
   stopTaskPolling: function () {
     var self = ZoteroKB;
     self.taskPolling = false;
@@ -4793,6 +5076,7 @@ var ZoteroKB = {
     Zotero.debug("[zotero-kb] 任务轮询已停止（tickCount="
                  + (self.tickCount || 0) + "）");
   },
+
 
   /** 执行一个任务并把结果回报给服务。 */
   runTask: async function (task) {
@@ -4840,6 +5124,7 @@ var ZoteroKB = {
     return ok;
   },
 
+
   /** 内建命令（不必每次传 JS 源码过去）。 */
   runBuiltinCommand: async function (name) {
     var self = ZoteroKB;
@@ -4875,6 +5160,7 @@ var ZoteroKB = {
     }
   },
 
+
   /** 把任意值转成可 JSON 化的字符串（避免循环引用把回报打挂）。 */
   safeStringify: function (v) {
     if (typeof v === "string") return v;
@@ -4884,7 +5170,15 @@ var ZoteroKB = {
       try { return String(v); } catch (e2) { return "(无法序列化)"; }
     }
   },
-};
+});
+
+// ===== src/99-bootstrap.js =====
+/**
+ * 99-bootstrap.js —— Zotero 要调用的顶层生命周期函数（必须是顶层函数声明）
+ *
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
+ *   bootstrap.js（xpi 里装的是那个生成物）。
+ */
 
 // ============================================================================
 // 顶层生命周期函数

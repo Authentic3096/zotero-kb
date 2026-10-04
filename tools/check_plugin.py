@@ -114,6 +114,38 @@ def main() -> int:
     print("=" * 64)
     problems: list[str] = []
 
+    # ---------------------------------------------------------- 生成物同步
+    # ⚠ 放在最前：xpi 里装的是 `bootstrap.js`，而它是 `src/*.js` 拼出来的
+    #   生成物。它不同步的话，后面所有"代码检查"查的都是**另一份**东西 ——
+    #   而真正装进去的旧代码完全没被查。本机吃过"改了却没生效"的亏，所以这里
+    #   直接把它变成一条会红的检查。
+    print("\n[生成物同步]")
+    sys.path.insert(0, HERE)
+    import build_bootstrap as BB
+
+    sync_problem = ""
+    if not os.path.exists(BB.OUT):
+        sync_problem = "bootstrap.js 不存在"
+    else:
+        try:
+            want = BB.compose()
+            with open(BB.OUT, "rb") as fh:
+                raw = fh.read()
+            if raw[:3] == b"\xef\xbb\xbf":
+                sync_problem = "bootstrap.js 带 UTF-8 BOM"
+            elif raw.decode("utf-8") != want:
+                sync_problem = "bootstrap.js 与 src/*.js 不同步"
+        except Exception as exc:  # noqa: BLE001
+            sync_problem = f"{type(exc).__name__}: {exc}"
+    if sync_problem:
+        print(f"  [XX] {sync_problem}")
+        print("       修：python tools/build_bootstrap.py")
+        print("       （源码是 zotero-plugin/src/*.js，那份才是要改的东西）")
+        problems.append(sync_problem)
+    else:
+        print(f"  [OK] bootstrap.js == src/*.js 拼出来的内容"
+              f"（{len(BB.SRC_ORDER)} 个源文件）")
+
     # ---------------------------------------------------------- manifest
     mpath = os.path.join(PLUGIN, "manifest.json")
     # ⚠ BOM 检查放在最前：带 UTF-8 BOM 的 manifest.json 会让 `json.load` 直接抛
@@ -287,18 +319,29 @@ def main() -> int:
 
     import pack_plugin
     importlib.reload(pack_plugin)
-    for old in os.listdir(PLUGIN):
-        if old.startswith("zotero-kb-") and old.endswith(".xpi"):
-            os.remove(os.path.join(PLUGIN, old))
-    xpi = pack_plugin.pack(None)
-    with zipfile.ZipFile(xpi) as z:
-        names = z.namelist()
-    print(f"  [OK] {xpi}（{os.path.getsize(xpi)} 字节）")
-    print("       内容：" + ", ".join(names))
-    for must in ("manifest.json", "bootstrap.js"):
-        if must not in names:
-            print(f"  [XX] 包里缺 {must}")
-            problems.append(f"xpi 缺 {must}")
+    xpi_for_paths = None
+    if sync_problem:
+        # 不同步就**不打包**：打出来的包是旧代码，装上只会让人以为"改了没生效"，
+        # 而且目录里那个新 xpi 会盖掉上一个能用的包（更难查）。
+        print(f"  [XX] 跳过打包：bootstrap.js 与 src/*.js 不同步，"
+              f"先跑 python tools/build_bootstrap.py")
+    else:
+        for old in os.listdir(PLUGIN):
+            if old.startswith("zotero-kb-") and old.endswith(".xpi"):
+                os.remove(os.path.join(PLUGIN, old))
+        xpi = pack_plugin.pack(None)
+        with zipfile.ZipFile(xpi) as z:
+            names = z.namelist()
+        print(f"  [OK] {xpi}（{os.path.getsize(xpi)} 字节）")
+        print("       内容：" + ", ".join(names))
+        for must in ("manifest.json", "bootstrap.js"):
+            if must not in names:
+                print(f"  [XX] 包里缺 {must}")
+                problems.append(f"xpi 缺 {must}")
+        if "src/00-core.js" in names:
+            print("  [XX] 包里有 src/ —— 源码目录不该进 xpi（白胖、而且没用）")
+            problems.append("xpi 里混进了 src/")
+        xpi_for_paths = xpi
 
     # 打包后立刻查"包内有没有写死的开发机路径"。
     # 为什么接在这里：这个项目要公开发布，包内残留 D:\DSHplugins\...
@@ -306,21 +349,24 @@ def main() -> int:
     # Python 环境"，根因就是从知识库位置反推项目根）。接进打包流程
     # 才能保证不会漏 —— 靠人记得单独跑一个脚本是不可靠的。
     print("\n[包内绝对路径]")
-    try:
-        sys.path.insert(0, HERE)
-        import check_xpi_paths
-        n_bad, bad = check_xpi_paths.check_xpi(xpi)
-        if n_bad:
-            print(f"  [XX] {n_bad} 处写死的本机路径：")
-            for b in bad:
-                print(f"       {b}")
-            problems.append(f"xpi 里有 {n_bad} 处写死的本机路径")
-        else:
-            print("  [OK] 没有写死的本机路径")
-            print("       （Services.dirsvc / %LOCALAPPDATA% / 用户配置"
-                  "这类动态取值不算）")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
+    if not xpi_for_paths:
+        print("  [--] 没有打包，跳过")
+    else:
+        try:
+            sys.path.insert(0, HERE)
+            import check_xpi_paths
+            n_bad, bad = check_xpi_paths.check_xpi(xpi_for_paths)
+            if n_bad:
+                print(f"  [XX] {n_bad} 处写死的本机路径：")
+                for b in bad:
+                    print(f"       {b}")
+                problems.append(f"xpi 里有 {n_bad} 处写死的本机路径")
+            else:
+                print("  [OK] 没有写死的本机路径")
+                print("       （Services.dirsvc / %LOCALAPPDATA% / 用户配置"
+                      "这类动态取值不算）")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
 
     # 设置面板能不能被 Zotero 加载 —— 用户报过"设置里点击文献知识库没有反应"，
     # 根因是 settings.xhtml 头部带了 <?xml?> 声明（Zotero 把内容嵌进 <div>

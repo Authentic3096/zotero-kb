@@ -13,6 +13,13 @@
 Python 的 `zipfile.writestr` 默认就按 MS-DOS 写，所以这里显式设置
 `ZipInfo.create_system = 3`、`flag_bits |= 0x800`、`external_attr = 0o644 << 16`，
 与可用插件保持一致。
+
+## 打包前的硬性闸门（assert_bootstrap_synced）
+
+xpi 里装的是 **`bootstrap.js`（由 `src/*.js` 拼出来的生成物）**，源码在
+`zotero-plugin/src/`。所以只要出现"改了 src 却忘了重新生成"，装进去的就是旧
+代码 —— 表现是"插件像没改"，而 Zotero 的报错没有任何线索。这类事故靠人记着
+跑 build_bootstrap 是不可靠的，改成**打包这一步直接拒绝**。
 """
 
 from __future__ import annotations
@@ -25,6 +32,14 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PLUGIN = os.path.join(ROOT, "zotero-plugin")
+sys.path.insert(0, HERE)
+
+# ⚠ `src/` 是**源码**目录，绝不能进 xpi：
+#   · 它里面的文件是 bootstrap.js 的原料（`Object.assign` 片段），单独装进
+#     Zotero 不会被执行，白胖 200 KB；
+#   · 下面 collect_entries 只收 PLUGIN 根目录下的**文件**，本来就会跳过目录，
+#     但这里显式写出来 —— 以后谁想把打包改成递归收集时，必须看到这条。
+EXCLUDE_DIRS = {"src"}
 
 # 打进包的文件。
 # ⚠ 这里必须**自动列全**，不能只写死几个 —— 曾经因为硬编码列表漏掉了
@@ -50,9 +65,11 @@ ORDER = ["manifest.json", "bootstrap.js", "prefs.js", "settings.xhtml", "setting
 def collect_entries() -> list[str]:
     names = []
     for n in os.listdir(PLUGIN):
+        if n in EXCLUDE_DIRS:
+            continue                      # 源码目录（src/）不进包
         p = os.path.join(PLUGIN, n)
         if not os.path.isfile(p):
-            continue
+            continue                      # 其他目录（variants/ 等）也不进包
         ext = os.path.splitext(n)[1].lower()
         if ext in EXCLUDE_EXT or n in EXCLUDE_NAME or n in EXCLUDE_SCRIPTS:
             continue
@@ -65,10 +82,35 @@ def collect_entries() -> list[str]:
     return ordered
 
 
+def assert_bootstrap_synced() -> None:
+    """打包前必须确认 bootstrap.js 就是 src/*.js 拼出来的。
+
+    接在这里的原因：这个项目里"改了源码但装进去的还是旧的"是最难查的一类
+    事故（插件表现像没改，而 Zotero 的报错又没有任何线索）。靠人记着跑
+    build_bootstrap 是不可靠的，所以让**打包这一步**硬性拒绝。
+    """
+    import build_bootstrap as BB
+    if not os.path.exists(BB.OUT):
+        raise BB.SyncError("bootstrap.js 不存在 —— 先跑 "
+                           "`python tools/build_bootstrap.py`")
+    with open(BB.OUT, "rb") as fh:
+        raw = fh.read()
+    if raw[:3] == b"\xef\xbb\xbf":
+        raise BB.SyncError("bootstrap.js 带 UTF-8 BOM（Zotero 那边的报错会"
+                           "完全没有线索）—— 重新生成")
+    want = BB.compose()
+    if raw.decode("utf-8") != want:
+        raise BB.SyncError("bootstrap.js 与 src/*.js **不同步** —— 先跑 "
+                           "`python tools/build_bootstrap.py` 重新生成"
+                           "（生成物是 xpi 里真正装进去的那份）")
+
+
+
 ENTRIES = collect_entries()
 
 
 def pack(out_path: str) -> str:
+    assert_bootstrap_synced()
     manifest = json.load(open(os.path.join(PLUGIN, "manifest.json"), encoding="utf-8"))
     version = manifest.get("version", "0.0.0")
     if out_path is None:
@@ -90,7 +132,15 @@ def pack(out_path: str) -> str:
     return out_path
 
 
+import build_bootstrap as BB
+
+
 def main() -> int:
+    try:
+        assert_bootstrap_synced()
+    except BB.SyncError as exc:
+        print(f"  [XX] {exc}")
+        return 1
     manifest = json.load(open(os.path.join(PLUGIN, "manifest.json"), encoding="utf-8"))
     version = manifest.get("version", "0.0.0")
     # 先清理旧包，避免目录里堆一串版本让用户装错

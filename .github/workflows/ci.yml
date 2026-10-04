@@ -25,6 +25,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      # ⚠ 必须先查这一条：xpi 里装的是 bootstrap.js，而它是 src/*.js 拼出来的
+      #   生成物。它不同步的话，后面所有检查查的都是"另一份"代码。
+      - name: bootstrap.js 与 src/*.js 是否同步
+        run: python tools/build_bootstrap.py --check
+
       - name: JS 语法检查
         run: python tools/check_js_syntax.py
 
