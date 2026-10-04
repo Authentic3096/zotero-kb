@@ -833,6 +833,69 @@ CREATE TABLE IF NOT EXISTS meta (
     k TEXT PRIMARY KEY,
     v TEXT
 );
+
+-- ---------------------------------------------------------------- 逐段检查层
+--
+-- 为什么这三张表放 DB 而不是 kb/ 下的 json 文件：它们是**用户确认过的
+-- 劳动成果**（哪段查过、改了哪里、边界怎么修正），必须跟 index.db 一起被
+-- 「备份」覆盖到；放成散文件迟早漏备份。
+
+-- 段落边界修正（**视图层**的修正，不动 md 的页锚点）。
+--
+-- ⚠ 为什么不能靠"删掉 md 里的空行"来合并两段：正文里的 `## p.N` 页锚点是
+--   全库约定（kb_fulltext 的 page_from/page_to 靠它），跨页续段时两段之间
+--   正夹着一个页标题，删不得。所以合并只能表达成"段落视图"的修正。
+CREATE TABLE IF NOT EXISTS para_override (
+    override_id INTEGER PRIMARY KEY,
+    item_key    TEXT NOT NULL,
+    kind        TEXT NOT NULL,      -- join_prev（并入上一段）/ split_at（在此切开）
+    p_hash      TEXT NOT NULL,      -- 段落指纹（sha1(段首200字+段长)[:6]），不用段号：段号会漂
+    at          INTEGER DEFAULT 0,  -- split_at 用：字符偏移
+    anchor      TEXT,               -- 段落开头，便于人看
+    reason      TEXT,
+    source      TEXT NOT NULL,      -- local-model / user
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_paraov_key ON para_override(item_key);
+
+-- 逐段检查的进度与结论（**不是聊天记录** —— 对话内容不落盘，见插件侧说明）。
+CREATE TABLE IF NOT EXISTS para_check (
+    item_key      TEXT NOT NULL,
+    p_hash        TEXT NOT NULL,    -- 段落指纹：正文重建后仍能对上
+    page          INTEGER,
+    para_index    INTEGER,
+    logical_index INTEGER,
+    status        TEXT NOT NULL,    -- ok | suspect | fixed | skipped | stale
+    signals       TEXT,             -- JSON：客观信号（符号占比、常见词率…）
+    note          TEXT,
+    patch_ids     TEXT,             -- JSON：关联的 fulltext_patch 行
+    done_units    INTEGER DEFAULT 0,-- 超长段落按"检查单元"分段问模型，记做到第几个
+    checked_at    TEXT NOT NULL,
+    PRIMARY KEY (item_key, p_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_parachk_key ON para_check(item_key);
+
+-- 全文修正层：**重建后仍然生效**的改动（模型建议 / 用户手改 / 公式等）。
+--
+-- 应用方式：convert.py 写完逐页文本、转 md 之前按 anchor 做空白归一化匹配
+-- 并替换（只用链尾：superseded_by IS NULL AND status='applied'）。
+-- ⚠ 锚点不命中时**必须进构建报告**（warnings.patch_miss），不许静默跳过 ——
+--   否则 md 里少了一处修正而没有任何地方说得清为什么。
+CREATE TABLE IF NOT EXISTS fulltext_patch (
+    patch_id      INTEGER PRIMARY KEY,
+    item_key      TEXT NOT NULL,
+    page          INTEGER,          -- 1 基；NULL = 不分页
+    kind          TEXT NOT NULL,    -- text | mark | join | formula | drop
+    anchor        TEXT NOT NULL,    -- 被替换/定位的那段原文（片段，不是段号）
+    replacement   TEXT NOT NULL,    -- 换成什么（文本 / 注释行 / 空串）
+    note          TEXT,
+    source        TEXT NOT NULL,    -- local-model | user | vision
+    status        TEXT NOT NULL,    -- proposed | applied | rejected | superseded
+    superseded_by INTEGER,          -- 版本链：被哪条新补丁取代
+    created_at    TEXT NOT NULL,
+    applied_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_patch_key ON fulltext_patch(item_key, status);
 """
 
 
@@ -928,6 +991,16 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = columns("items")
     if "collections_sig" not in cols:
         conn.execute("ALTER TABLE items ADD COLUMN collections_sig TEXT")
+
+    # 经验层：用户显式编辑时要能追溯（旧值留 history）。
+    # ⚠ `只追加，永不覆盖` 这条原则对**自动流程**（learn.py / MCP 抽取）依然成立，
+    #   只对"用户在面板里手改"开口子 —— 而且改之前先把旧值 push 进 history。
+    exp_cols = columns("experience")
+    if exp_cols:
+        if "updated_at" not in exp_cols:
+            conn.execute("ALTER TABLE experience ADD COLUMN updated_at TEXT")
+        if "history" not in exp_cols:
+            conn.execute("ALTER TABLE experience ADD COLUMN history TEXT")
     conn.commit()
 
 
