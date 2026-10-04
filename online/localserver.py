@@ -2504,36 +2504,33 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/env-config":
             # 写运行环境配置（项目目录 / Python / Ollama）。
-            # 插件设置面板的「运行环境」区保存时调它。
+            # 插件设置面板的「运行环境」区保存时调它；管理面板的「运行环境」页
+            # 走同一份实现（schemas.save_env_config）—— 两条通道语义必须一致。
             # ⚠ 三个位置**互相独立**，绝不能拿一个去推另一个（本机踩过：
             #   面板从知识库位置反推项目根，kb 一搬走就报"找不到 py 环境"）。
+            # ⚠ 空串 = **交回自动探测**（清掉这一项）：插件设置面板的三个框
+            #   本来就是"清空即恢复自动"，服务端以前把空值跳过，于是"清不掉"。
             import schemas as _S
             raw = body.get("env") if isinstance(body.get("env"), dict) else body
             pairs = (("project_root", "project_root", "目录"),
                      ("python", "python_exe", "文件"),
                      ("ollama", "ollama_exe", "文件"))
-            flat: dict = {}
-            for key, _cfg_key, kind in pairs:
-                val = str(raw.get(key) or "").strip()
-                if not val:
-                    continue
-                if not os.path.exists(val):
-                    return self._send(400, {
-                        "error": f"{key} 指向的位置不存在：{val}",
-                        "hint": f"它应该是一个{kind}的完整路径。"
-                                + ("Python 要指到 python.exe（或 pythonw.exe）。"
-                                   if key == "python" else "")})
-                flat[key] = val
+            given = {key: raw.get(key) for key, _cfg_key, _kind in pairs
+                     if key in raw}
             try:
-                if flat:
-                    _S.write_location_config(env=flat)
-                    # 同时写"运行时状态"（用户级，与项目无关）：
-                    # 即使项目根被改错，下次启动也能从这里把 Python 找回来。
-                    _S.write_runtime_state(**flat)
+                res = _S.save_env_config(given)
+            except ValueError as exc:
+                bad = str(exc)
+                hint = ""
+                if "不存在" in bad:
+                    hint = ("它应该是一个目录或文件的完整路径。"
+                            + ("Python 要指到 python.exe（或 pythonw.exe）。"
+                               if "python" in bad else ""))
+                return self._send(400, {"error": bad, "hint": hint})
             except OSError as exc:
                 return self._send(500, {"error": f"写入配置失败：{exc}"})
-            log(f"运行环境已更新：{flat}")
-            return self._send(200, {"ok": True, "saved": flat,
+            log(f"运行环境已更新：{res['saved']}")
+            return self._send(200, {"ok": True, "saved": res["saved"],
                                     "report": env_report()})
 
         if path == "/kb-location":

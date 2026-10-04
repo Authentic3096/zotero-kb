@@ -465,6 +465,61 @@ def test_purge_orphans():
     shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_save_env_config():
+    """运行环境三项的写入语义（面板与 /env-config 共用这一份实现）。
+
+    盯三件事（用户 2026-10-05 要求"面板里也能改运行环境"）：
+      ① 非空且存在的路径 → 写进 `env` 段，并把老版本的**扁平键**一起更新；
+      ② **空串 = 交回自动探测**（写空，而不是"跳过"）—— 跳过的话旧值优先级
+         更高，用户就永远回不到"自动找到 .venv"的状态；
+      ③ 路径不存在 → 抛 ValueError，且**一个字节都不写**。
+    ⚠ 全程把配置/状态文件重定向到临时目录：绝不能碰用户真实的
+      kb-location.json 与 runtime.json（那是本机的路径记录）。
+    """
+    import json
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="kbenv_")
+    olds = (S.LOCATION_FILE, S.USER_LOCATION_FILE, S.USER_CONFIG_DIR)
+    S.LOCATION_FILE = os.path.join(tmp, "kb-location.json")
+    S.USER_LOCATION_FILE = os.path.join(tmp, "location.json")
+    S.USER_CONFIG_DIR = tmp
+    try:
+        real = os.path.join(tmp, "python.exe")
+        open(real, "w", encoding="utf-8").close()
+        S.save_env_config({"python": real, "project_root": tmp, "ollama": ""})
+        cfg = json.load(open(S.LOCATION_FILE, encoding="utf-8"))
+        env = cfg.get("env") or {}
+        check("存在的位置写进 env 段",
+              env.get("python") == os.path.abspath(real), str(env))
+        check("老版本的扁平键一起更新（resolve_* 也认它）",
+              cfg.get("python_exe") == os.path.abspath(real),
+              str(cfg.get("python_exe")))
+        check("空串写空 = 交回自动探测（不是跳过）",
+              "ollama" in env and env["ollama"] == "", str(env))
+        check("运行时状态也写（项目根改错时还能找回 Python）",
+              (S.read_runtime_state() or {}).get("python") == os.path.abspath(real),
+              str(S.read_runtime_state()))
+
+        before = open(S.LOCATION_FILE, encoding="utf-8").read()
+        try:
+            S.save_env_config({"python": os.path.join(tmp, "没有这个.exe")})
+            check("不存在的路径被拒", False, "没抛异常")
+        except ValueError as exc:
+            check("不存在的路径被拒", "不存在" in str(exc), str(exc))
+        check("被拒时配置文件没变",
+              open(S.LOCATION_FILE, encoding="utf-8").read() == before)
+        try:
+            S.save_env_config({})
+            check("空字典被拒（没有要写的键）", False, "没抛异常")
+        except ValueError as exc:
+            check("空字典被拒（没有要写的键）", "没有要写入" in str(exc), str(exc))
+    finally:
+        S.LOCATION_FILE, S.USER_LOCATION_FILE, S.USER_CONFIG_DIR = olds
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     test_clean_text()
     test_html_to_markdown()
@@ -476,6 +531,7 @@ def main() -> int:
     test_parsing_health()
     test_query_rewrite()
     test_purge_orphans()
+    test_save_env_config()
     print(f"\n{'=' * 60}\n通过 {PASS}　失败 {FAIL}\n{'=' * 60}")
     return 1 if FAIL else 0
 

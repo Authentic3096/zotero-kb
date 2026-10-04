@@ -144,6 +144,53 @@ def write_location_config(**kw: Any) -> str:
     raise OSError(f"位置配置写入失败（试过 {targets}）：{last_err}")
 
 
+# ---------------------------------------------------------------- 运行环境三项
+#
+# 项目目录 / Python 解释器 / Ollama 程序这三项有两个入口：
+#   · Zotero 插件的设置面板（走 /env-config 端点）
+#   · 管理面板的「运行环境」页（直接调这里，服务没在跑时也能改）
+# 两条通道**必须同一套语义**，否则会漂移成"插件里清空不生效、面板里生效"
+# 这种查不出来的不一致。所以真正的写入逻辑只有下面这一份。
+
+ENV_KEYS = ("project_root", "python", "ollama")
+# env 段的键 → 老版本用过的**扁平键**（resolve_* 也认它们，写的时候一起清）
+_ENV_FLAT_KEY = {"project_root": "project_root", "python": "python_exe",
+                 "ollama": "ollama_exe"}
+
+
+def save_env_config(values: dict) -> dict:
+    """保存运行环境的三个位置。**只处理传进来的键**。
+
+    · 传了非空值 → 校验路径存在，写进 `env` 段（同时更新对应的扁平键）；
+    · 传了空串   → 这一项**交回自动探测**（键写成空串；不这么写的话旧值
+      优先级更高，用户就永远回不到"自动找到 .venv"的状态）；
+    · 没传的键   → 不动。
+
+    校验不过抛 ValueError（文案是给用户看的）。返回 {"path", "saved"}。
+    """
+    env: dict = {}
+    flat: dict = {}
+    for key in ENV_KEYS:
+        if key not in values:
+            continue
+        val = str(values.get(key) or "").strip().strip('"')
+        if val:
+            val = os.path.abspath(os.path.expanduser(val))
+            if not os.path.exists(val):
+                raise ValueError(f"{key} 指向的位置不存在：{val}")
+            if key == "project_root" and not os.path.isdir(val):
+                raise ValueError(f"项目目录要是一个目录：{val}")
+        env[key] = val
+        flat[_ENV_FLAT_KEY[key]] = val
+    if not env:
+        raise ValueError("没有要写入的键")
+    path = write_location_config(env=env, **flat)
+    # 运行时状态（用户级、与项目无关）一起清/写：项目根被改错时，
+    # 下次也能从这里把 Python 找回来。
+    write_runtime_state(**env)
+    return {"path": path, "saved": env}
+
+
 def _config_dir() -> str:
     """用户级配置目录（放运行时状态，例如上次探测到的 Ollama 路径）。"""
     return USER_CONFIG_DIR

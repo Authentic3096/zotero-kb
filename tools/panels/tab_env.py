@@ -30,6 +30,12 @@ class EnvTab:
 
         为什么值得单独一页：这三个位置**互相独立**，而面板"打不开"
         九成是因为其中一个不对。把它摆在明面上，用户自己就能看出来。
+
+        ⚠ 2026-10-05（用户要求）：这三个位置**可以直接在面板里改**，而且
+          与 Zotero 插件设置**同步** —— 两边读写的是同一份配置
+          （知识库目录下 `kb-location.json` 的 `env` 段，见
+          `schemas.write_location_config`；插件设置面板走 `/env-config`
+          写的也是它）。所以这里是可编辑输入框 + 「浏览…」+「保存并重新检测」。
         """
         f = self.tab_env
         head = ttk.Frame(f, padding=(10, 8, 10, 0))
@@ -38,27 +44,47 @@ class EnvTab:
         ttk.Button(head, text="重新检测", command=self.refresh_env).pack(
             side="right")
 
-        body = ttk.Frame(f, padding=(10, 6, 10, 4))
+        ttk.Label(
+            f, foreground="#666", font=(self.ui_font, 9), justify="left",
+            wraplength=920,
+            text="下面三个位置可以直接在这里改：填好（或点「浏览…」选）"
+                 "再点「保存并重新检测」。它和 Zotero 插件设置里的"
+                 "「运行环境」是同一份配置 —— 在哪边改，两边都用新值。\n"
+                 "留空 = 这一项交回自动探测（例如 Python 留空就用项目里的 .venv）。"
+        ).pack(fill="x", padx=12, pady=(6, 4))
+
+        body = ttk.Frame(f, padding=(10, 2, 10, 4))
         body.pack(fill="x")
 
         self.env_vars = {}
+        self.env_ok = {}          # 每项后面的 "✓ 存在 / ✗ 找不到" 小字
         rows = [
-            ("project_root", "项目目录", "代码和 .venv 所在（含 offline、online）"),
-            ("python", "Python 解释器", "跑脚本用；优先 .venv\\Scripts\\pythonw.exe"),
-            ("ollama", "Ollama 程序", "本地模型（可选，不装也能用 API）"),
+            ("project_root", "项目目录", "dir",
+             "代码和 .venv 所在（含 offline、online）"),
+            ("python", "Python 解释器", "file",
+             "跑脚本用；优先 .venv\\Scripts\\pythonw.exe"),
+            ("ollama", "Ollama 程序", "file",
+             "本地模型（可选，不装也能用 API）"),
         ]
-        for i, (key, label, hint) in enumerate(rows):
+        for i, (key, label, kind, hint) in enumerate(rows):
             ttk.Label(body, text=label + "：").grid(row=i * 2, column=0,
                                                     sticky="w", pady=(6, 0))
-            var = tk.StringVar(value="检测中…")
+            var = tk.StringVar(value="")
             self.env_vars[key] = var
-            ttk.Label(body, textvariable=var, font=(self.mono_font, 9),
-                      foreground="#06c", wraplength=780,
-                      justify="left").grid(row=i * 2, column=1, sticky="w",
-                                           padx=(6, 0), pady=(6, 0))
+            ttk.Entry(body, textvariable=var, font=(self.mono_font, 9),
+                      width=70).grid(row=i * 2, column=1, sticky="we",
+                                     padx=(6, 0), pady=(6, 0))
+            okv = tk.StringVar(value="")
+            self.env_ok[key] = okv
+            ttk.Label(body, textvariable=okv, foreground="#888").grid(
+                row=i * 2, column=2, sticky="w", padx=(6, 0))
+            ttk.Button(body, text="浏览…", width=7,
+                       command=lambda k=key, kd=kind: self.do_browse_env(k, kd)
+                       ).grid(row=i * 2, column=3, sticky="w", padx=(6, 0))
             ttk.Label(body, text=hint, foreground="#888",
-                      font=(self.ui_font, 8)).grid(row=i * 2 + 1, column=1, sticky="w",
-                                         padx=(6, 0))
+                      font=(self.ui_font, 8)).grid(row=i * 2 + 1, column=1,
+                                                   sticky="w", padx=(6, 0))
+        body.columnconfigure(1, weight=1)
 
         self.env_note = tk.StringVar(value="")
         ttk.Label(f, textvariable=self.env_note, foreground="#666",
@@ -67,8 +93,10 @@ class EnvTab:
 
         btns = ttk.Frame(f, padding=(10, 0, 10, 8))
         btns.pack(fill="x")
-        ttk.Button(btns, text="改这些设置（在 Zotero 里）",
-                   command=self.do_open_env_settings).pack(side="left")
+        b = ttk.Button(btns, text="保存并重新检测", command=self.do_save_env)
+        b.pack(side="left")
+        self._tip(b, "写进 kb-location.json（与 Zotero 插件设置同一份配置），"
+                     "然后重新检测一遍")
         ttk.Button(btns, text="打开模型设置（在 Zotero 里）",
                    command=self.do_open_model_settings).pack(side="left",
                                                              padx=6)
@@ -76,6 +104,72 @@ class EnvTab:
             side="left", padx=6)
         ttk.Button(btns, text="服务状态", command=self.do_service_status).pack(
             side="left")
+
+
+    # ---------------------------------------------------------- 改这三个位置
+
+    def do_browse_env(self, key: str, kind: str):
+        """「浏览…」：目录用 askdirectory，文件用 askopenfilename。"""
+        from tkinter import filedialog
+        cur = (self.env_vars.get(key).get() if key in self.env_vars else "") or ""
+        cur = cur.strip()
+        kw = {"parent": self.root,
+              "title": "选择" + ("目录" if kind == "dir" else "程序")}
+        if cur:
+            kw["initialdir"] = cur if os.path.isdir(cur) else os.path.dirname(cur)
+        try:
+            if kind == "dir":
+                picked = filedialog.askdirectory(**kw)
+            else:
+                picked = filedialog.askopenfilename(
+                    filetypes=[("可执行文件", "*.exe"), ("所有文件", "*.*")],
+                    **kw)
+        except Exception as exc:      # noqa: BLE001
+            self.say(f"[XX] 打开选择器失败：{exc}")
+            return
+        if not picked:
+            return
+        picked = os.path.normpath(picked)
+        self.env_vars[key].set(picked)
+        if key in self.env_ok:
+            self.env_ok[key].set("✓ 存在" if os.path.exists(picked) else "✗ 找不到")
+        # 顺手把另外两项的状态也重算一遍（用户可能刚补上另一个）
+        for k, v in self.env_vars.items():
+            p = (v.get() or "").strip()
+            if k in self.env_ok and p and k != key:
+                self.env_ok[k].set("✓ 存在" if os.path.exists(p) else "✗ 找不到")
+
+
+    def do_save_env(self):
+        """保存三个位置 —— 与插件设置 / `/env-config` 写的是**同一份配置**。
+
+        ⚠ 真正的写入与校验在 `schemas.save_env_config`（唯一一份实现）：
+          路径不存在就**不保存**（与 /env-config 一致），留空 = 交回自动探测。
+        """
+        try:
+            import schemas as S
+        except Exception as exc:      # noqa: BLE001
+            messagebox.showerror("保存失败", f"导不进 schemas：{exc}")
+            return
+        given = {}
+        for key in ("project_root", "python", "ollama"):
+            if key in self.env_vars:
+                given[key] = (self.env_vars[key].get() or "").strip()
+        try:
+            res = S.save_env_config(given)
+        except ValueError as exc:
+            messagebox.showerror(
+                "没有保存", f"{exc}\n\n请点「浏览…」重新选；确实不想用这一项"
+                            "就把框清空（留空 = 交回自动探测）。")
+            return
+        except Exception as exc:      # noqa: BLE001
+            messagebox.showerror("保存失败", f"{type(exc).__name__}: {exc}")
+            return
+        saved = res.get("saved") or {}
+        self.say(f"[{ts()}] 运行环境已保存到 {res.get('path')}："
+                 + "、".join(f"{k}={v or '(自动探测)'}" for k, v in saved.items()))
+        self.say(f"[{ts()}] Zotero 插件设置读的就是这一份配置 —— 两边已经同步。")
+        self.refresh_env()
 
 
     def refresh_env(self):
@@ -265,23 +359,6 @@ class EnvTab:
     def do_upgrade_verify(self):
         self.run("Zotero 升级后核对",
                  [os.path.join(ROOT, "tools", "zotero_upgrade.py"), "verify"])
-
-
-    def do_open_env_settings(self):
-        """提示怎么打开 Zotero 里本插件的设置面板。
-
-        为什么不直接打开：Zotero 没有"用代码打开指定 prefpane"的公开 API
-        （Zotero.PreferencePanes.register 只管注册，不提供 open），
-        所以给出准确路径让用户自己点，比假装能打开好。
-        """
-        self.say(f"[{ts()}] 要改运行环境，请打开："
-                 " Zotero → 编辑 → 设置 → 文献知识库 → 运行环境")
-        messagebox.showinfo(
-            "在 Zotero 里改",
-            "请打开：\n\n    Zotero → 编辑 → 设置 → 文献知识库 → 运行环境\n\n"
-            "那里可以浏览选择「项目目录」「Python 解释器」「Ollama 程序」，\n"
-            "点「保存并检测」会立刻告诉你路径对不对。\n\n"
-            "（改完回到本面板的「运行环境」页点「重新检测」）")
 
 
     def do_open_model_settings(self):
