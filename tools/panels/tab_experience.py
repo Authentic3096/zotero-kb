@@ -67,8 +67,11 @@ class ExperienceTab:
         mid = ttk.Frame(f, padding=(10, 2, 10, 0))
         mid.pack(fill="both", expand=True)
         cols = ("id", "date", "outcome", "source", "items", "asked", "suspect")
+        # ⚠ 高度 9 行而不是 11：列表下面还有一行操作按钮（改选中/删除/采纳/丢弃），
+        #   给 11 行时默认窗口高度下那一行正好被挤出可视区（要不滚一下才能点到）。
+        #   条目多了不影响 —— 列表自己带滚动条，按钮位置是固定的。
         self.exp_tree = ttk.Treeview(mid, columns=cols, show="headings",
-                                     height=11, selectmode="extended")
+                                     height=9, selectmode="extended")
         for col, width, label, stretch in (
             ("id", 54, "id", False), ("date", 84, "日期", False),
             ("outcome", 66, "效果", False), ("source", 62, "来源", False),
@@ -107,7 +110,10 @@ class ExperienceTab:
         # ---- 详情（选中那一条的全文；列表负责导航，这里负责内容）
         # ⚠ 放在页签内部的下面那一格（分隔线可拖）：详情长短差很多，
         #   固定在 11 行时长的看不全、短的浪费空间。
-        self.exp_text = scrolledtext.ScrolledText(self.exp_out, height=11,
+        # ⚠ 高度取 8：这一格的**请求高度**会跟上面（列表+操作行）抢空间 ——
+        #   给 11 行时上面那行操作按钮会被挤出可视区（实测：内容需要 364、
+        #   画布只给 345，正好卡掉那一行）。想临时看长详情把分隔线往下拖即可。
+        self.exp_text = scrolledtext.ScrolledText(self.exp_out, height=8,
                                                   wrap="word",
                                                   font=(self.mono_font, 10))
         self.exp_text.pack(fill="both", expand=True, padx=6, pady=4)

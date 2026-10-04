@@ -345,7 +345,7 @@ class AppBase:
         canvas.pack(side="left", fill="both", expand=True)
         inner = ttk.Frame(canvas)
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
-        state = {"busy": False, "bar": None}
+        state = {"busy": False, "bar": None, "h": None}
 
         def sync(_e=None):
             if state["busy"]:
@@ -356,6 +356,13 @@ class AppBase:
                 h = max(canvas.winfo_height(), inner.winfo_reqheight())
                 canvas.itemconfigure(win, width=w, height=h)
                 canvas.configure(scrollregion=(0, 0, w, h))
+                # 画布的**请求高度跟随内容**（140~460）：内容少的页签不留一大块空白、
+                # 把下面那格挤小；内容多的才出现滚动条。
+                # ⚠ 只在值真的变了才 configure —— 否则会自己触发自己的 <Configure>。
+                want = max(140, min(inner.winfo_reqheight(), 460))
+                if state["h"] != want:
+                    state["h"] = want
+                    canvas.configure(height=want)
                 # 装得下就把滚动条收起来（免得每个页签都挂一条无用的条）
                 need = inner.winfo_reqheight() > canvas.winfo_height()
                 if state["bar"] is not need:
