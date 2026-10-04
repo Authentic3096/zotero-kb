@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import tkinter as tk
@@ -137,7 +138,7 @@ class ExperienceEditor(tk.Toplevel):
                    command=self.do_save).pack(side="left")
         ttk.Button(foot, text="取消", command=self.destroy).pack(side="left", padx=8)
         self.hint = ttk.Label(foot, foreground="#666",
-                              text="写入会**重算权重**（先回滚旧贡献、再按新内容计分）")
+                              text="写入会重算权重（先回滚旧贡献、再按新内容计分）")
         self.hint.pack(side="left", padx=10)
 
     def _outcomes(self):
@@ -246,7 +247,7 @@ class ExperienceEditor(tk.Toplevel):
         self._paint_items()
         sim = res.get("similar") or []
         self.draft_status.config(
-            text=("整理好了（草稿，**还没写库**）。"
+            text=("整理好了（草稿，还没写库）。"
                   + (f" 相似的已有经验：{', '.join('#' + str(s['id']) for s in sim)}"
                      if sim else "")))
 
@@ -261,21 +262,50 @@ class ExperienceEditor(tk.Toplevel):
             parts.append(f"{k}（{titles.get(k, '')[:40]}）" if titles.get(k) else k)
         self.items_label.config(text="已选：" + "；".join(parts))
 
+    @staticmethod
+    def picker_rows():
+        """给 PaperPicker 的行：`(key, 作者, 年份, 标题, 分类, 全文字数)`。
+
+        ⚠ 顺序与个数**必须与 `paper_picker.PaperPicker.COLUMNS` 一致**。
+          这里踩过一次：原来查的是 `SELECT key, title, first_author, year`、
+          交给弹窗的又是**字典**，于是它在解包时抛 ValueError —— 窗口建出来了、
+          行一行没插，表现是"点「选文献…」弹出一个空列表"，而且没有报错弹窗
+          （Tk 回调里的异常只打到 stderr）。
+          所以这一份单独抽成静态方法，测试里直接对着 COLUMNS 核对形状。
+        """
+        import sys
+        if os.path.join(ROOT, "offline") not in sys.path:
+            sys.path.insert(0, os.path.join(ROOT, "offline"))
+        import schemas as S
+        conn = S.connect(S.INDEX_DB)
+        try:
+            rows = []
+            for r in conn.execute(
+                    "SELECT key, first_author, year, title, collections, "
+                    "fulltext_chars FROM items "
+                    "ORDER BY year DESC, first_author"):
+                try:
+                    cols = "、".join(json.loads(r["collections"] or "[]"))
+                except Exception:      # noqa: BLE001
+                    cols = ""
+                rows.append((r["key"], r["first_author"] or "",
+                             str(r["year"] or ""), r["title"] or "",
+                             cols, r["fulltext_chars"] or 0))
+            return rows
+        finally:
+            conn.close()
+
     def do_pick(self):
-        """复用面板已有的 PaperPicker；**可以连着选几篇**。"""
+        """复用面板已有的 PaperPicker；**可以连着选几篇**。
+
+        「列表是空的」那个坑见 `picker_rows` 的说明。
+        """
         try:
             import sys
             if os.path.join(ROOT, "offline") not in sys.path:
                 sys.path.insert(0, os.path.join(ROOT, "offline"))
-            import schemas as S
             from paper_picker import PaperPicker
-            conn = S.connect(S.INDEX_DB)
-            try:
-                rows = [dict(r) for r in conn.execute(
-                    "SELECT key, title, first_author, year FROM items "
-                    "ORDER BY year DESC, key")]
-            finally:
-                conn.close()
+            rows = self.picker_rows()
         except Exception as exc:      # noqa: BLE001
             messagebox.showerror("打不开文献列表", str(exc), parent=self)
             return

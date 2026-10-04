@@ -3916,7 +3916,7 @@ Object.assign(ZoteroKB, {
       tried.push("externalProtocolService：" + e);
     }
 
-    // ③ 交给面板的 Python 打开（os.startfile —— 面板「打开知识库目录」就是
+    // ③ 交给面板的 Python 打开（os.startfile —— 面板「文献管理器中查看」就是
     //    这么干的，本机确定可用）。代价是要起一个短命的 pythonw 进程。
     try {
       if (self.openKbViaPanel(path)) return "panel";
@@ -4279,7 +4279,7 @@ Object.assign(ZoteroKB, {
       self.alertDialog(
         "重建失败（退出码 " + r.code + "）",
         "可能的原因看这两处：\n"
-        + "· 管理面板「解析健康」页的日志\n"
+        + "· 管理面板「损坏查询」页的日志\n"
         + "· " + self.kbDir() + "\\logs\\ 下的日志\n"
         + (r.out ? ("\n" + String(r.out).slice(-800)) : ""));
     }

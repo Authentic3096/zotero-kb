@@ -32,6 +32,8 @@ class AppBase:
         self.out_queue: queue.Queue = queue.Queue()
         self.busy = False
         self.proc: subprocess.Popen | None = None
+        # 可滚动页签的画布表（滚轮处理器靠它找"鼠标底下该滚哪个容器"）
+        self._scroll_hosts: dict[str, tk.Canvas] = {}
 
         root.title("Zotero 文献知识库 · 管理面板")
         self._set_window_icon(root)
@@ -49,10 +51,12 @@ class AppBase:
         root.minsize(860, 580)
 
         self._build_header()
-        # ⚠ 顺序有讲究：日志用 side="bottom" 钉在底部，必须**先** pack 它，
-        #   否则 Notebook（expand=True）会先占满整个区域，日志被挤成一条线。
+        # ⚠ 顺序有讲究：日志区先建好容器（并记住它），页签建完再把它 add 到
+        #   分栏的**下面**那一格 —— ttk.PanedWindow 的显示顺序就是 add 的顺序。
         self._build_log()
         self._build_tabs()
+        # 滚轮：全局绑一次，按鼠标位置决定滚哪个页签（见 _on_wheel 的说明）
+        root.bind_all("<MouseWheel>", self._on_wheel)
 
         self.root.after(120, self._drain_queue)
         self.refresh_status()
@@ -163,10 +167,13 @@ class AppBase:
         #   用户反馈：「更新索引（增量）」这个名字本身就很奇怪 ——
         #   "增量"是给写代码的人看的词，用户只关心"我新加了文献，点它更新"。
         #
-        # ⚠ 「打开知识库…」放在这里（而不是只放在「知识库结构」页）：
+        # ⚠ 「打开知识库」放在这里（而不是只放在「知识库结构」页）：
         #   它解决的是"我想看某一篇的某一层"这个**日常**动作，就该在第一屏。
-        #   与它并列的「打开知识库目录」是另一种需求（要动 index.db、
+        #   与它并列的「文献管理器中查看」是另一种需求（要动 index.db、
         #   看 logs\ 时去目录）。
+        # ⚠ 两个名字都是用户 2026-10-05 定的：前者**不要省略号**
+        #   （弹出来的是列表，不是"还要再填参数"的对话框），后者原来叫
+        #   "打开知识库目录"，用户觉得看不出是"在资源管理器里打开"。
         quick = [
             ("手动更新", self.do_convert_incremental,
              "新加了文献、或改了笔记/标注之后点这个（只处理变了的，很快）"),
@@ -174,10 +181,10 @@ class AppBase:
              "重新解析所有文献、重算向量。一般不用，除非索引坏了或换了模型"),
             ("环境自检", self.do_check, "检查依赖、索引、向量是否正常"),
             ("备份", self.do_backup, "备份索引（含经验层和权重）"),
-            ("打开知识库…", self.open_kb_browser,
+            ("打开知识库", self.open_kb_browser,
              "先列文献（看得见作者/年份/标题），选中一篇再选\"要读多深\"的那一层，"
              "双击就打开对应的 md —— 不用去目录里按 22X9PMR6 这种编号找"),
-            ("打开知识库目录", self.open_folder,
+            ("文献管理器中查看", self.open_folder,
              "在文件管理器里打开知识库根目录（要动 index.db、看 logs\\ 时用它）"),
         ]
         for text, cmd, tip in quick:
@@ -258,28 +265,38 @@ class AppBase:
 
 
     def _build_tabs(self):
-        # Notebook 占满剩余空间（日志已经 side="bottom" 钉住了，
-        # pack 的顺序决定了谁先占位：日志先 pack(side=bottom) 就稳在底部）
-        nb = ttk.Notebook(self.root)
-        nb.pack(fill="both", expand=True, padx=12, pady=(6, 0))
+        """建 Notebook 与 8 个页签，并把「内容 / 日志」两格 add 进去。
 
-        self.tab_struct = ttk.Frame(nb)
-        self.tab_exp = ttk.Frame(nb)
-        self.tab_ai = ttk.Frame(nb)
-        self.tab_env = ttk.Frame(nb)
-        self.tab_quality = ttk.Frame(nb)
-        self.tab_meta = ttk.Frame(nb)
-        self.tab_adv = ttk.Frame(nb)
-        self.tab_prompts = ttk.Frame(nb)
-        nb.add(self.tab_struct, text="  知识库结构  ")
-        nb.add(self.tab_exp, text="  经验库  ")
-        nb.add(self.tab_ai, text="  分类建议  ")
-        nb.add(self.tab_env, text="  运行环境  ")
-        nb.add(self.tab_quality, text="  解析健康  ")
-        nb.add(self.tab_meta, text="  元数据  ")
-        nb.add(self.tab_adv, text="  高级  ")
-        nb.add(self.tab_prompts, text="  提示词  ")
+        布局（用户 2026-10-05 的三条反馈都落在这里）：
+          · 上面一格 = 各页签。每个页签套一层**可滚动画布** —— 内容比窗口高
+            时滚轮就能看完，不必把窗口拉长；
+          · 下面一格 = 运行日志。它与上面之间有一条**可拖的分隔线**，
+            日志想拉长就拉长（以前固定 8 行，看不全）；
+          · 页签内部要"钉在下面"的东西（详情/输出）用 split 的**下面那格**。
+        """
+        nb = ttk.Notebook(self._paned)
         self.notebook = nb
+
+        # ⚠ `_tab_panes` 的第二个返回值是"页签内部的下面那一格"（可拖），
+        #   需要钉底的文本框（详情/输出）就放那里；不需要的页签给 None。
+        self.tab_struct, _ = self._tab_panes(nb, "  知识库结构  ")
+        self.tab_exp, self.exp_out = self._tab_panes(
+            nb, "  经验库  ", split=" 选中那条的详情 ")
+        self.tab_ai, self.ai_out = self._tab_panes(
+            nb, "  分类建议  ", split=" 输出 ")
+        self.tab_env, _ = self._tab_panes(nb, "  运行环境  ")
+        self.tab_quality, _ = self._tab_panes(nb, "  损坏查询  ")
+        self.tab_meta, _ = self._tab_panes(nb, "  元数据  ")
+        self.tab_adv, self.adv_out = self._tab_panes(
+            nb, "  高级  ", split=" 输出 ")
+        self.tab_prompts, self.prompt_out = self._tab_panes(
+            nb, "  提示词  ", split=" 试跑输出 ")
+
+        # 顺序即上下顺序：先内容，后日志（日志在最下面）
+        # ⚠ 权重 3:2：日志初始就能看见十来行（用户嫌 5 行太少），
+        #   拉分隔线还能任意改。
+        self._paned.add(nb, weight=3)
+        self._paned.add(self.log_frame, weight=2)
 
         self._build_struct_tab()
         self._build_experience_tab()
@@ -290,6 +307,110 @@ class AppBase:
         self._build_env_tab()
         self._build_advanced_tab()
         self._build_prompts_tab()
+
+
+    def _tab_panes(self, nb: ttk.Notebook, title: str, split: str = ""):
+        """建一个页签，返回 `(内容容器, 底部容器)`。
+
+        内容容器套在**可滚动的画布**里：内容比窗口高时用滚轮看（用户反馈
+        "很多东西都要把面板拉长才能看到，应该改成滚轮能滑看"）。
+        底部容器在 `split` 非空时才有 —— 页签内部再分成上下两格，
+        **中间那条分隔线可以拖**，用来放"想拉长看"的文本框（运行日志、
+        输出、详情）。`split` 的值就是那一格的标题。
+
+        ⚠ 画布里**不要**用 `pack(side="bottom")` 钉底 —— 内层容器的高度是按
+          内容请求算出来的，钉不住；要钉底就用 split 那一格。
+        ⚠ 内层高度取 `max(画布高度, 内容请求高度)`：这样内容少的页签能占满
+          整屏（页签里那些 `expand=True` 的表格/文本框照旧会被拉满），
+          内容多的才出现滚动条。
+        """
+        host = ttk.Frame(nb)
+        top: tk.Misc = host
+        paned = None
+        if split:
+            paned = ttk.PanedWindow(host, orient="vertical")
+            paned.pack(fill="both", expand=True)
+            top = ttk.Frame(paned)
+            paned.add(top, weight=3)
+
+        canvas = tk.Canvas(top, highlightthickness=0, borderwidth=0, height=340)
+        try:
+            bg = ttk.Style(self.root).lookup("TFrame", "background")
+            if bg:
+                canvas.configure(background=bg)
+        except tk.TclError:
+            pass
+        vs = ttk.Scrollbar(top, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vs.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        inner = ttk.Frame(canvas)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        state = {"busy": False, "bar": None}
+
+        def sync(_e=None):
+            if state["busy"]:
+                return
+            state["busy"] = True
+            try:
+                w = max(canvas.winfo_width(), 1)
+                h = max(canvas.winfo_height(), inner.winfo_reqheight())
+                canvas.itemconfigure(win, width=w, height=h)
+                canvas.configure(scrollregion=(0, 0, w, h))
+                # 装得下就把滚动条收起来（免得每个页签都挂一条无用的条）
+                need = inner.winfo_reqheight() > canvas.winfo_height()
+                if state["bar"] is not need:
+                    state["bar"] = need
+                    if need:
+                        vs.pack(side="right", fill="y")
+                    else:
+                        vs.pack_forget()
+            except tk.TclError:
+                pass
+            finally:
+                state["busy"] = False
+
+        inner.bind("<Configure>", sync)
+        canvas.bind("<Configure>", sync)
+        nb.add(host, text=title)
+        self._scroll_hosts[str(canvas)] = canvas
+
+        bottom = None
+        if paned is not None:
+            bottom = ttk.LabelFrame(paned, text=split, padding=4)
+            paned.add(bottom, weight=2)
+        return inner, bottom
+
+
+    def _on_wheel(self, event):
+        """滚轮：滚动鼠标底下那个页签。
+
+        为什么用**全局绑定**而不是逐个控件绑：Tk 在 Windows 上把
+        `<MouseWheel>` 发给**焦点控件**，焦点常常不在画布上 —— 绑在画布上
+        经常收不到事件，用户看到的就是"滚不动"。这里按鼠标位置自己找控件，
+        再往上找最近的可滚动容器。
+
+        ⚠ 鼠标在"本来就会滚"的控件上（Text / Treeview / Listbox）时**必须
+          让给它**，否则画布与控件各滚一次，手感是"滚一格跳两格"。
+        """
+        if not self._scroll_hosts:
+            return
+        try:
+            node = self.root.winfo_containing(event.x_root, event.y_root)
+        except Exception:      # noqa: BLE001
+            return
+        while node is not None:
+            try:
+                cls = node.winfo_class()
+            except Exception:      # noqa: BLE001
+                cls = ""
+            if cls in ("Text", "Listbox", "Treeview"):
+                return                 # 它自己会滚
+            canvas = self._scroll_hosts.get(str(node))
+            if canvas is not None:
+                n = max(1, abs(int(event.delta)) // 120)
+                canvas.yview_scroll(-n if event.delta > 0 else n, "units")
+                return
+            node = getattr(node, "master", None)
 
 
     # ================================================================ 元数据页
@@ -370,17 +491,25 @@ class AppBase:
 
 
     def _build_log(self):
-        # 日志区固定高度、不参与拉伸 —— 否则内容区（结构表/经验/模型）会被挤扁。
-        # ⚠ 反过来也不行：Notebook 用 fill="both"+expand=True 时，如果日志
-        #   也用 expand，窗口不够高时两边互相抢空间，日志会被压成一条黑边
-        #   （第一版就是这样，截图里只剩一条线）。
-        #   所以：Notebook 独占剩余空间，日志用固定 height 钉在底部。
-        frame = ttk.LabelFrame(self.root, text=" 运行日志 ", padding=4)
-        frame.pack(side="bottom", fill="x", padx=12, pady=(4, 10))
-        self.log = scrolledtext.ScrolledText(frame, height=8, wrap="none",
+        """运行日志：放进竖直分栏，**分隔线可以拖**。
+
+        以前是 `side="bottom"` + 固定 `height=8` 的一条，只有八行可看 ——
+        用户反馈"运行日志框只能显示几行，应该能拉长显示更多"。现在改成
+        PanedWindow 的下面那一格，想看长日志把分隔线往下拖就行。
+
+        ⚠ 这里只建容器、**不 add**：pane 的上下顺序由 add 的顺序决定，
+          而内容（Notebook）要在 `_build_tabs` 里才建得出来 —— 所以两个
+          add 都放在 `_build_tabs` 末尾，顺序是"先内容、后日志"。
+        """
+        self._paned = ttk.PanedWindow(self.root, orient="vertical")
+        self._paned.pack(fill="both", expand=True, padx=12, pady=(6, 10))
+        self.log_frame = ttk.LabelFrame(self._paned, text=" 运行日志 ",
+                                        padding=4)
+        self.log = scrolledtext.ScrolledText(self.log_frame, height=8,
+                                             wrap="none",
                                              font=(self.mono_font, 9),
                                              background="#1b1b1b", foreground="#ddd")
-        self.log.pack(fill="x")
+        self.log.pack(fill="both", expand=True)
 
 
     # ================================================================ 基础设施
@@ -486,11 +615,18 @@ class AppBase:
     # ================================================================ 运行环境
 
     def _apply_env(self, info: dict):
-        """把探测结果填进运行环境页（主线程调用）。"""
+        """把探测结果填进运行环境页（主线程调用）。
+
+        ⚠ 输入框里只放**裸路径**（不带 "✓/✗" 前缀）：这三个框现在是可编辑、
+          可保存的，带前缀会把前缀一起写进配置。存不存在由旁边的小字说明。
+        """
         for key, var in self.env_vars.items():
             p = info.get(key) or ""
             ok = bool(p) and os.path.exists(p)
-            var.set(("✓ " if ok else "✗ ") + (p or "（没找到）"))
+            var.set(p)
+            if key in getattr(self, "env_ok", {}):
+                self.env_ok[key].set("✓ 存在" if ok else
+                                     ("✗ 找不到" if p else "（没填）"))
         hint = []
         if info.get("_server"):
             hint.append("这些值是正在运行的本机服务报的。")
@@ -498,8 +634,9 @@ class AppBase:
             hint.append("本机服务没在跑，上面是面板自己探测的结果"
                         "（点「启动本地服务」可以拉起它）。")
         hint.append(f"知识库位置：{info.get('_kb') or self.kb_dir()}")
-        hint.append("要改这些位置：Zotero → 编辑 → 设置 → 文献知识库 → 运行环境，"
-                    "点「浏览…」选目录/文件；改完回这里点「重新检测」。")
+        hint.append("要改这些位置：直接在上面那三个框里改（或点「浏览…」选），"
+                    "再点「保存并重新检测」。它与 Zotero 插件设置里的"
+                    "「运行环境」是同一份配置，改哪边都一样。")
         self.env_note.set("\n".join(hint))
 
 

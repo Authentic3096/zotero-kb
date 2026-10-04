@@ -246,7 +246,7 @@ Object.assign(ZoteroKB, {
       self.alertDialog(
         "重建失败（退出码 " + r.code + "）",
         "可能的原因看这两处：\n"
-        + "· 管理面板「解析健康」页的日志\n"
+        + "· 管理面板「损坏查询」页的日志\n"
         + "· " + self.kbDir() + "\\logs\\ 下的日志\n"
         + (r.out ? ("\n" + String(r.out).slice(-800)) : ""));
     }

@@ -174,7 +174,7 @@ class ParaReview(tk.Toplevel):
         if not messagebox.askyesno(
                 "清空检查进度",
                 "删掉这一篇的逐段检查进度（para_check）？\n"
-                "**正文修正不会被删** —— 那是你确认过的成果。\n"
+                "「正文修正不会被删」—— 那是你确认过的成果。\n"
                 "清空后下次会从第一段重新查。", parent=self):
             return
         try:

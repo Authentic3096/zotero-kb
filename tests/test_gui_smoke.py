@@ -79,9 +79,23 @@ titles = [app.notebook.tab(t, "text").strip() for t in tabs]
 #   所以断言写成"至少"这些页都在，而不是卡死总数 ——
 #   否则每加一页都要改测试，久了就没人认真看这个测试了。
 check("标签页 ≥ 8", len(tabs) >= 8, str(titles))
-for want in ("知识库结构", "经验库", "分类建议", "运行环境", "解析健康",
+for want in ("知识库结构", "经验库", "分类建议", "运行环境", "损坏查询",
              "元数据", "高级", "提示词"):
     check(f"有「{want}」页", want in titles, str(titles))
+
+# ---- 布局（用户 2026-10-05：「很多东西要拉长面板才看得到，应该能滚轮滑看」
+#      「运行日志只能显示几行，应该能拉长」）
+# 这两条都是**装配阶段**就能验的：每个页签要套一层可滚动画布，
+# 日志与页签要在同一个竖直分栏里（分隔线可拖）。
+check("每个页签都套了可滚动画布（滚轮能滑看）",
+      len(getattr(app, "_scroll_hosts", {})) == len(tabs),
+      f"画布 {len(getattr(app, '_scroll_hosts', {}))} 个 / 页签 {len(tabs)} 个")
+check("页签与运行日志在同一个可拖分栏里",
+      getattr(app, "_paned", None) is not None
+      and len(app._paned.panes()) == 2,
+      str(app._paned.panes() if getattr(app, "_paned", None) else None))
+for name in ("exp_out", "ai_out", "adv_out", "prompt_out"):
+    check(f"页签内有可拉的输出格（{name}）", getattr(app, name, None) is not None)
 
 # 提示词页（本轮新增）：模型在按什么话术干活，用户得看得见、改得动。
 # ⚠ 按**控件**与**回调**查，而不是查方法名 —— 方法在但控件没画出来，
@@ -99,14 +113,15 @@ for fn in ("do_prompt_refresh", "do_prompt_load", "do_prompt_save",
 # 用户明确要的两页必须在：知识库结构表（各文件夹存什么）、运行环境（三个路径）
 check("结构表控件存在", getattr(app, "struct_tree", None) is not None)
 # 切片质量页：确保不是"加了个空页"（控件与动作都在）
-check("解析健康页有结果表", getattr(app, "q_tree", None) is not None)
-check("解析健康页有检查按钮", getattr(app, "q_check_btn", None) is not None)
-check("解析健康页有修复按钮", getattr(app, "q_fix_btn", None) is not None)
-check("解析健康页有「重建+修复」按钮",
+# ⚠ 页名 2026-10-05 由「解析健康」改为「损坏查询」（用户要求）
+check("损坏查询页有结果表", getattr(app, "q_tree", None) is not None)
+check("损坏查询页有检查按钮", getattr(app, "q_check_btn", None) is not None)
+check("损坏查询页有修复按钮", getattr(app, "q_fix_btn", None) is not None)
+check("损坏查询页有「重建+修复」按钮",
       getattr(app, "q_chain_btn", None) is not None)
 # 逐段检查的进度与正文修正（窗格那条链的产物）也要在面板里管得着：
 # 改错了要能撤销、进度乱了要能清空。
-check("解析健康页有「逐段进度与正文修正」按钮",
+check("损坏查询页有「逐段进度与正文修正」按钮",
       getattr(app, "q_para_btn", None) is not None)
 check("有 do_para_review 回调", callable(getattr(app, "do_para_review", None)))
 try:
@@ -114,9 +129,14 @@ try:
     check("逐段复核窗能 import", True)
 except Exception as exc:      # noqa: BLE001
     check("逐段复核窗能 import", False, str(exc))
-check("解析健康页有图表开关", getattr(app, "q_figures_var", None) is not None)
-check("运行环境三个路径都有显示", len(getattr(app, "env_vars", {})) == 3,
+check("损坏查询页有图表开关", getattr(app, "q_figures_var", None) is not None)
+check("运行环境三个路径都有输入框", len(getattr(app, "env_vars", {})) == 3,
       str(list(getattr(app, "env_vars", {}).keys())))
+# 用户 2026-10-05：「运行环境的设置能就在面板改吗（与插件设置同步）」
+# → 可以：两边读写同一份 kb-location.json。装配阶段能验的是"框和按钮画出来了"。
+check("运行环境有保存回调（写同一份配置）",
+      callable(getattr(app, "do_save_env", None)))
+check("运行环境有「浏览…」回调", callable(getattr(app, "do_browse_env", None)))
 
 
 # 「打开知识库」的两个入口必须在**看得见的地方**（用户 2026-10-05 提的需求：
@@ -136,12 +156,19 @@ def _button_texts(widget):
 
 
 _btns = _button_texts(root)
-check("有「打开知识库…」按钮（第一屏核心按钮里）",
-      "打开知识库…" in _btns, str(sorted(set(_btns))[:24]))
-check("有「打开知识库目录」按钮", "打开知识库目录" in _btns)
+# ⚠ 名字是用户定的：「打开知识库」**不要省略号**（点出来的是列表，
+#   不是"还要再填参数"的对话框）；"打开知识库目录"改成「文献管理器中查看」
+#   （原名看不出是在资源管理器里打开）。
+check("有「打开知识库」按钮（第一屏核心按钮里）",
+      "打开知识库" in _btns, str(sorted(set(_btns))[:24]))
+check("按钮名里没有「打开知识库…」（省略号已按用户要求去掉）",
+      "打开知识库…" not in _btns)
+check("有「文献管理器中查看」按钮", "文献管理器中查看" in _btns,
+      str(sorted(set(_btns))[:24]))
 check("有「补齐知识库分级文件」按钮（高级页）",
       any("补齐" in t for t in _btns), str(sorted(set(_btns))[:24]))
-check("「打开知识库…」有回调", callable(getattr(app, "open_kb_browser", None)))
+check("运行环境页有「保存并重新检测」按钮", "保存并重新检测" in _btns)
+check("「打开知识库」有回调", callable(getattr(app, "open_kb_browser", None)))
 check("「补齐分级文件」有回调", callable(getattr(app, "do_views", None)))
 
 # 经验库页（本轮新增三个入口：编辑、体检、手动选会话）。
@@ -171,6 +198,26 @@ try:
     check("经验编辑器/会话选择器能 import", True)
 except Exception as exc:      # noqa: BLE001
     check("经验编辑器/会话选择器能 import", False, str(exc))
+
+# 「修改/增添经验…」→「选文献…」弹出来的列表**不许是空的**（用户报过：
+# 列表打开默认是空的，别处都是"默认列全部文献"）。
+# 根因是行形状与 PaperPicker.COLUMNS 不一致（字典 vs 6 元组）—— 那会让
+# `_fill` 解包时抛错，而窗口已经建出来了：看着就是"空列表、无报错"。
+# 所以这里对着 COLUMNS 核对形状（**不是**只看函数能不能调）。
+try:
+    from paper_picker import PaperPicker as _PP     # noqa: E402
+    from panels.exp_editor import ExperienceEditor as _EE  # noqa: E402
+
+    _rows = _EE.picker_rows()
+    _shape_ok = all(len(r) == len(_PP.COLUMNS) for r in _rows)
+    check("选文献弹窗的行形状与 PaperPicker.COLUMNS 一致",
+          _shape_ok and len(_PP.COLUMNS) == 6,
+          f"{len(_rows)} 行，示例 {(_rows[0] if _rows else None)}")
+    check("选文献弹窗默认列出**全部**文献（不是空的）",
+          bool(_rows), "库里一篇都没读到")
+except Exception as exc:      # noqa: BLE001
+    check("选文献弹窗的行形状与 PaperPicker.COLUMNS 一致", False,
+          f"{type(exc).__name__}: {exc}")
 # 队列泵要认 "call"：后台线程把结果交给主线程控件全靠它，
 # 少了这个分支消息会被**静默丢掉**（表现是"点了没反应"）。
 check("队列泵支持 call（跨线程回主线程）",

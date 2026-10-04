@@ -30,22 +30,12 @@ class AdvancedTab:
         分类重整五连击」和日常操作摆在同一个标签页里，用户看着一堆
         不知道是什么的按钮，反而找不到"更新索引"。
 
-        ⚠ 用户第二次反馈："高级里的一些功能没用吧，比如分类重整，插件与本地服务。"
-          这个判断是对的 —— 那些是**一次性**的（分类重整已经跑完，Zotero 也升级过了）
-          或**只有开发者用**的（打包 xpi、侧载安装、任务桥接）。
-          但直接删掉有风险：真要重装插件、或以后 Zotero 再升级时还得用。
-          所以处理成：**日常的三组排在最前面，一次性/开发者的移到后面并标明**，
-          让用户一眼知道"下面这些不用管"。
+        ⚠ 用户 2026-10-05 又提了两条：
+          · 开头那段"这里是一次性或排错用的功能…"的说明**整段删掉**；
+          · 开发者那组的分隔标题从"—— 以下是一次性 / 开发者功能，平时不用管 ——"
+            改成一句话「开发者功能」（细节已经在每个按钮的悬浮提示里了）。
         """
         f = self.tab_adv
-        note = ttk.Label(
-            f, foreground="#666", wraplength=900, justify="left",
-            font=(self.ui_font, 10),
-            text="这里是一次性或排错用的功能，平时用不到。"
-                 "下面「一次性 / 开发者」那几组现在可以不管 —— "
-                 "分类重整已经做完了，Zotero 也已经升级过了，"
-                 "打包/侧载只在重新安装插件时才需要。")
-        note.pack(fill="x", padx=12, pady=(10, 6))
 
         # 先放日常会用到的；一次性/开发者的在后面（下面 groups 的顺序就是显示顺序）
         groups = [
@@ -55,13 +45,13 @@ class AdvancedTab:
                 ("统计", self.do_stats, "各表行数"),
                 ("补齐知识库分级文件", self.do_views,
                  "给每篇补「摘要与要点 / 图注与表格 / 权重与经验」——"
-                 "面板的「打开知识库…」和 Zotero 右键菜单读的就是它"),
+                 "面板的「打开知识库」和 Zotero 右键菜单读的就是它"),
                 ("列出当前分类", self.do_coll_list, "看 Zotero 里的分类"),
                 ("分类分布统计", self.do_coll_stats, "每个类有多少篇"),
                 ("重载技能到 DSH", self.do_sync_skill, "改了 SKILL.md 后同步"),
                 ("清理测试残留", self.do_clean_test, "删掉自检留下的假经验"),
             ]),
-            ("—— 以下是一次性 / 开发者功能，平时不用管 ——", "divider"),
+            ("开发者功能", "divider"),
             ("分类重整（改 Zotero 里的分类归属）· 已跑完", [
                 ("1 探测写入能力", self.do_sync_check, "看能不能连上 Zotero"),
                 ("2 申请授权", self.do_sync_authorize, "Zotero 会弹窗，要允许"),
@@ -108,10 +98,14 @@ class AdvancedTab:
                 self._tip(b, tip)
 
         ttk.Label(f, text="输出", font=(self.ui_font, 9, "bold")).pack(
-            anchor="w", padx=14, pady=(8, 0))
-        self.adv_text = scrolledtext.ScrolledText(f, height=9, wrap="word",
+            anchor="w", padx=14, pady=(8, 4))
+        # ⚠ 输出框放在**页签内部的下面那一格**（可拖分隔线）：用户反馈
+        #   "点了按钮像没反应"—— 输出落在页面最底下、又只能显示几行，
+        #   得把窗口拉长才看得见。现在它自己占一格、能拖大。
+        self.adv_text = scrolledtext.ScrolledText(self.adv_out, height=9,
+                                                  wrap="word",
                                                   font=(self.mono_font, 10))
-        self.adv_text.pack(fill="both", expand=True, padx=12, pady=(2, 10))
+        self.adv_text.pack(fill="both", expand=True, padx=6, pady=4)
 
 
     def _build_adv_inputs(self, box, kind: str):

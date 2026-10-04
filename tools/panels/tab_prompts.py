@@ -71,9 +71,11 @@ class PromptsTab:
                                                      font=(self.mono_font, 10))
         self.prompt_user.pack(fill="both", expand=True, pady=(0, 6))
 
-        self._prompt_out = scrolledtext.ScrolledText(f, height=8, wrap="word",
+        # 试跑输出放在页签内部的下面那一格（分隔线可拖）—— 模型输出有时很长
+        self._prompt_out = scrolledtext.ScrolledText(self.prompt_out, height=8,
+                                                     wrap="word",
                                                      font=(self.mono_font, 10))
-        self._prompt_out.pack(fill="both", expand=False, padx=10, pady=(0, 10))
+        self._prompt_out.pack(fill="both", expand=True, padx=6, pady=4)
         self.do_prompt_refresh()
 
 
@@ -162,7 +164,7 @@ class PromptsTab:
                 PR.reset(pid, field)
                 saved.append(field + "（改回默认，已删掉覆盖）")
         self.say(f"[{ts()}] 提示词 {pid} 已保存：{', '.join(saved) or '内容没变'}"
-                 f"（改完**立即生效**，不用重启服务）")
+                 f"（改完立即生效，不用重启服务）")
         self.do_prompt_refresh()
 
 
@@ -212,7 +214,7 @@ class PromptsTab:
             parts.append("\n── 模型输出 ──\n" + (res.get("output") or "(空)"))
             if res.get("want_json"):
                 parts.append("\n── JSON 解析 ──\n"
-                             + (res.get("parsed") or "**解析失败**（这一条在真实任务里会被判失败）"))
+                             + (res.get("parsed") or "解析失败（这一条在真实任务里会被判失败）"))
             if res.get("trace"):
                 parts.append("\n── 调用栈 ──\n" + str(res["trace"])[-800:])
             self.out_queue.put(("show", (self._prompt_out, "\n".join(parts))))

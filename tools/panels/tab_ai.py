@@ -96,9 +96,10 @@ class AiTab:
                  "更快的入口：在 Zotero 里右键某篇 →「分类建议（本地模型）」。"
         ).pack(fill="x", padx=12, pady=(0, 4))
 
-        self.ai_text = scrolledtext.ScrolledText(f, height=12, wrap="word",
+        self.ai_text = scrolledtext.ScrolledText(self.ai_out, height=12,
+                                                 wrap="word",
                                                  font=(self.mono_font, 10))
-        self.ai_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.ai_text.pack(fill="both", expand=True, padx=6, pady=4)
 
         self.refresh_paper_list()
 
@@ -346,6 +347,17 @@ class AiTab:
     # ================================================================ 分类 / 标签
 
     def do_coll_list(self):
+        """列出 Zotero 里的分类（结果写到高级页的输出框）。
+
+        ⚠ 用户报过"点了没反应"。查下来不是后端错（`Searcher.collections()`
+          正常），而是**结果落在页面最底下的输出框里、又只显示几行** ——
+          按钮在上面、结果在下面看不见。现在两件事一起做：
+            ① 输出框挪到页签内部可拖的那一格（一定看得见）；
+            ② 点下去先往**全局日志**写一行，反馈立刻可见。
+          这条经验对所有"结果写去别处"的按钮都适用。
+        """
+        self.say(f"[{ts()}] 正在读 Zotero 分类…（结果写到本页下面的「输出」）")
+
         def work():
             try:
                 import schemas as S
@@ -366,10 +378,15 @@ class AiTab:
                         parts.append(f"    「{a}」 ↔ 「{b}」")
                 s.close()
                 self.out_queue.put(("show", (self.adv_text, "\n".join(parts))))
+                self.out_queue.put(
+                    ("log", f"[{ts()}] 分类读完了：{len(cols)} 个"
+                            "（详见本页下面的「输出」）"))
             except Exception as exc:  # noqa: BLE001
-                self.out_queue.put(("show", (self.adv_text, f"出错了：{exc}")))
+                msg = f"出错了：{type(exc).__name__}: {exc}"
+                self.out_queue.put(("show", (self.adv_text, msg)))
+                self.out_queue.put(("log", f"[{ts()}] 读分类失败：{msg}"))
 
-        threading.Thread(target=work, daemon=True).start()
+        threading.Thread(target=work, daemon=True, name="kb-coll-list").start()
 
 
     def do_coll_stats(self):

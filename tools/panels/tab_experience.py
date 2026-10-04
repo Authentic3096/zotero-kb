@@ -47,10 +47,10 @@ class ExperienceTab:
             ("查询", self.do_exp_list, "按关键词找相关经验"),
             ("列出全部", self.do_exp_all, "库里所有经验（选中一条可在下面看全文、可删）"),
             ("经验体检", self.do_exp_checkup,
-             "把「没有关联文献 / 像是工具链记录」的标出来（**同一个列表**里显示原因，不自动删）"),
+             "把「没有关联文献 / 像是工具链记录」的标出来（「同一个列表」里显示原因，不自动删）"),
             ("待确认清单", self.do_pending, "小模型从对话里抽出来、还没确认的"),
             ("修改/增添经验…", self.do_exp_edit, "手记一条，或改已有的一条（有本地模型可以口述）"),
-            ("选择会话…", self.do_pick_sessions, "**手动选**要扫的对话（不再默认扫全部）"),
+            ("选择会话…", self.do_pick_sessions, "「手动选」要扫的对话（不再默认扫全部）"),
         ):
             b = ttk.Button(bar, text=text, command=cmd)
             b.pack(side="left", padx=3)
@@ -60,8 +60,7 @@ class ExperienceTab:
             f, foreground="#888", wraplength=980, justify="left",
             text="经验是知识库越用越准的唯一机制：用某篇的方法做过尝试后，"
                  "记录「有效 / 无效 / 部分有效」，下次检索会自动把验证过的文献排前。"
-                 "⚠ 只记**与文献内容或研究方法有关**的尝试；"
-                 "工程/工具链/配置类的踩坑请写进工作档案，它们进经验库会污染检索排序。"
+                 "本地模型用提示词限制只记录「与文献内容或研究方法有关」的尝试。"
         ).pack(fill="x", padx=12, pady=(0, 2))
 
         # ---- 列表（所有视图**共用这一个**）
@@ -99,15 +98,19 @@ class ExperienceTab:
         self.exp_reject_btn = ttk.Button(act, text="丢弃（待确认）",
                                          command=self.do_exp_reject)
         self.exp_reject_btn.pack(side="left", padx=6)
-        # 编号说明：用户直接问过「删除了应该更新」—— 这里是答案，写在界面上
-        ttk.Label(act, foreground="#888", text="id 是库里的永久编号：删除后留空号，"
-                                              "新条目接着往后排（不重编号 —— 历史记录按 id 引用）"
+        # 编号说明：用户直接问过「删除了应该更新」/「编号应该自动更新、从 1 开始」
+        # —— 这里是答案，写在界面上（实现见 offline/experience.py: renumber）
+        ttk.Label(act, foreground="#888",
+                  text="id 是库里的编号：删除后会自动重排，始终从 1 开始连续"
                  ).pack(side="left", padx=10)
 
         # ---- 详情（选中那一条的全文；列表负责导航，这里负责内容）
-        self.exp_text = scrolledtext.ScrolledText(f, height=11, wrap="word",
+        # ⚠ 放在页签内部的下面那一格（分隔线可拖）：详情长短差很多，
+        #   固定在 11 行时长的看不全、短的浪费空间。
+        self.exp_text = scrolledtext.ScrolledText(self.exp_out, height=11,
+                                                  wrap="word",
                                                   font=(self.mono_font, 10))
-        self.exp_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        self.exp_text.pack(fill="both", expand=True, padx=6, pady=4)
 
         self.exp_view = ("all", "")     # 记住当前视图，删完刷新的是**同一个**视图
         self._exp_load("all", "")
@@ -219,7 +222,7 @@ class ExperienceTab:
         total = len(rows)
         if mode == "checkup":
             self.say(f"[{ts()}] 经验体检：{total} 条可疑（共 {self._exp_total()} 条经验）。"
-                     f"**只列不自动删** —— 在**同一个列表**里勾选（可多选）再点「删除选中」。")
+                     f"只列不自动删 —— 在「同一个列表」里勾选（可多选）再点「删除选中」。")
         else:
             self.say(f"[{ts()}] 经验（{mode}）：{total} 条")
         if rows:
@@ -274,7 +277,7 @@ class ExperienceTab:
             if row.get("_why"):
                 text += f"\n⚠ 体检认为可疑：{row['_why']}\n"
             if not keys:
-                text += ("\n⚠ 这条**没有关联文献**：不会被检索加权，"
+                text += ("\n⚠ 这条没有关联文献：不会被检索加权，"
                          "也不会出现在任何一篇的档案里。\n")
         self.exp_text.insert("1.0", text)
 
@@ -408,9 +411,9 @@ class ExperienceTab:
         body = "\n".join(f"#{i}" for i in ids[:20])
         if not messagebox.askyesno(
                 f"删掉这 {len(ids)} 条？",
-                body + "\n\n删除会**同时把它给文献加过的权重减回去**"
+                body + "\n\n删除会「同时把它给文献加过的权重减回去」"
                        "（不回滚的话会留下「没有经验却权重很高」的脏状态）。\n"
-                       "⚠ id 不会重编号：删掉 12，剩下的还是 11、13…（编号被历史记录引用）。"):
+                       "⚠ 删完会把编号重排成从 1 开始的连续编号。"):
             return
         try:
             import sys
@@ -419,12 +422,13 @@ class ExperienceTab:
             import experience as EXP
             import schemas as S
             w = EXP.ConnWriter(S.connect(S.INDEX_DB))
-            gone = [eid for eid in ids if EXP.delete_experience(w, eid)]
+            # ⚠ 一次批量删：循环调用单条删除会边删边重排编号，删到别的行上
+            gone = EXP.delete_experiences(w, ids)
         except Exception as exc:      # noqa: BLE001
             messagebox.showerror("删除失败", str(exc))
             return
         self.say(f"[{ts()}] 已删除 {len(gone)} 条经验（权重已回滚），"
-                 f"列表已按当前视图刷新；id 不重编号")
+                 f"列表已按当前视图刷新；编号已重排成 1..N 连续")
         self._exp_refresh()
 
 
@@ -439,7 +443,7 @@ class ExperienceTab:
                 if (self.exp_rows.get(iid) or {}).get("pending")]
         body = "\n".join(f"· {str(r.get('asked'))[:70]}" for r in rows[:10])
         if not messagebox.askyesno("采纳并入库", body + "\n\n确认这些条目成立吗？"
-                                   "入库会**计入关联文献的权重**。"):
+                                   "入库会「计入关联文献的权重」。"):
             return
         try:
             import sys

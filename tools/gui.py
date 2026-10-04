@@ -135,7 +135,7 @@ def console_check() -> int:
         problems.append(f"读索引失败：{type(exc).__name__}: {exc}")
         print(f"  [XX] 读索引失败：{exc}")
 
-    # 分级视图（面板「打开知识库…」与 Zotero 右键菜单读的就是它）。
+    # 分级视图（面板「打开知识库」与 Zotero 右键菜单读的就是它）。
     # 它是派生物：缺了功能会退化成"打不开这一层"，所以要在这里看得见。
     try:
         import kbviews as KV
@@ -214,8 +214,8 @@ def main() -> int:
     want = _arg_value("--tab")
     if want:
         alias = {"struct": "知识库结构", "exp": "经验库", "ai": "分类建议",
-                 "env": "运行环境", "quality": "解析健康", "meta": "元数据",
-                 "adv": "高级"}
+                 "env": "运行环境", "quality": "损坏查询", "meta": "元数据",
+                 "adv": "高级", "prompts": "提示词"}
         title = alias.get(want, want)
         titles = [app.notebook.tab(t, "text").strip()
                   for t in app.notebook.tabs()]

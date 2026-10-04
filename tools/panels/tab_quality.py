@@ -1,7 +1,12 @@
-"""tab_quality.py —— 「解析健康」页：坏切片、图注表格
+"""tab_quality.py —— 「损坏查询」页：坏切片、图注表格
 
 ⚠ 这是从 tools/gui.py 拆出来的一个页签。方法体与拆分前**逐字相同**；
 每个混入类只提供方法，状态都挂在同一个 App 实例上（self）。
+
+⚠ 页名原叫「解析健康」，用户 2026-10-05 要求改成「损坏查询」
+（"解析健康"是术语，用户一眼看不出这页是**查损坏的正文**的）。
+改了页名之后，页内的标题、按钮、日志前缀都跟着改成同一套说法 ——
+一个页面里两种叫法，用户会以为是两件事。
 """
 
 from __future__ import annotations
@@ -15,16 +20,16 @@ from tkinter import ttk
 
 
 class QualityTab:
-    """「解析健康」页：坏切片、图注表格。"""
+    """「损坏查询」页：坏切片、图注表格。"""
 
 
     # ---------------------------------------------------------- 运行环境
 
 
-    # ================================================================ 切片质量页
+    # ================================================================ 损坏查询页
 
     def _build_quality_tab(self):
-        """切片质量页：查坏切片、修坏切片、看图注表格统计。
+        """损坏查询页：查坏切片、修坏切片、看图注表格统计。
 
         为什么值得单独一页：PDF 提取失败**从界面上看不出来** ——
         检索命中了、片段也显示了，但内容是
@@ -35,7 +40,7 @@ class QualityTab:
         f = self.tab_quality
         head = ttk.Frame(f, padding=(10, 8, 10, 0))
         head.pack(fill="x")
-        ttk.Label(head, text="解析健康",
+        ttk.Label(head, text="损坏查询",
                   font=(self.ui_font, 11, "bold")).pack(side="left")
         ttk.Button(head, text="刷新统计",
                    command=self.refresh_quality).pack(side="right")
@@ -43,8 +48,8 @@ class QualityTab:
         ttk.Label(
             f, foreground="#666", font=(self.ui_font, 9), justify="left",
             wraplength=900,
-            text=("检查 PDF 提取失败的切片（字符错乱 / 编码错乱 / 只剩符号）。"
-                  "这类切片**能检索到但读不出东西**，还会污染向量。\n"
+            text=("查 PDF 提取失败的切片（字符错乱 / 编码错乱 / 只剩符号）。"
+                  "这类切片「能检索到但读不出东西」，还会污染向量。\n"
                   "检查用本机模型批量判定，全库约几分钟；"
                   "修复会绕开 Zotero 的文本缓存、直接用 PyMuPDF 重新提取。")
         ).pack(fill="x", padx=12, pady=(6, 8))
@@ -60,7 +65,7 @@ class QualityTab:
         btns = ttk.Frame(f, padding=(10, 0))
         btns.pack(fill="x")
         self.q_check_btn = ttk.Button(
-            btns, text="检查解析健康", command=self.do_quality_check)
+            btns, text="检查损坏切片", command=self.do_quality_check)
         self.q_check_btn.pack(side="left")
         self.q_rule_btn = ttk.Button(
             btns, text="只跑规则（秒级）", command=self.do_quality_check_rule)
@@ -184,10 +189,10 @@ class QualityTab:
                 out["lines"] = [
                     f"{n_item} 篇文献｜{n_chunk} 个切片｜"
                     f"图注 {n_fig}｜表格 {n_tab}",
-                    (f"已体检 {checked} 篇：不可信 {bad} 篇"
+                    (f"已检查 {checked} 篇：不可信 {bad} 篇"
                      + (f"，待人工确认 {unsure} 篇" if unsure else "")
                      if checked else
-                     "还没体检过 —— 点「检查解析健康」跑一次"),
+                     "还没检查过 —— 点「检查损坏切片」跑一次"),
                 ]
                 if checked and not bad and not unsure:
                     out["note"] = "✓ 所有文献的正文提取都可信"
@@ -227,21 +232,21 @@ class QualityTab:
                 self.say(f"[切片检查] 载入失败：{exc}")
                 self._quality_busy(False)
                 return
-            self.say(f"[解析体检] 开始"
+            self.say(f"[损坏查询] 开始"
                      f"（{'规则 + 本地模型' if use_model else '仅规则'}）…")
 
             def prog(done, total, note):
                 if done % 20 == 0 or done == total:
-                    self.say(f"[解析体检] {done}/{total}  {note[:60]}")
+                    self.say(f"[损坏查询] {done}/{total}  {note[:60]}")
             r = CC.scan(use_model=use_model, progress=prog)
-            self.say(f"[解析体检] 完成：{r['total']} 篇，"
+            self.say(f"[损坏查询] 完成：{r['total']} 篇，"
                      f"不可信 {r['bad']} 篇，待人工确认 {r.get('unsure', 0)} 篇，"
                      f"耗时 {r['elapsed']} 秒")
             if r.get("legacy_dropped"):
-                self.say(f"[解析体检] 已清理旧的 chunk_quality 表"
+                self.say(f"[损坏查询] 已清理旧的 chunk_quality 表"
                          f"（{r['legacy_dropped']} 行误判数据）")
             if r.get("model_note"):
-                self.say(f"[解析体检] ⚠ {r['model_note']}")
+                self.say(f"[损坏查询] ⚠ {r['model_note']}")
             self._quality_busy(False)
             self.refresh_quality()
         threading.Thread(target=work, daemon=True, name="kb-check").start()
@@ -461,5 +466,5 @@ class QualityTab:
                 lines.append("")
                 lines.append(f"--- 片段 {i + 1} ---")
                 lines.append(s[:300])
-            self._show_dialog(f"解析体检明细 · {key}", "\n".join(lines))
+            self._show_dialog(f"损坏查询明细 · {key}", "\n".join(lines))
         threading.Thread(target=work, daemon=True, name="kb-detail").start()

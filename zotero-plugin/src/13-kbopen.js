@@ -111,7 +111,7 @@ Object.assign(ZoteroKB, {
       tried.push("externalProtocolService：" + e);
     }
 
-    // ③ 交给面板的 Python 打开（os.startfile —— 面板「打开知识库目录」就是
+    // ③ 交给面板的 Python 打开（os.startfile —— 面板「文献管理器中查看」就是
     //    这么干的，本机确定可用）。代价是要起一个短命的 pythonw 进程。
     try {
       if (self.openKbViaPanel(path)) return "panel";

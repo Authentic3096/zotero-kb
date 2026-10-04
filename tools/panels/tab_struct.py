@@ -36,12 +36,13 @@ class StructTab:
         ttk.Label(head, text="知识库的位置与内容",
                   font=(self.ui_font, 11, "bold")).pack(side="left")
         # ⚠ 两个入口的分工（用户 2026-10-05 提的）：
-        #   「打开知识库…」= 从**文献**出发（先列文献，再列级别，再打开 md）。
+        #   「打开知识库」= 从**文献**出发（先列文献，再列级别，再打开 md）。
         #     它在**顶部那一排核心按钮**里（panels/base.py 的 _build_header）——
         #     那是个日常动作，不该只有切到这一页才看得到，所以这里不重复放。
-        #   「打开知识库目录」= 从**文件**出发，留在这一页（跟这张结构表配套）。
-        ttk.Button(head, text="打开知识库目录", command=self.open_folder).pack(
-            side="right")
+        #   「文献管理器中查看」= 从**文件**出发，留在这一页（跟这张结构表配套）。
+        #     原名"打开知识库目录"，用户说看不出是在资源管理器里打开。
+        ttk.Button(head, text="文献管理器中查看",
+                   command=self.open_folder).pack(side="right")
         ttk.Button(head, text="刷新", command=self.refresh_struct).pack(
             side="right", padx=6)
 
@@ -53,7 +54,7 @@ class StructTab:
                                         height=13)
         for key, text, width in (
             ("name", "文件 / 文件夹", 150),
-            ("what", "存的是什么", 380),
+            ("what", "存放内容", 380),
             ("count", "内容量", 110),
             ("size", "占用", 80),
             ("safe", "能删吗", 190),
@@ -189,7 +190,7 @@ class StructTab:
     # ---------------------------------------------------------- 打开知识库
 
     def open_kb_browser(self):
-        """「打开知识库…」：先选文献，再选级别，最后打开那个 md。
+        """「打开知识库」：先选文献，再选级别，最后打开那个 md。
 
         为什么不直接打开目录（原来只有那一个入口）：目录里的文件名是 Zotero
         的 key（`22X9PMR6.md`），人认不出是哪篇，等于让用户自己去找。
