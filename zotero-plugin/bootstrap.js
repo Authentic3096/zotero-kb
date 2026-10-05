@@ -6230,7 +6230,11 @@ Object.assign(ZoteroKB, {
   /** 只有普通条目（有 pdf/元数据的那些）才显示这个分区。 */
   kbviewEnabled: function (item, tabType) {
     if (!item) return false;
-    if (tabType && tabType !== "library") return false;
+    // ⚠ 2026-10-05：这里原来只认 `library`（照抄了被删掉的对话窗格），
+    //   于是**打开 PDF 的阅读器页签里分区整个消失**（用户截图反馈：
+    //   "在文献打开后就没有插件图标了"）。而"对着 PDF 读纲要"恰恰是最常用的场景，
+    //   所以 reader 必须开。未知页签类型也放行（有 item 就能显示）。
+    if (tabType === "reader-unloaded") return false;
     try {
       return typeof item.isRegularItem === "function" ? !!item.isRegularItem() : true;
     } catch (e) {
@@ -6349,25 +6353,48 @@ Object.assign(ZoteroKB, {
         view.textContent = "";
         const p = doc.createElement("div");
         p.setAttribute("style", "opacity:0.75;");
+        // 把"知识库目录 + 试过的路径"一并显示：用户反馈"有的文献打不开"时，
+        // 这一行就能看出是"没建索引"还是"知识库位置没定下来"（省一轮来回）。
         p.textContent = "知识库里还没有这一篇的任何分级文件。"
           + "先在管理面板「手动更新」建一次索引，"
           + "或用右键菜单「重建本条目知识库」。";
+        const probe = doc.createElement("div");
+        probe.setAttribute("style", "opacity:0.6; font-size:11px; margin-top:4px;"
+          + " word-break:break-all;");
+        const kb = self.kbDir();
+        probe.textContent = (kb ? ("知识库目录：" + kb + "；")
+                                : "知识库目录未确定（面板「运行环境」→ 服务状态）；")
+          + "试过：" + (byId[self.kbviewLevel()] || {}).path;
+        view.append(probe);
         view.append(p);
         hint.textContent = "";
         return;
       }
       const path = (byId[picked.levelId] || {}).path
         || self.kbviewPath(picked.levelId, item.key);
+      // 优先读同名 `.html`（LaTeX 已渲染成 MathML，Firefox 原生显示公式）；
+      // 没有才退回 md，由 md2html 现场渲染（那时公式是原文文本）。
+      const htmlPath = path.replace(/\.md$/i, ".html");
       let text = "";
+      let isHtml = false;
       try {
-        text = await IOUtils.readUTF8(path);
-      } catch (e) {
-        text = "";
+        if (self._exists(htmlPath)) {
+          text = await IOUtils.readUTF8(htmlPath);
+          isHtml = true;
+        }
+      } catch (e) { /* 读不到就走 md */ }
+      if (!text) {
+        try {
+          text = await IOUtils.readUTF8(path);
+        } catch (e) {
+          text = "";
+        }
       }
       const lvLabel = (byId[picked.levelId] || {}).label || picked.levelId;
       hint.textContent = lvLabel + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
-        + "　" + text.length + " 字";
-      view.innerHTML = self.md2html(text) ||
+        + "　" + text.length + " 字"
+        + (isHtml ? "　公式已渲染" : "　公式为原文文本");
+      view.innerHTML = (isHtml ? text : self.md2html(text)) ||
         "<p style='opacity:0.75'>（这一级是空的）</p>";
     };
 

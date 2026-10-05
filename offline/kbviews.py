@@ -437,6 +437,13 @@ def write_levels(key: str, s=None) -> list[str]:
             with open(path, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(text)
             written.append(path)
+            # 顺手写一份带 MathML 的 `.html`（Zotero 右侧栏读它 ——
+            # 窗格里注入的 <script> 不会执行，公式只能在生成时渲染成 MathML）。
+            try:
+                import mdhtml
+                mdhtml.write_html(path)
+            except Exception:      # noqa: BLE001 —— 视图是派生物，渲染失败不该让构建失败
+                pass
     finally:
         if own:
             try:

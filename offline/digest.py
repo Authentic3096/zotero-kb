@@ -413,6 +413,11 @@ def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
             os.makedirs(S.VIEWS_DIR, exist_ok=True)
             with io.open(vpath, "w", encoding="utf-8", newline="\n") as fh:
                 fh.write(render(key, data))
+            try:
+                import mdhtml
+                mdhtml.write_html(vpath)
+            except Exception:      # noqa: BLE001
+                pass
         except Exception as exc:      # noqa: BLE001
             note(f"    [!!] 写 views/{key}.outline.md 失败：{exc}")
         # 顺手把"节标题 + 一句话"写进 papers/<KEY>.md（没笔记时档案才不笼统）
@@ -530,6 +535,15 @@ def main(argv: list[str] | None = None) -> int:
             "SELECT k FROM meta WHERE k LIKE ?", (META_PREFIX + "%",))]
         n = sum(1 for k in ks if sync_card(k))
         print(f"  已把纲要概览写进 {n} / {len(ks)} 篇的 papers/*.md")
+        # 顺带补 .html（公式渲染成 MathML）：后台任务跑的时候还没有这一步
+        try:
+            import mdhtml
+            vd = S.VIEWS_DIR
+            m = sum(1 for k in ks if mdhtml.write_html(
+                os.path.join(vd, f"{k}.outline.md")))
+            print(f"  已补 {m} 个 views/*.outline.html（公式渲染）")
+        except Exception as exc:      # noqa: BLE001
+            print(f"  （补 html 失败：{exc}）")
         return 0
 
     keys = []

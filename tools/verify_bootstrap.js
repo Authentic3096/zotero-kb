@@ -255,10 +255,22 @@ if (KB) {
     && sec0.header.icon && sec0.sidenav
     && sec0.sidenav.l10nID === "zotero-kb-kbview-sidenav"
     && sec0.sidenav.icon, JSON.stringify(sec0.header));
-  check("分区只对普通条目开启",
+  // ⚠ 2026-10-05：**阅读器页签也必须开** —— 用户截图反馈"在文献打开后就没有
+  //   插件图标了"（原来照抄了被删掉的对话窗格，只认 library）。
+  //   "对着 PDF 读纲要"正是最常用的场景。
+  check("分区在条目库与阅读器页签都开、非普通条目不开",
     KB.kbviewEnabled({ isRegularItem: () => true }, "library") === true
+    && KB.kbviewEnabled({ isRegularItem: () => true }, "reader") === true
     && KB.kbviewEnabled({ isRegularItem: () => false }, "library") === false
-    && KB.kbviewEnabled({ isRegularItem: () => true }, "reader") === false);
+    && KB.kbviewEnabled({ isRegularItem: () => true }, "reader-unloaded") === false
+    && KB.kbviewEnabled(null, "library") === false);
+
+  // .html（公式已渲染成 MathML）优先、没有才回退 md
+  const kvSrc = fs.readFileSync(
+    path.join(PLUGIN, "src", "20-kbview.js"), "utf8");
+    check("窗格优先读 .html（公式渲染），没有才回退 md",
+    kvSrc.indexOf('.md$/i, ".html"') >= 0
+    && kvSrc.indexOf("公式已渲染") >= 0);
 
   // ---- md2html：知识库 md 里真正用到的语法（纯函数，最容易出错的一块）
   const html = KB.md2html([
