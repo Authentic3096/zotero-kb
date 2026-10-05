@@ -273,6 +273,38 @@ class AppBase:
         widget.bind("<ButtonPress>", hide)
 
 
+    def _bind_sash_cursor(self, paned):
+        """鼠标移到分隔线上时把光标换成"上下箭头"。
+
+        为什么值得做：ttk 的 sash **没有任何悬停反馈** —— 用户根本不知道那里
+        可以拖（反馈原话："内部窗口没办法独立调节吗？…太不自然了"）。
+        这不是 Python/Tk 的限制，只是 ttk 没帮我们把光标管起来，几行就能补上。
+
+        判据：指针 y 落在 sashpos(±6px) 之内。ttk 的 sash 是控件自己画的、
+        不是子控件，所以只能按坐标判断（这就是它"不自然"的根源）。
+        """
+        def on_motion(e):
+            try:
+                pos = paned.sashpos(0)
+            except tk.TclError:
+                return
+            want = "sb_v_double_arrow" if abs(e.y - pos) <= 6 else ""
+            try:
+                if paned.cget("cursor") != want:
+                    paned.configure(cursor=want)
+            except tk.TclError:
+                pass
+
+        def on_leave(_e=None):
+            try:
+                paned.configure(cursor="")
+            except tk.TclError:
+                pass
+
+        paned.bind("<Motion>", on_motion, add="+")
+        paned.bind("<Leave>", on_leave, add="+")
+
+
     def _build_tabs(self):
         """建 Notebook 与 8 个页签，并把「内容 / 日志」两格 add 进去。
 
@@ -341,6 +373,7 @@ class AppBase:
             paned.pack(fill="both", expand=True)
             top = ttk.Frame(paned)
             paned.add(top, weight=3)
+            self._bind_sash_cursor(paned)
 
         canvas = tk.Canvas(top, highlightthickness=0, borderwidth=0, height=340)
         try:
@@ -525,6 +558,7 @@ class AppBase:
         """
         self._paned = ttk.PanedWindow(self.root, orient="vertical")
         self._paned.pack(fill="both", expand=True, padx=12, pady=(6, 10))
+        self._bind_sash_cursor(self._paned)
         # 标题里写明"能拖"：分隔线虽然加粗了，但不说一句用户还是不会去试。
         self.log_frame = ttk.LabelFrame(
             self._paned, text=" 运行日志（拖上面的分隔线调高度） ", padding=4)
