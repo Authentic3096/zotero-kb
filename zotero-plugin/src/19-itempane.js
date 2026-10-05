@@ -58,18 +58,32 @@ Object.assign(ZoteroKB, {
   /**
    * 给元素设 ftl 文案。
    *
-   * `l10nID` 必须在 locale/*.ftl 里有定义 —— `tools/check_plugin.py` 会静态检查
-   * （bootstrap.js 里出现的每个 l10nID 都要在 ftl 里找到）。这里失败时退回显示
-   * **id 本身**：至少界面上能看出是哪一条缺了，而不是空白。
+   * 两条路一起走（顺序很重要）：
+   *   ① 先用 `Zotero.ftl.formatValueSync(id)` 拿一份**同步**文案填上 ——
+   *      它是程序化 Localization，只要 initLocale 里
+   *      `Zotero.ftl.addResourceIds([...])` 成功就有值；
+   *   ② 再把 `data-l10n-id` 交给**文档**的本地化（`doc.l10n.setAttributes`）——
+   *      翻译成功时它会覆盖①那份；将来切换语言也跟着变。
+   *
+   * 为什么必须留①这条兜底：2026-10-05 用户截图报"按钮全是空框" —— 根因是
+   * 文档的 linkset 里没挂我们的 ftl（见 `initLocale`）。那时候
+   * `setAttributes` **不报错但也不出字**，元素保持空白；有了①至少能显示出
+   * 文案（再不济 raw id 也比空白好排查）。缺 id 时退回显示 id 本身。
    */
   l10n: function (doc, el, id, args) {
     try {
+      const s = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync(id, args || undefined);
+      if (s) el.textContent = s;
+    } catch (e) { /* 落到下面 */ }
+    try {
       if (doc && doc.l10n && doc.l10n.setAttributes) {
         doc.l10n.setAttributes(el, id, args || undefined);
+        if (!el.textContent) el.textContent = id;   // 谁都不认识时别留空白
         return el;
       }
     } catch (e) { /* 落到下面 */ }
-    el.textContent = id;
+    if (!el.textContent) el.textContent = id;
     return el;
   },
 
@@ -86,6 +100,9 @@ Object.assign(ZoteroKB, {
       "cursor:pointer", "border-radius:3px",
       "border:1px solid rgba(128,128,128,.5)",
       "background:transparent", "color:inherit",
+      // ⚠ 内容窗格只有 ~200px 宽，不加 nowrap 时"逐段检测"这种会被折成两行，
+      //   一排按钮高矮不一，看着像坏了（用户截图里那排空框就是这个宽度）。
+      "white-space:nowrap",
     ].join(";");
     if (opts && opts.tip) b.title = opts.tip;
     if (onClick) b.addEventListener("click", onClick);
@@ -216,12 +233,17 @@ Object.assign(ZoteroKB, {
    */
   l10nText: function (id, fallback, args) {
     try {
+      // ① 同步取（initLocale 里已经把 ftl 加进 Zotero.ftl 了）
+      const s = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync(id, args || undefined);
+      if (s) return s;
+    } catch (e) { /* 落到下面 */ }
+    try {
+      // ② 老路：异步填缓存，下次就能命中（首启第一次可能拿不到）
       const l10n = (Zotero.getMainWindow() || {}).document
         && Zotero.getMainWindow().document.l10n;
       if (l10n && l10n.formatValue) {
         const p = l10n.formatValue(id, args || undefined);
-        // Fluent 返回 Promise；弹窗是同步 API，所以这里只能"用缓存/默认值"。
-        // 取不到就退回默认中文（**不阻塞退出**）。
         p.then((s) => { ZoteroKB._l10nCache[id] = s; }).catch(() => {});
       }
     } catch (e) { /* ignore */ }
@@ -288,6 +310,12 @@ Object.assign(ZoteroKB, {
     // ⚠ 这里**不能**走 self.l10n()：那个是给元素设 textContent 的，而
     //   textarea 的 textContent 就是它的**内容** —— 会把提示语变成输入框里
     //   真实存在的文字。placeholder 要走 FTL 的属性注入形式。
+    //   同样先填一份**同步**的兜底（理由见 l10n()）：属性注入失败时至少有个提示。
+    try {
+      const ph = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync("zotero-kb-placeholder-ask");
+      if (ph) ta.placeholder = ph;
+    } catch (e) { /* ignore */ }
     ta.setAttribute("data-l10n-id", "zotero-kb-placeholder-ask");
     ta.setAttribute("data-l10n-attrs", "placeholder");
     ui.input = ta;

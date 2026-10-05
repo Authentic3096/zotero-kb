@@ -56,6 +56,97 @@ Object.assign(ZoteroKB, {
 
   uninstall: function () {},
 
+
+  // ================================================================ 界面文案（ftl）
+
+  /**
+   * 把插件自带的 ftl 挂到窗口文档上。**这一步不能省。**
+   *
+   * Zotero 只做了一半：它把插件 `locale/<语言>/*.ftl` 读进 `L10nRegistry` 的
+   * `zotero-plugins` 源（`plugins.js` 的 `registerLocales`，在 `startup` 之前跑），
+   * 但**文档必须自己声明要用这个资源** —— 主窗口的 `linkset` 里只有
+   * `zotero.ftl` / `reader.ftl` 那几条。少了这一步，我们设的
+   * `data-l10n-id` 谁都不认识：元素**保持空白**（不报错、也不显示 id），
+   * 表现就是"内容窗格里一排按钮全是空框"。
+   *
+   * 2026-10-05 实测（用户截图报的正是这个）：删了 `initLocale` 之后，
+   * 分区能出现、状态行有字（那是代码里的中文字符串），但 **6 个按钮全空**、
+   * 分区标题与输入框 placeholder 也空。
+   *
+   * 两个动作：
+   *   ① `MozXULElement.insertFTLIfNeeded(文件名)` —— 往文档的 linkset 里加一条
+   *      `<link rel="localization" href="zotero-kb.ftl">`（Firefox 的标准做法，
+   *      本机 5 个能正常显示文案的插件都是这么干的）；拿不到 MozXULElement
+   *      时**自己插那条 link**（那段代码就是它的实现，只是多一层保险）。
+   *   ② `Zotero.ftl.addResourceIds([文件名])` —— 让**程序化**取字符串也行
+   *      （`l10nText()` 给 confirmEx 弹窗用；那是同步 API，只能走这条路）。
+   *
+   * 不抛错：文案是装饰，缺了也不该让插件启动失败（只是界面难看）。
+   */
+  initLocale: function (win) {
+    var self = ZoteroKB;
+    const file = self.FTL_FILE;
+    const result = { file: file, steps: [] };
+    try {
+      // ② 程序化取字符串（弹窗用）
+      try {
+        if (Zotero.ftl && Zotero.ftl.addResourceIds) {
+          Zotero.ftl.addResourceIds([file]);
+          result.steps.push("ftl.addResourceIds=ok");
+        }
+      } catch (e) {
+        result.steps.push("ftl.addResourceIds=FAIL(" + e + ")");
+      }
+
+      const w = win || (Zotero.getMainWindow && Zotero.getMainWindow());
+      if (!w || !w.document) {
+        result.steps.push("no-window");
+        self.writeStatusFile({ locale: JSON.stringify(result) });
+        return result;
+      }
+      const doc = w.document;
+      // ① 文档级：让 data-l10n-id 真的被翻译
+      try {
+        if (w.MozXULElement && w.MozXULElement.insertFTLIfNeeded) {
+          w.MozXULElement.insertFTLIfNeeded(file);
+          result.steps.push("insertFTLIfNeeded=ok");
+        } else {
+          result.steps.push("insertFTLIfNeeded=missing");
+        }
+      } catch (e) {
+        result.steps.push("insertFTLIfNeeded=FAIL(" + e + ")");
+      }
+      // 兜底：自己插那条 link（与 insertFTLIfNeeded 的实现一致，幂等）
+      try {
+        const container = doc.head || doc.querySelector("linkset");
+        if (container) {
+          let have = false;
+          for (const l of container.querySelectorAll("link")) {
+            if (l.getAttribute("href") === file) { have = true; break; }
+          }
+          if (!have) {
+            const link = doc.createElementNS(
+              "http://www.w3.org/1999/xhtml", "link");
+            link.setAttribute("rel", "localization");
+            link.setAttribute("href", file);
+            container.appendChild(link);
+            result.steps.push("manual-link=ok");
+          } else {
+            result.steps.push("manual-link=already");
+          }
+        } else {
+          result.steps.push("manual-link=no-container");
+        }
+      } catch (e) {
+        result.steps.push("manual-link=FAIL(" + e + ")");
+      }
+      self.writeStatusFile({ locale: JSON.stringify(result) });
+    } catch (e) {
+      Zotero.debug("[zotero-kb] initLocale 失败：" + e);
+    }
+    return result;
+  },
+
   // ================================================================ 首选项
 
   PREFS: {

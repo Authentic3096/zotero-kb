@@ -19,13 +19,13 @@ zotero-kb-pane-header = 本地模型
 zotero-kb-pane-sidenav = 本地模型（读这篇文献）
 
 # ---- 按钮：三种上下文注入
-zotero-kb-btn-inject-tldr = 注入摘要级
+zotero-kb-btn-inject-tldr = 摘要级
 zotero-kb-btn-inject-tldr-tip = 把这篇的摘要级视图放进上下文（几百字，够问主题与方法）
-zotero-kb-btn-inject-full = 注入全文级
+zotero-kb-btn-inject-full = 全文级
 zotero-kb-btn-inject-full-tip = 把全文放进上下文；超预算时按页均匀取样，注入量会如实显示
 
 # ---- 按钮：逐段检测
-zotero-kb-btn-para = 全文级段落检测
+zotero-kb-btn-para = 逐段检测
 zotero-kb-btn-para-tip = 逐段核对正文提取质量（可随时中断，进度会保留）
 zotero-kb-btn-para-next = 继续下一段检测
 zotero-kb-btn-para-exit = 退出逐段检测
@@ -39,7 +39,7 @@ zotero-kb-para-stale = 正文重建过，{ $n } 段需重查
 # ---- 输入与状态
 zotero-kb-btn-send = 发送
 zotero-kb-btn-locate = 定位
-zotero-kb-btn-propose = 整理这次讨论
+zotero-kb-btn-propose = 整理讨论
 zotero-kb-btn-clear = 清空对话
 zotero-kb-placeholder-ask = 就这篇文献提问…
 zotero-kb-placeholder-locate = 把 PDF 里选中的文字粘在这里，定位到对应段落

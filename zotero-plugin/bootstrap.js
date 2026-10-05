@@ -39,6 +39,13 @@ var ZoteroKB = {
   rootURI: null,
   alive: false,
 
+  // 界面文案的 ftl 文件名（locale/<语言>/<这个名字>）。
+  // ⚠ Zotero 会把插件 `locale/<语言>/*.ftl` 读进 L10nRegistry 的
+  //   `zotero-plugins` 源，但**文档还得自己把它挂上** —— 少了 initLocale 那一步，
+  //   `data-l10n-id` 谁都不认识，界面上的表现就是"按钮全是空框"
+  //   （2026-10-05 用户截图报的正是这个）。
+  FTL_FILE: "zotero-kb.ftl",
+
   // 运行时状态
   serverOk: false,
   serverInfo: null,
@@ -88,6 +95,9 @@ var ZoteroKB = {
     };
 
     try {
+      // ⚠ 第一件事就是把 ftl 挂到窗口文档上（见 initLocale 的说明）——
+      //   后面的设置面板/内容窗格分区都要靠它把 l10nID 变成文字。
+      step("initLocale", () => self.initLocale());
       step("registerPrefs", () => self.registerPrefs());
       step("registerPrefObserver", () => self.registerPrefObserver());
       step("registerPrefPane", () => self.registerPrefPane());
@@ -235,6 +245,97 @@ Object.assign(ZoteroKB, {
   install: function () {},
 
   uninstall: function () {},
+
+
+  // ================================================================ 界面文案（ftl）
+
+  /**
+   * 把插件自带的 ftl 挂到窗口文档上。**这一步不能省。**
+   *
+   * Zotero 只做了一半：它把插件 `locale/<语言>/*.ftl` 读进 `L10nRegistry` 的
+   * `zotero-plugins` 源（`plugins.js` 的 `registerLocales`，在 `startup` 之前跑），
+   * 但**文档必须自己声明要用这个资源** —— 主窗口的 `linkset` 里只有
+   * `zotero.ftl` / `reader.ftl` 那几条。少了这一步，我们设的
+   * `data-l10n-id` 谁都不认识：元素**保持空白**（不报错、也不显示 id），
+   * 表现就是"内容窗格里一排按钮全是空框"。
+   *
+   * 2026-10-05 实测（用户截图报的正是这个）：删了 `initLocale` 之后，
+   * 分区能出现、状态行有字（那是代码里的中文字符串），但 **6 个按钮全空**、
+   * 分区标题与输入框 placeholder 也空。
+   *
+   * 两个动作：
+   *   ① `MozXULElement.insertFTLIfNeeded(文件名)` —— 往文档的 linkset 里加一条
+   *      `<link rel="localization" href="zotero-kb.ftl">`（Firefox 的标准做法，
+   *      本机 5 个能正常显示文案的插件都是这么干的）；拿不到 MozXULElement
+   *      时**自己插那条 link**（那段代码就是它的实现，只是多一层保险）。
+   *   ② `Zotero.ftl.addResourceIds([文件名])` —— 让**程序化**取字符串也行
+   *      （`l10nText()` 给 confirmEx 弹窗用；那是同步 API，只能走这条路）。
+   *
+   * 不抛错：文案是装饰，缺了也不该让插件启动失败（只是界面难看）。
+   */
+  initLocale: function (win) {
+    var self = ZoteroKB;
+    const file = self.FTL_FILE;
+    const result = { file: file, steps: [] };
+    try {
+      // ② 程序化取字符串（弹窗用）
+      try {
+        if (Zotero.ftl && Zotero.ftl.addResourceIds) {
+          Zotero.ftl.addResourceIds([file]);
+          result.steps.push("ftl.addResourceIds=ok");
+        }
+      } catch (e) {
+        result.steps.push("ftl.addResourceIds=FAIL(" + e + ")");
+      }
+
+      const w = win || (Zotero.getMainWindow && Zotero.getMainWindow());
+      if (!w || !w.document) {
+        result.steps.push("no-window");
+        self.writeStatusFile({ locale: JSON.stringify(result) });
+        return result;
+      }
+      const doc = w.document;
+      // ① 文档级：让 data-l10n-id 真的被翻译
+      try {
+        if (w.MozXULElement && w.MozXULElement.insertFTLIfNeeded) {
+          w.MozXULElement.insertFTLIfNeeded(file);
+          result.steps.push("insertFTLIfNeeded=ok");
+        } else {
+          result.steps.push("insertFTLIfNeeded=missing");
+        }
+      } catch (e) {
+        result.steps.push("insertFTLIfNeeded=FAIL(" + e + ")");
+      }
+      // 兜底：自己插那条 link（与 insertFTLIfNeeded 的实现一致，幂等）
+      try {
+        const container = doc.head || doc.querySelector("linkset");
+        if (container) {
+          let have = false;
+          for (const l of container.querySelectorAll("link")) {
+            if (l.getAttribute("href") === file) { have = true; break; }
+          }
+          if (!have) {
+            const link = doc.createElementNS(
+              "http://www.w3.org/1999/xhtml", "link");
+            link.setAttribute("rel", "localization");
+            link.setAttribute("href", file);
+            container.appendChild(link);
+            result.steps.push("manual-link=ok");
+          } else {
+            result.steps.push("manual-link=already");
+          }
+        } else {
+          result.steps.push("manual-link=no-container");
+        }
+      } catch (e) {
+        result.steps.push("manual-link=FAIL(" + e + ")");
+      }
+      self.writeStatusFile({ locale: JSON.stringify(result) });
+    } catch (e) {
+      Zotero.debug("[zotero-kb] initLocale 失败：" + e);
+    }
+    return result;
+  },
 
   // ================================================================ 首选项
 
@@ -5170,6 +5271,10 @@ Object.assign(ZoteroKB, {
     self.__windowHookCalled = (self.__windowHookCalled || 0) + 1;
     Zotero.debug("[zotero-kb] onMainWindowLoad #" + self.__windowHookCalled);
     self.mainWindow = win || null;
+    // ⚠ 每个窗口都要把自己的 ftl 挂上（新开的窗口里 linkset 是新的）——
+    //   少了这一步，那个窗口里的 data-l10n-id 全是空白（见 initLocale）。
+    try { self.initLocale(win); }
+    catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里挂 ftl 失败：" + e); }
     try {
       if (!self.weightColumnKey) self.registerWeightColumn();
     } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里注册列失败：" + e); }
@@ -5553,18 +5658,32 @@ Object.assign(ZoteroKB, {
   /**
    * 给元素设 ftl 文案。
    *
-   * `l10nID` 必须在 locale/*.ftl 里有定义 —— `tools/check_plugin.py` 会静态检查
-   * （bootstrap.js 里出现的每个 l10nID 都要在 ftl 里找到）。这里失败时退回显示
-   * **id 本身**：至少界面上能看出是哪一条缺了，而不是空白。
+   * 两条路一起走（顺序很重要）：
+   *   ① 先用 `Zotero.ftl.formatValueSync(id)` 拿一份**同步**文案填上 ——
+   *      它是程序化 Localization，只要 initLocale 里
+   *      `Zotero.ftl.addResourceIds([...])` 成功就有值；
+   *   ② 再把 `data-l10n-id` 交给**文档**的本地化（`doc.l10n.setAttributes`）——
+   *      翻译成功时它会覆盖①那份；将来切换语言也跟着变。
+   *
+   * 为什么必须留①这条兜底：2026-10-05 用户截图报"按钮全是空框" —— 根因是
+   * 文档的 linkset 里没挂我们的 ftl（见 `initLocale`）。那时候
+   * `setAttributes` **不报错但也不出字**，元素保持空白；有了①至少能显示出
+   * 文案（再不济 raw id 也比空白好排查）。缺 id 时退回显示 id 本身。
    */
   l10n: function (doc, el, id, args) {
     try {
+      const s = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync(id, args || undefined);
+      if (s) el.textContent = s;
+    } catch (e) { /* 落到下面 */ }
+    try {
       if (doc && doc.l10n && doc.l10n.setAttributes) {
         doc.l10n.setAttributes(el, id, args || undefined);
+        if (!el.textContent) el.textContent = id;   // 谁都不认识时别留空白
         return el;
       }
     } catch (e) { /* 落到下面 */ }
-    el.textContent = id;
+    if (!el.textContent) el.textContent = id;
     return el;
   },
 
@@ -5581,6 +5700,9 @@ Object.assign(ZoteroKB, {
       "cursor:pointer", "border-radius:3px",
       "border:1px solid rgba(128,128,128,.5)",
       "background:transparent", "color:inherit",
+      // ⚠ 内容窗格只有 ~200px 宽，不加 nowrap 时"逐段检测"这种会被折成两行，
+      //   一排按钮高矮不一，看着像坏了（用户截图里那排空框就是这个宽度）。
+      "white-space:nowrap",
     ].join(";");
     if (opts && opts.tip) b.title = opts.tip;
     if (onClick) b.addEventListener("click", onClick);
@@ -5711,12 +5833,17 @@ Object.assign(ZoteroKB, {
    */
   l10nText: function (id, fallback, args) {
     try {
+      // ① 同步取（initLocale 里已经把 ftl 加进 Zotero.ftl 了）
+      const s = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync(id, args || undefined);
+      if (s) return s;
+    } catch (e) { /* 落到下面 */ }
+    try {
+      // ② 老路：异步填缓存，下次就能命中（首启第一次可能拿不到）
       const l10n = (Zotero.getMainWindow() || {}).document
         && Zotero.getMainWindow().document.l10n;
       if (l10n && l10n.formatValue) {
         const p = l10n.formatValue(id, args || undefined);
-        // Fluent 返回 Promise；弹窗是同步 API，所以这里只能"用缓存/默认值"。
-        // 取不到就退回默认中文（**不阻塞退出**）。
         p.then((s) => { ZoteroKB._l10nCache[id] = s; }).catch(() => {});
       }
     } catch (e) { /* ignore */ }
@@ -5783,6 +5910,12 @@ Object.assign(ZoteroKB, {
     // ⚠ 这里**不能**走 self.l10n()：那个是给元素设 textContent 的，而
     //   textarea 的 textContent 就是它的**内容** —— 会把提示语变成输入框里
     //   真实存在的文字。placeholder 要走 FTL 的属性注入形式。
+    //   同样先填一份**同步**的兜底（理由见 l10n()）：属性注入失败时至少有个提示。
+    try {
+      const ph = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync("zotero-kb-placeholder-ask");
+      if (ph) ta.placeholder = ph;
+    } catch (e) { /* ignore */ }
     ta.setAttribute("data-l10n-id", "zotero-kb-placeholder-ask");
     ta.setAttribute("data-l10n-attrs", "placeholder");
     ui.input = ta;

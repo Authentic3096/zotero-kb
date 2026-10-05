@@ -23,6 +23,10 @@ Object.assign(ZoteroKB, {
     self.__windowHookCalled = (self.__windowHookCalled || 0) + 1;
     Zotero.debug("[zotero-kb] onMainWindowLoad #" + self.__windowHookCalled);
     self.mainWindow = win || null;
+    // ⚠ 每个窗口都要把自己的 ftl 挂上（新开的窗口里 linkset 是新的）——
+    //   少了这一步，那个窗口里的 data-l10n-id 全是空白（见 initLocale）。
+    try { self.initLocale(win); }
+    catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里挂 ftl 失败：" + e); }
     try {
       if (!self.weightColumnKey) self.registerWeightColumn();
     } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里注册列失败：" + e); }

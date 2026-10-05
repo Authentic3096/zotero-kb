@@ -297,7 +297,12 @@ def main() -> int:
         declared = {m.replace("extensions.zotero.", "")
                     for m in re.findall(r'pref\("([^"]+)"',
                                         open(ppath, encoding="utf-8").read())}
-        used = set(re.findall(r'"(zotero-kb\.[a-zA-Z]+)"', src))
+        used = {k for k in re.findall(r'"(zotero-kb\.[a-zA-Z]+)"', src)
+                # ⚠ 排除**文件名**：`zotero-kb.ftl` 是 ftl 文件名（FTL_FILE 常量），
+                #   不是首选项键，要求它出现在 prefs.js 里是误报
+                #   （2026-10-05 加了 initLocale 之后这条立刻报了 'zotero-kb.ftl'）。
+                if not k.endswith((".ftl", ".js", ".json", ".svg",
+                                   ".xhtml", ".png", ".ico"))}
         if not used:
             print("  [XX] 没扫到任何首选项键 —— 这条检查本身失效了（曾经就是这样）")
             problems.append("首选项检查失效：扫不到键")

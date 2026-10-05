@@ -15,11 +15,11 @@ zotero-kb-pane-header = Local model
 zotero-kb-pane-sidenav = Local model (this paper)
 
 # ---- Context injection
-zotero-kb-btn-inject-tldr = Inject summary level
+zotero-kb-btn-inject-tldr = Summary
 zotero-kb-btn-inject-tldr-tip = Put this paper's summary-level view into the context
-zotero-kb-btn-inject-full = Inject full text
+zotero-kb-btn-inject-full = Full text
 zotero-kb-btn-inject-full-tip = Put the full text into the context; if it exceeds the budget, pages are sampled evenly and the injected size is reported
-zotero-kb-btn-para = Paragraph check (full text)
+zotero-kb-btn-para = Para check
 zotero-kb-btn-para-tip = Check the extracted text paragraph by paragraph (interruptible; progress is kept)
 zotero-kb-btn-para-next = Check next paragraph
 zotero-kb-btn-para-exit = Exit paragraph check
@@ -33,7 +33,7 @@ zotero-kb-para-stale = Full text was rebuilt; { $n } paragraph(s) need re-checki
 # ---- Input and status
 zotero-kb-btn-send = Send
 zotero-kb-btn-locate = Locate
-zotero-kb-btn-propose = Turn this chat into proposals
+zotero-kb-btn-propose = Propose
 zotero-kb-btn-clear = Clear chat
 zotero-kb-placeholder-ask = Ask about this paper…
 zotero-kb-placeholder-locate = Paste text selected in the PDF to locate its paragraph

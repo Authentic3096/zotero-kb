@@ -32,6 +32,13 @@ var ZoteroKB = {
   rootURI: null,
   alive: false,
 
+  // 界面文案的 ftl 文件名（locale/<语言>/<这个名字>）。
+  // ⚠ Zotero 会把插件 `locale/<语言>/*.ftl` 读进 L10nRegistry 的
+  //   `zotero-plugins` 源，但**文档还得自己把它挂上** —— 少了 initLocale 那一步，
+  //   `data-l10n-id` 谁都不认识，界面上的表现就是"按钮全是空框"
+  //   （2026-10-05 用户截图报的正是这个）。
+  FTL_FILE: "zotero-kb.ftl",
+
   // 运行时状态
   serverOk: false,
   serverInfo: null,
@@ -81,6 +88,9 @@ var ZoteroKB = {
     };
 
     try {
+      // ⚠ 第一件事就是把 ftl 挂到窗口文档上（见 initLocale 的说明）——
+      //   后面的设置面板/内容窗格分区都要靠它把 l10nID 变成文字。
+      step("initLocale", () => self.initLocale());
       step("registerPrefs", () => self.registerPrefs());
       step("registerPrefObserver", () => self.registerPrefObserver());
       step("registerPrefPane", () => self.registerPrefPane());
