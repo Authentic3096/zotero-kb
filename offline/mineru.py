@@ -370,7 +370,7 @@ def fingerprint(pdf: str, tier: str, exe: str, tool_version: str = "") -> str:
     ⚠ `tool_version` 一定要带上：MinerU 升级后同一份 PDF 的产物也会变
       （本机从 4.0.10 起的实测），不带上就永远命中旧产物。
       用 `probe()` 报的版本（`importlib.metadata.version` 在**项目 venv** 里
-      查不到 mineru —— 它装在 `.mineru\.venv`，所以这里不能自己查）。
+      查不到 mineru —— 它装在 `.mineru\\.venv`，所以这里不能自己查）。
     """
     import hashlib
     try:
@@ -576,6 +576,237 @@ def parse_item(key: str, pdf: str, tier: str = "basic", kb_dir: str = "",
             shutil_rm(tmp)
         except Exception:      # noqa: BLE001
             pass
+
+
+def _finish_from_zip(key: str, tier: str, pdf: str, fp: str, zip_path: str,
+                     adir: str, seconds: float, exe: str, tool_version: str,
+                     log=None) -> dict:
+    """把一份 zip 落成一篇的产物（单篇与批量共用这一段出口）。
+
+    为什么抽出来：单篇 `parse_item()` 与批量 `parse_many()` 的**产物形状必须一致**，
+    否则"某些篇是批量解析的、某些是逐篇的"会冒出两套 meta/pages 格式。
+    """
+    out = {"ok": False, "key": key, "tier": tier, "pages": [], "why": "",
+           "n_pages": 0, "n_images": 0, "fingerprint": fp,
+           "source": f"mineru-{tier}", "seconds": round(seconds, 1),
+           "artifacts": {}}
+    try:
+        artifacts = _extract_zip(zip_path, adir)
+        structured = {}
+        try:
+            with open(artifacts["structured"], encoding="utf-8") as fh:
+                structured = json.load(fh)
+        except Exception as exc:      # noqa: BLE001
+            out["why"] = f"读 structured_content.json 失败：{exc}"
+            return out
+        pages = render_pages(structured)
+        if not pages:
+            out["why"] = "structured_content.json 里没有可用的页内容"
+            return out
+        pages_path = os.path.join(adir, PAGE_JSON)
+        with open(pages_path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(pages, fh, ensure_ascii=False, indent=1)
+        n_img = len(artifacts.get("images") or [])
+        _write_meta(adir, {
+            "key": key, "tier": tier, "ok": True, "fingerprint": fp,
+            "pdf": os.path.abspath(pdf),
+            "pdf_size": os.path.getsize(pdf) if os.path.isfile(pdf) else 0,
+            "exe": exe, "mineru": tool_version,
+            "n_pages": len(pages), "n_images": n_img,
+            "seconds": round(seconds, 1),
+            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "artifacts": artifacts,
+        })
+        out.update({"ok": True, "pages": pages, "n_pages": len(pages),
+                    "n_images": n_img, "artifacts": artifacts,
+                    "why": f"{len(pages)} 页 / {n_img} 张图"})
+    except Exception as exc:      # noqa: BLE001
+        out["why"] = f"{type(exc).__name__}: {exc}"
+    if not out["ok"]:
+        _write_meta(adir, {"key": key, "tier": tier, "ok": False,
+                           "fingerprint": "", "why": out["why"],
+                           "at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                    keep_old=True)
+    return out
+
+
+def parse_many(pairs, tier: str = "basic", kb_dir: str = "", force: bool = False,
+               batch_size: int = 20, timeout_per_item: float = 600.0,
+               runner=None, log=None, stream: bool = False) -> dict:
+    """批量解析：**一次加载模型**，跑一批（目录输入），产物逐篇落盘。
+
+    `pairs` = `[(key, pdf_path), …]`。返回：
+      ok / n_ok / n_cached / n_failed / failed[(key, why)] / seconds / results{key: res}
+
+    ⚠ 为什么值得单独一条路（本机实测）：
+      每次 `mineru-kit parse` 都要重新加载模型（约 2 分钟）。逐篇跑 93 篇 ≈ 3 小时；
+      目录批量 2 篇只要 14.5 秒。**面板「全库重解析」走的必须是这条**，
+      否则用户会以为程序卡死了。
+    """
+    t0 = time.time()
+    res = {"ok": True, "n_ok": 0, "n_cached": 0, "n_failed": 0,
+           "failed": [], "seconds": 0.0, "results": {}, "why": ""}
+
+    def note(msg: str):
+        if log:
+            try:
+                log(msg)
+            except Exception:      # noqa: BLE001
+                pass
+
+    info = probe(force=False)
+    if not info.get("ok") or not info.get("exe"):
+        res["ok"] = False
+        res["why"] = "MinerU 不可用：" + (info.get("why") or "没装/没配好")
+        return res
+    exe = info["exe"]
+    ver = str(info.get("version") or "")
+    if (info.get("tier_ready") or {}).get(tier) is False:
+        res["ok"] = False
+        res["why"] = (f"{tier} 档的模型还没下全（跑一次安装向导，或 "
+                      f"mineru-kit models download --tier {tier}）")
+        return res
+
+    todo: list[tuple[str, str, str]] = []      # (key, pdf, fingerprint)
+    cached: list[str] = []
+    for key, pdf in pairs:
+        if not pdf or not os.path.isfile(pdf):
+            res["n_failed"] += 1
+            res["failed"].append((key, f"PDF 不存在：{pdf}"))
+            continue
+        fp = fingerprint(pdf, tier, exe, ver)
+        meta = read_meta(key, kb_dir)
+        adir = artifact_dir(key, kb_dir)
+        if (not force and meta.get("fingerprint") == fp and meta.get("ok")
+                and os.path.isfile(os.path.join(adir, PAGE_JSON))):
+            cached.append(key)
+            res["results"][key] = {"ok": True, "cached": True, "key": key,
+                                   "tier": tier, "pages": load_pages(key, kb_dir),
+                                   "source": f"mineru-{tier}", "why": "命中指纹"}
+            continue
+        todo.append((key, pdf, fp))
+    res["n_cached"] = len(cached)
+    if cached:
+        note(f"批量解析：{len(cached)} 篇命中指纹、跳过；{len(todo)} 篇要解析")
+    if not todo:
+        res["seconds"] = round(time.time() - t0, 1)
+        note(f"批量解析：没有需要解析的（全部命中指纹），{res['seconds']} 秒")
+        return res
+
+    for i in range(0, len(todo), max(1, batch_size)):
+        chunk = todo[i:i + max(1, batch_size)]
+        indir = os.path.join(_kb_dir(kb_dir), ART_ROOT, "_batch_in")
+        outdir = os.path.join(_kb_dir(kb_dir), ART_ROOT, "_batch_out")
+        shutil_rm(indir)
+        shutil_rm(outdir)
+        os.makedirs(indir, exist_ok=True)
+        os.makedirs(outdir, exist_ok=True)
+        links = 0
+        for key, pdf, _fp in chunk:
+            dst = os.path.join(indir, key + ".pdf")
+            try:
+                os.link(pdf, dst)          # 同盘硬链，零拷贝
+                links += 1
+            except Exception:      # noqa: BLE001
+                try:
+                    import shutil as _sh
+                    _sh.copy2(pdf, dst)
+                except Exception as exc:      # noqa: BLE001
+                    res["n_failed"] += 1
+                    res["failed"].append((key, f"复制 PDF 失败：{exc}"))
+        note(f"批量解析：第 {i // max(1, batch_size) + 1} 批，{len(chunk)} 篇"
+             f"（硬链 {links} 篇）—— 模型只加载这一次")
+        b0 = time.time()
+        cmd = [exe, "parse", indir, "-o", outdir, "--tier", tier,
+               "--format", "zip"]
+        timeout = max(600.0, timeout_per_item * len(chunk))
+        if runner is not None:
+            rc, text = runner(cmd, timeout=timeout)
+        elif stream:
+            rc, text = _run_stream(cmd, timeout=timeout, log=note)
+        else:
+            rc, text = _run(cmd, timeout=timeout)
+        spent = time.time() - b0
+        note(f"批量解析：这一批跑完，退出码 {rc}，耗时 {round(spent, 1)} 秒")
+
+        got = set()
+        for fn in (os.listdir(outdir) if os.path.isdir(outdir) else []):
+            if not fn.lower().endswith(".zip"):
+                continue
+            key = fn[:-4]
+            pdf = next((p for k, p, _f in chunk if k == key), "")
+            fp = next((f for k, _p, f in chunk if k == key), "")
+            adir = artifact_dir(key, kb_dir)
+            one = _finish_from_zip(key, tier, pdf, fp, os.path.join(outdir, fn),
+                                   adir, spent / max(1, len(chunk)), exe, ver,
+                                   log=log)
+            res["results"][key] = one
+            if one["ok"]:
+                res["n_ok"] += 1
+                got.add(key)
+                note(f"    ✓ {key}：{one['why']}")
+            else:
+                res["n_failed"] += 1
+                res["failed"].append((key, one["why"]))
+                note(f"    ✗ {key}：{one['why']}")
+        for key, _pdf, _fp in chunk:
+            if key in got or any(k == key for k, _w in res["failed"]):
+                continue
+            res["n_failed"] += 1
+            msg = (f"这一批没有产出它的 zip（退出码 {rc}）"
+                   if rc != 0 else "这一批没有产出它的 zip")
+            res["failed"].append((key, msg))
+            note(f"    ✗ {key}：{msg}")
+        shutil_rm(indir)
+        shutil_rm(outdir)
+    res["seconds"] = round(time.time() - t0, 1)
+    if res["n_failed"]:
+        res["ok"] = res["n_ok"] > 0
+    note(f"批量解析完成：成功 {res['n_ok']} 篇、命中指纹 {res['n_cached']} 篇、"
+         f"失败 {res['n_failed']} 篇，共 {res['seconds']} 秒")
+    return res
+
+
+def _run_stream(args: list[str], timeout: float = 3600.0,
+                log=None) -> tuple[int, str]:
+    """跑子进程并**实时**把输出喂给 log（批量解析要几十分钟，不能憋着）。
+
+    与 `_run` 的区别：`_run` 是 `subprocess.run(capture_output=True)` ——
+    批量时用户会盯着日志看，几十秒没有任何输出就会以为卡死了。
+    ⚠ 超时用 `communicate(timeout=)` 兜底 + 杀进程树（子进程还有孙进程）。
+    """
+    env = dict(os.environ)
+    tail: list[str] = []
+    p = None
+    try:
+        p = subprocess.Popen(args, stdout=subprocess.PIPE,
+                             stderr=subprocess.STDOUT, text=True,
+                             encoding="utf-8", errors="replace",
+                             creationflags=_NO_WINDOW, env=env)
+        deadline = time.time() + timeout
+        for line in p.stdout:                      # type: ignore[union-attr]
+            s = line.rstrip()
+            tail.append(s)
+            if len(tail) > 40:
+                tail.pop(0)
+            if log and s.strip():
+                try:
+                    log("    " + s[:200])
+                except Exception:      # noqa: BLE001
+                    pass
+            if time.time() > deadline:
+                raise subprocess.TimeoutExpired(args, timeout)
+        return p.wait(), "\n".join(tail)
+    except subprocess.TimeoutExpired:
+        if p:
+            try:
+                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
+                               capture_output=True, creationflags=_NO_WINDOW)
+            except Exception:      # noqa: BLE001
+                p.kill()
+        return 124, "超时（>" + str(int(timeout)) + " 秒）：" + "\n".join(tail[-6:])
+    except Exception as exc:      # noqa: BLE001
+        return 126, f"{type(exc).__name__}: {exc}"
 
 
 def shutil_rm(path: str) -> None:

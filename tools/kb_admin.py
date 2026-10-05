@@ -470,17 +470,43 @@ def cmd_mineru(args: argparse.Namespace) -> int:
             print("—— 顺手重建这一篇（切片与向量）——")
             return _convert_keys([args.key], args.tier, force=False)
         return 0 if res["ok"] else 1
-    # missing / reparse
+    # missing / reparse：**批量解析**（一次加载模型）再重建这些篇
+    #
+    # ⚠ 为什么先批量解析、而不是让 convert 在循环里逐篇调 MinerU：
+    #   每次 `mineru-kit parse` 都要重新加载模型（本机实测约 2 分钟），
+    #   逐篇跑 93 篇 ≈ 3 小时；目录批量 2 篇只要 14.5 秒。面板「全库重解析」
+    #   走的就是这条，否则用户会以为程序卡死了。
+    #   批量解析会把产物与指纹写好；随后 convert 命中指纹、只做切片与向量。
     keys = _mineru_keys(args.sub == "missing", args.tier)
     if args.limit:
         keys = keys[: args.limit]
     if not keys:
         print("没有需要解析的条目（都已经是这个档位了）。")
         return 0
+    pairs = []
+    for k in keys:
+        pdf = _pdf_of(k)
+        if pdf:
+            pairs.append((k, pdf))
+        else:
+            print(f"  [!!] {k} 没有可用的 PDF 附件，跳过")
     print(f"{'补缺失' if args.sub == 'missing' else '全库重解析'}："
-          f"{len(keys)} 篇，档位 {args.tier}")
-    print("（PDF 没变、档位没变的那批会按指纹跳过，几秒一篇）")
-    return _convert_keys(keys, args.tier, force=bool(getattr(args, "force", False)))
+          f"{len(pairs)} 篇，档位 {args.tier}")
+    print("（PDF 没变、档位没变的那批会按指纹跳过；批量解析模型只加载一次）")
+    res = M.parse_many(pairs, tier=args.tier, force=bool(args.force),
+                       stream=True,   # 批量要几十分钟，日志必须实时（面板也看它）
+                       log=lambda m: print(m, flush=True))
+    print(f"批量解析结果：成功 {res['n_ok']}　命中指纹跳过 {res['n_cached']}　"
+          f"失败 {res['n_failed']}　共 {res['seconds']} 秒")
+    for k, why in res["failed"][:20]:
+        print(f"  ✗ {k}：{why}")
+    done = [k for k, _p in pairs
+            if res["results"].get(k, {}).get("ok")]
+    if not done:
+        print("没有解析成功的条目，构建这一步跳过。")
+        return 1 if res["n_failed"] else 0
+    print(f"—— 重建这 {len(done)} 篇的切片与向量 ——")
+    return _convert_keys(done, args.tier, force=False)
 
 
 def _pdf_of(key: str) -> str:

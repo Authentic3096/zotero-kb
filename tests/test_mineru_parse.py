@@ -397,6 +397,103 @@ def test_clear_does_not_touch_artifacts():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def batch_runner(in_keys=None, *, make=True, rc=0):
+    """假 runner：为输入目录里的每个 <KEY>.pdf 产出一个 <KEY>.zip。"""
+    seen = {"called": 0, "inputs": [], "batches": 0}
+
+    def runner(args, timeout=0.0, **kw):
+        seen["called"] += 1
+        indir = ""
+        outdir = ""
+        for i, a in enumerate(args):
+            if a == "-o" and i + 1 < len(args):
+                outdir = args[i + 1]
+            elif i >= 2 and not a.startswith("-") and os.path.isdir(a) and not indir:
+                indir = a
+        os.makedirs(outdir, exist_ok=True)
+        keys = []
+        if os.path.isdir(indir):
+            keys = [f[:-4] for f in os.listdir(indir) if f.lower().endswith(".pdf")]
+        seen["inputs"].append(sorted(keys))
+        seen["batches"] += 1
+        if make:
+            for k in keys:
+                if in_keys is not None and k not in in_keys:
+                    continue
+                make_zip(os.path.join(outdir, k + ".zip"))
+        return rc, "假批量输出"
+
+    return runner, seen
+
+
+def test_parse_many():
+    print("\n[7] parse_many：一次加载模型、按 zip 名映射回 key、批量口径")
+    import mineru as M
+
+    tmp = tempfile.mkdtemp(prefix="kbmineru-")
+    kb = os.path.join(tmp, "kb")
+    os.makedirs(kb)
+    pdfs = []
+    for k in ("KAAA", "KBBB", "KCCC"):
+        p = os.path.join(tmp, f"{k}.pdf")
+        with open(p, "wb") as fh:
+            fh.write(b"%PDF fake " + k.encode())
+        pdfs.append((k, p))
+    old_probe = M.probe
+    try:
+        M.probe = lambda *a, **k: {"ok": True, "exe": "C:\\x\\mineru-kit.exe",
+                                   "version": "4.0.10",
+                                   "tier_ready": {"basic": True}}
+        runner, seen = batch_runner()
+        res = M.parse_many(pdfs, tier="basic", kb_dir=kb, batch_size=2,
+                           runner=runner)
+        check("三篇全成功", res["n_ok"] == 3 and res["n_failed"] == 0,
+              json.dumps({k: v for k, v in res.items() if k != "results"})[:200])
+        check("分成两批调（batch_size=2）", seen["batches"] == 2, str(seen["batches"]))
+        check("每批都真的把 PDF 硬链进了输入目录（名字是 key.pdf）",
+              all(len(b) <= 2 and b for b in seen["inputs"]), str(seen["inputs"]))
+        for k, _p in pdfs:
+            adir = os.path.join(kb, "mineru", k)
+            check(f"{k} 的产物齐（pages.json + meta.json）",
+                  os.path.isfile(os.path.join(adir, "pages.json"))
+                  and os.path.isfile(os.path.join(adir, "meta.json")))
+            check(f"{k} 的页数是 2", len(M.load_pages(k, kb)) == 2)
+        check("临时目录已清理（_batch_in / _batch_out 都不在）",
+              not os.path.isdir(os.path.join(kb, "mineru", "_batch_in"))
+              and not os.path.isdir(os.path.join(kb, "mineru", "_batch_out")))
+
+        runner2, seen2 = batch_runner()
+        res2 = M.parse_many(pdfs, tier="basic", kb_dir=kb, runner=runner2)
+        check("再跑一遍全部命中指纹（n_cached=3、n_ok=0）",
+              res2["n_cached"] == 3 and res2["n_ok"] == 0, str(res2["n_cached"]))
+        check("命中期一次都没调解析", seen2["called"] == 0, str(seen2["called"]))
+
+        runner3, _s3 = batch_runner()
+        res3 = M.parse_many(pdfs, tier="basic", kb_dir=kb, force=True,
+                            runner=runner3)
+        check("force=True 时重跑", res3["n_ok"] == 3, str(res3["n_ok"]))
+
+        # 一批什么都没产出 → 必须逐篇记失败原因（不能静默）
+        runner4, _s4 = batch_runner(make=False, rc=1)
+        res4 = M.parse_many(pdfs, tier="basic", kb_dir=kb, force=True,
+                            runner=runner4)
+        check("解析没产出时逐篇记失败并给原因",
+              res4["n_failed"] == 3
+              and all("zip" in w or "退出码" in w for _k, w in res4["failed"]),
+              json.dumps(res4["failed"], ensure_ascii=False)[:160])
+
+        # 没有 PDF 的条目也算失败（不能悄悄跳过）
+        res5 = M.parse_many([("KDDD", os.path.join(tmp, "nope.pdf"))],
+                            tier="basic", kb_dir=kb,
+                            runner=batch_runner()[0])
+        check("PDF 不存在 → 记失败并说明",
+              res5["n_failed"] == 1 and "PDF 不存在" in res5["failed"][0][1],
+              str(res5["failed"]))
+    finally:
+        M.probe = old_probe
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_convert_wiring():
     print("\n[7] convert.py 的接线（参数 / 增量判据 / stats 键）")
     import convert as CV
@@ -431,6 +528,7 @@ def main() -> int:
     test_status_and_clear()
     test_fulltext_for_fallback()
     test_clear_does_not_touch_artifacts()
+    test_parse_many()
     test_convert_wiring()
     print(f"\n{'=' * 60}\n通过 {PASS}　失败 {FAIL}\n{'=' * 60}")
     return 1 if FAIL else 0

@@ -700,6 +700,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 | 失败 | **按篇回落**到 Zotero 缓存 / PyMuPDF，`source` 加 `+fallback` 后缀、MANIFEST 里列出来 | 95 篇里混着扫描件/加密/损坏文件，任何一篇失败都不该把整轮降级 |
 | 面板 | 新页「PDF 解析」：档位下拉 + 只补缺失 / 全库重解析 / 解析选中这篇 / 删产物 / 打开产物目录 + 状态表（来源 / 档位 / 页数 / 图 / 耗时 / 产物状态）+ 汇总（多少篇已是 MinerU、产物占多少 MB） | "重解析全库"是几十分钟的操作，看不见状态没人敢点 |
 | CLI | `tools/kb_admin.py mineru {status,parse,clear,missing,reparse}` | 面板按钮调的就是它；`missing`/`reparse` 内部**包一层 `convert.build(ns)`**，不写第二份正文抽取 |
+| **批量** | `mineru.parse_many(pairs, batch_size=20)`：把 PDF 以 `<KEY>.pdf` **硬链**到临时输入目录 → `parse <目录> -o <输出> --format zip` **跑一次** → 按 `<KEY>.zip` 映射回 key 落产物；日志走 `_run_stream`（实时，面板也看它） | ⚠ **每次 `mineru-kit parse` 都要重新加载模型**（本机实测约 2 分钟）：逐篇跑 93 篇 ≈ 3 小时；批量时模型只加载一次，实测 1.7 页/秒。`missing`/`reparse` 因此都是「先批量解析（写好产物与指纹），再让 convert 命中指纹、只做切片与向量」 |
 
 ⚠ 三个实测出来的坑（都写进代码注释了）：
 ① 全库解析前**先退出 Ollama** —— 抢同一块显存，同一篇 5 页论文模型阶段
