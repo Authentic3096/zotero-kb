@@ -439,7 +439,7 @@ weight = 1 + ln(raw)
 （`learn.py:38-61, 186-200`）。抽出的结果**只进待确认区** `inbox/pending.jsonl`，
 **绝不允许直接写经验表**，要通过 `learn.py mark --approve` 才入库（`learn.py:1-14`）。
 
-#### 权重的算法（精确公式）
+#### B3. 权重的算法（精确公式）
 
 权重是「这篇文献对我的价值」的**先验**，只在**融合之后**乘上去，不参与召回
 （该出现的还是会出现，只是排序前后不同）。实现在 `offline/schemas.py`，
@@ -498,7 +498,7 @@ raw = 年份基础分
 - 权重入口：Zotero 右键「标为重点」、面板「高级 → 手动调权重」；
   经验由 `kb_experience_add` 或面板「经验库」写入，每次尝试记一条，历史不覆盖。
 
-#### B3. 本地小模型用在哪（只出建议，不写库）
+#### B4. 本地小模型用在哪（只出建议，不写库）
 
 后端两类（`offline/judge.py:36-63`）：本机 Ollama，或任何 **OpenAI 兼容**的
 `/chat/completions`（deepseek / openai / dashscope / moonshot / zhipu / groq…）。
@@ -517,7 +517,7 @@ raw = 年份基础分
 `generate()` 会把 HTTP/网络错误翻译成可操作的 hint（key 过期、
 base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 
-#### B4. MCP 服务器
+#### B5. MCP 服务器
 
 `online/server.py`，**stdio** 传输（由 DSH 的 `dsh-mcp-client` 拉起），
 `instructions` 里写死用法约定：先搜后读、用完记经验、不写 Zotero
@@ -525,7 +525,7 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 
 13 个工具与 4 个资源见本文档第八节。
 
-#### B5. 本地 HTTP 服务（插件 ↔ Python 的通道）
+#### B6. 本地 HTTP 服务（插件 ↔ Python 的通道）
 
 `online/localserver.py`，`ThreadingHTTPServer` 只 bind **127.0.0.1**，默认端口 **8765**。
 
@@ -549,7 +549,7 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 `POST /shutdown` 用事件位 + 看门狗退出，刻意不用 `taskkill pythonw.exe`
 —— 那会连管理面板和用户脚本一起杀掉（`:2519-2558`）。
 
-#### B6. Zotero 插件的几个关键机制
+#### B7. Zotero 插件的几个关键机制
 
 插件是 **bootstrapped extension**（Zotero 7~10）。
 **源码在 `zotero-plugin/src/*.js`，按功能分 20 个文件**；`zotero-plugin/bootstrap.js`
@@ -596,7 +596,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 因为那是磁盘 IO（`src/18-taskpoll.js` 的 `runTask`）。状态文件在 `kb/plugin-status.json`，
 **`tickCount` 在涨就说明轮询活着**。
 
-#### B7. 打开知识库（分级）：把"找文件"变成两次点选
+#### B8. 打开知识库（分级）：把"找文件"变成两次点选
 
 **问题**：知识库目录里是 `papers/22X9PMR6.md`、`views/7X23G52Y.tldr.md` ——
 文件名是 Zotero 的条目 key，**人认不出是哪篇**。想打开某一篇的某一层，
@@ -642,7 +642,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 `views/` 与 `papers/`、`fulltext/` 同待遇：**可重建的派生物**，删了跑一次
 构建就回来；条目被删除时 `_purge_key` 会连它一起清掉。
 
-#### B8. 管理面板
+#### B9. 管理面板
 
 `tools/gui.py` 只是**入口**（组装 App + 命令行自检 + mainloop）；
 界面代码按"一个页签一个模块"在 `tools/panels/` 下，公共的路径与字体在
@@ -663,7 +663,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 （输出/详情/试跑结果）与底部**运行日志**都是**可拖的分隔格**（`ttk.PanedWindow`，
 `_scroll_hosts` + `_on_wheel` 负责"滚鼠标底下那一页"）。
 
-#### B9. DSH 侧接入：bundle 与模板
+#### B10. DSH 侧接入：bundle 与模板
 
 `bundle/` 是一个 DSH bundle，往 loader 里 `insert` 一条 `dsh-mcp-client` 配置。
 三条设计理由都写在模板注释里（`bundle/cordis.patch.yml.tmpl:4-33`）：
@@ -681,7 +681,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 
 ---
 
-#### B10. 能力探测与"菜单不写死"
+#### B11. 能力探测与"菜单不写死"
 用户要求右键菜单别写死：「dsh 没接到就不显示，本地模型（或者接外部 api）没读取到也不显示
 对应的两条」，随后拍板成**显示但标「未连接」**。实现拆成两块：
 
@@ -695,7 +695,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   「发送到 DSH（未连接）」/「连接到本地模型（检测中）」这类标题 + 一句"怎么修"的提示。
   「分类建议」「补全元数据」合并成二级菜单「连接到本地模型」；「重建本条目知识库」改名。
 
-#### B11. 正文从哪来：Zotero 缓存 / PyMuPDF / MinerU（可选解析器）
+#### B12. 正文从哪来：Zotero 缓存 / PyMuPDF / MinerU（可选解析器）
 
 正文抽取那一步的接缝在 `offline/convert.py` 的主循环里：
 `pages, source = reader.fulltext_for(item, **ft_kw)` → `item.fulltext_pages` →
@@ -721,7 +721,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   VLM 档走 **llama.cpp + Q8 GGUF**；**PyPI 的 Windows torch 是 CPU 版**，得从
   `download.pytorch.org` 换 CUDA 轮子；模型走 modelscope（hf-mirror 的 API 403）。
 
-#### B12. MinerU 怎么接进建库流程
+#### B13. MinerU 怎么接进建库流程
 接缝只有一处：`convert.py` 主循环里那个 `pages, source = reader.fulltext_for(...)`。
 改成"按 `--parser` 选源"：
 
@@ -751,7 +751,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 ③ 那段"把配置同步进插件 pref"的 JS 不能塞进 f-string（嵌套 dict 花括号会让
 f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --check` 单测。
 
-#### B13. 右侧栏「知识库」分区
+#### B14. 右侧栏「知识库」分区
 用户：「zotero 的文献右侧栏是可以正确显示 md 格式的，能不能把知识库中的 md 在这里
 显示，方便和原文对照？」→ `zotero-plugin/src/20-kbview.js`。
 
@@ -771,7 +771,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - `md2html()` 是纯函数（桩测试 8 项）：标题/列表/引用/粗斜体/行内代码/链接/
   `$$公式$$`（保留 LaTeX、等宽底纹）/图片降级成图注；**先转义 HTML 再套标记**。
 
-#### B14. 能力探测的菜单状态行
+#### B15. 能力探测的菜单状态行
 第一版把「（未连接）/（检测中）」挂在**顶层标题**上，用户反馈两个问题：
 ① 标题太长；② 明明子菜单列着对话列表，标题却写"检测中"（`caps.dsh` 还是 `null`，
 因为探测是周期性的）。改法：
@@ -780,7 +780,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - **用这次真拿到的结果回填**：`listDSHSessions()` 成功即 `caps.dsh = true`
   —— 不再出现"列出对话却写检测中"；`null` 时不写"检测中"，据实说"还没检查过"。
 
-#### B15. 元数据补全：两路首页正文 + 模型综合
+#### B16. 元数据补全：两路首页正文 + 模型综合
 需求：「元数据补全能不能同时读首页和 MinerU 首页，然后本地模型综合一下再给出来。」
 
 - **两路**：A = `zreader.fulltext_for()`（PDF 原文字面）；B = `<kb>/mineru/<KEY>/pages.json`
@@ -797,7 +797,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   显示出来（老服务端不给这些键时整块跳过）。
 - 退化路径都写进 `notes`：只有 A、只有 B、两路都没有、模型不可用、某一路首页过短。
 
-#### B16. 中间层：分节纲要
+#### B17. 中间层：分节纲要
 需求：「全文太长，现有的摘要还太短，怎么加中间的一层级」。答案是
 **分节纲要**：`offline/digest.py`（新模块）按 MinerU 的标题块切节 → 每节让模型写
 2~4 句 + 3~6 条关键点 → 落 `meta.ai_outline:<KEY>`（结构化）+ `views/<KEY>.outline.md`
@@ -814,7 +814,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   一篇学位论文要几分钟，不能挂在"随手点一下"的读路径上。
 - **不写进索引、不改排序**（用户明确"检索分层算了吧"）。
 
-#### B17. 提示词注册表：话术只有一份，且用户改得动
+#### B18. 提示词注册表：话术只有一份，且用户改得动
 
 `offline/prompts.py`（2026-10-05 起 6 条：tag/summary/extract/metafill/
 draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/prompts.json`。要点：
@@ -828,7 +828,7 @@ draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/promp
 - **搬家没走样**：`tests/prompt_goldens.json` 是搬家**前**从真机抓的 5 次真实调用，
   逐字比对（含 metafill 的 `{{` 与 chunks 的双括号这两个容易走样的细节）。
 
-#### B18. 经验层的写入只有一份实现
+#### B19. 经验层的写入只有一份实现
 
 `offline/experience.py`：`add / update / delete / set_weight` + **唯一**的权重算术
 （`weight_statements`）。要点：
