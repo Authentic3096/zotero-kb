@@ -315,7 +315,15 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                         if pdf.exists and pdf.path.lower().endswith(".pdf"):
                             fr = FG.extract_document(pdf.path)
                             figs["captions"] += fr.get("captions") or []
-                            figs["tables"] += fr.get("tables") or []
+                            # ⚠ 表格只留一路：正文来自 MinerU 时，表格已经以 HTML
+                            #   形式进了逐页正文（见 mineru.render_block），这里再收
+                            #   一份就等于同一张表在正文里出现两次。正文走 Zotero
+                            #   缓存 / PyMuPDF 的篇才需要它来补表格。
+                            if str(source or "").startswith("mineru-"):
+                                log("    （正文来自 MinerU：表格已在正文里，"
+                                    "跳过 PyMuPDF 表格抽取）")
+                            else:
+                                figs["tables"] += fr.get("tables") or []
                             break      # 只取第一个可用 PDF
                 except Exception as exc:  # noqa: BLE001
                     log(f"    [!!] {item.key} 抽图注/表格失败：{exc}")
