@@ -2210,6 +2210,9 @@ class Handler(BaseHTTPRequestHandler):
                 "python": _python_exe(),
                 "panel": os.path.join(S.resolve_project_root(), "tools", "gui.py"),
                 "ollama": S.resolve_ollama(),
+                # MinerU 是可选组件：这里只报**路径**（一次文件系统检查，快）。
+                # 要"版本/后端/档位"这种要跑子进程的信息，走 /mineru-check。
+                "mineru": S.resolve_mineru(),
                 "time": datetime.now().isoformat(timespec="seconds"),
             }
             if from_web:
@@ -2285,6 +2288,18 @@ class Handler(BaseHTTPRequestHandler):
             #   本机面板就报过那句干巴巴的话，用户完全不知道该改哪儿。
             #   这里把候选全列出来，一眼就能看出是"没装"还是"装错地方"。
             return self._send(200, env_report())
+        if path == "/mineru-check":
+            # MinerU（**可选组件**）的探测：装没装、藏在哪、什么版本、
+            # 生效的小模型后端与 VLM 引擎、模型档位下全没有、GPU 可用不可用。
+            #
+            # 谁会调它（三处，所以结果在 offline/mineru.py 里缓存 60 秒）：
+            #   · 插件首启的"MinerU 安装引导"对话框（装了就永远不问）
+            #   · 面板「运行环境」页第 4 行的状态栏
+            #   · 面板「知识库结构」页那个"只在没装时出现"的引导按钮
+            # `?force=1` 强制重新探测：安装引导刚装完要立刻看到结果。
+            import mineru as _mu
+            q = self.path.split("?", 1)[1] if "?" in self.path else ""
+            return self._send(200, _mu.probe(force=("force=1" in q)))
         if path == "/models":
             # 本机 Ollama 有哪些模型 —— 插件设置面板用它填「模型」下拉列表。
             #

@@ -488,7 +488,8 @@ def test_save_env_config():
     try:
         real = os.path.join(tmp, "python.exe")
         open(real, "w", encoding="utf-8").close()
-        S.save_env_config({"python": real, "project_root": tmp, "ollama": ""})
+        S.save_env_config({"python": real, "project_root": tmp, "ollama": "",
+                           "mineru": real})
         cfg = json.load(open(S.LOCATION_FILE, encoding="utf-8"))
         env = cfg.get("env") or {}
         check("存在的位置写进 env 段",
@@ -498,6 +499,10 @@ def test_save_env_config():
               str(cfg.get("python_exe")))
         check("空串写空 = 交回自动探测（不是跳过）",
               "ollama" in env and env["ollama"] == "", str(env))
+        check("MinerU（可选组件）也能写：env 段 + 扁平 mineru_exe",
+              env.get("mineru") == os.path.abspath(real)
+              and cfg.get("mineru_exe") == os.path.abspath(real),
+              f"env={env.get('mineru')} flat={cfg.get('mineru_exe')}")
         check("运行时状态也写（项目根改错时还能找回 Python）",
               (S.read_runtime_state() or {}).get("python") == os.path.abspath(real),
               str(S.read_runtime_state()))
@@ -520,6 +525,76 @@ def test_save_env_config():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_resolve_mineru():
+    """MinerU 的路径解析：优先级链 + **没装必须是空串而不是异常**。
+
+    为什么单独测：MinerU 是可选组件，面板、插件首启对话框、本地服务三处都
+    靠 `resolve_mineru()` 判断"要不要显示安装引导"。它一旦抛异常，可选组件
+    就会把主流程搞红（这是本模块的硬约束）。
+    ⚠ 把自动扫描换成返回空列表：否则在本机（有 MinerU）测"没装"永远失败。
+    """
+    import json
+    import shutil
+    import tempfile
+
+    tmp = tempfile.mkdtemp(prefix="kbmineru_")
+    olds = (S.LOCATION_FILE, S.USER_LOCATION_FILE, S.USER_CONFIG_DIR,
+            S._scan_for_mineru, os.environ.get("ZOTERO_KB_MINERU"))
+    S.LOCATION_FILE = os.path.join(tmp, "kb-location.json")
+    S.USER_LOCATION_FILE = os.path.join(tmp, "location.json")
+    S.USER_CONFIG_DIR = tmp
+    S._scan_for_mineru = lambda: []          # 关掉自动发现
+    os.environ.pop("ZOTERO_KB_MINERU", None)
+    try:
+        check("没装 → 空串（不抛异常）", S.resolve_mineru() == "",
+              repr(S.resolve_mineru()))
+
+        exe = os.path.join(tmp, "mineru-kit.exe")
+        open(exe, "w", encoding="utf-8").close()
+
+        # 配置（扁平键）能被认出来
+        S.write_location_config(mineru_exe=exe)
+        check("配置里的扁平键 mineru_exe 生效",
+              S.resolve_mineru() == os.path.abspath(exe), S.resolve_mineru())
+
+        # 嵌套 env 段也认（手写配置的场景）
+        S.write_location_config(env={"mineru": exe})
+        check("env.mineru 也认", S.resolve_mineru() == os.path.abspath(exe),
+              S.resolve_mineru())
+
+        # 显式参数 > 环境变量 > 配置
+        other = os.path.join(tmp, "another-kit.exe")
+        open(other, "w", encoding="utf-8").close()
+        check("显式参数优先级最高",
+              S.resolve_mineru(other) == os.path.abspath(other),
+              S.resolve_mineru(other))
+        os.environ["ZOTERO_KB_MINERU"] = other
+        check("环境变量 ZOTERO_KB_MINERU 次之",
+              S.resolve_mineru() == os.path.abspath(other), S.resolve_mineru())
+
+        # 清空 = 交回自动探测（这里自动探测已被关掉 → 空串）
+        os.environ.pop("ZOTERO_KB_MINERU", None)
+        S.save_env_config({"mineru": ""})
+        check("留空 = 交回自动探测（回到空串）", S.resolve_mineru() == "",
+              repr(S.resolve_mineru()))
+
+        # mineru_home：**不在 ENV_KEYS 里**（面板不显示它，属高级项），
+        # 只在配置里手写 / 用 MINERU_HOME 环境变量；这里验它认手写的配置。
+        home = os.path.join(tmp, "home")
+        os.makedirs(home, exist_ok=True)
+        S.write_location_config(mineru_home=home)
+        check("mineru_home 认手写配置里的目录",
+              S.mineru_home() == os.path.abspath(home), S.mineru_home())
+    finally:
+        (S.LOCATION_FILE, S.USER_LOCATION_FILE, S.USER_CONFIG_DIR,
+         S._scan_for_mineru, old_env) = olds
+        if old_env is None:
+            os.environ.pop("ZOTERO_KB_MINERU", None)
+        else:
+            os.environ["ZOTERO_KB_MINERU"] = old_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main() -> int:
     test_clean_text()
     test_html_to_markdown()
@@ -532,6 +607,7 @@ def main() -> int:
     test_query_rewrite()
     test_purge_orphans()
     test_save_env_config()
+    test_resolve_mineru()
     print(f"\n{'=' * 60}\n通过 {PASS}　失败 {FAIL}\n{'=' * 60}")
     return 1 if FAIL else 0
 

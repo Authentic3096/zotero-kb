@@ -152,10 +152,10 @@ def write_location_config(**kw: Any) -> str:
 # 两条通道**必须同一套语义**，否则会漂移成"插件里清空不生效、面板里生效"
 # 这种查不出来的不一致。所以真正的写入逻辑只有下面这一份。
 
-ENV_KEYS = ("project_root", "python", "ollama")
+ENV_KEYS = ("project_root", "python", "ollama", "mineru")
 # env 段的键 → 老版本用过的**扁平键**（resolve_* 也认它们，写的时候一起清）
 _ENV_FLAT_KEY = {"project_root": "project_root", "python": "python_exe",
-                 "ollama": "ollama_exe"}
+                 "ollama": "ollama_exe", "mineru": "mineru_exe"}
 
 
 def save_env_config(values: dict) -> dict:
@@ -475,6 +475,118 @@ def resolve_ollama(explicit: str = "") -> str:
         except OSError:
             pass
         return found[0]
+    return ""
+
+
+def _scan_for_mineru() -> list[str]:
+    """找 `mineru-kit.exe`（MinerU 是**可选组件**，找不到返回空）。
+
+    候选来源按"最可能是本项目的"排序：
+      1. 本项目目录下的 `scripts\\install-mineru.ps1` 装的位置（`.mineru\\.venv`）
+         —— 这是官方推荐的装法，装完就该在这里找到；
+      2. `uv tool install mineru` 的位置（%LOCALAPPDATA%\\uv\\tools\\…）；
+      3. PATH 上（用户自己 pip 装进某个环境并加了 PATH）。
+
+    ⚠ 不去扫 conda 环境：那是用户自己的东西，路径五花八门，扫一遍要几百 ms
+      而且十有八九是别的用途的 MinerU。要用手填（运行环境页第 4 行）。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    cands: list[str] = []
+
+    exe_names = ("mineru-kit.exe", "mineru-kit")
+    rel = (r"Scripts\mineru-kit.exe", r"Scripts\mineru-kit",
+           r"bin/mineru-kit")
+
+    # 1) 项目内的 .mineru
+    try:
+        root = resolve_project_root()
+    except Exception:  # noqa: BLE001
+        root = ""
+    if root:
+        for r in rel:
+            cands.append(os.path.join(root, ".mineru", ".venv", r))
+        for r in ("Scripts/mineru-kit.exe", "Scripts/mineru-kit"):
+            cands.append(os.path.join(root, ".mineru", r))
+
+    # 2) uv tool / 常见用户级位置
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if local:
+        for sub in ("mineru", "mineru-cli", "mineru-kit"):
+            for r in rel:
+                cands.append(os.path.join(local, "uv", "tools", sub, r))
+        cands.append(os.path.join(local, "Programs", "MinerU", "mineru-kit.exe"))
+
+    # 3) PATH
+    for d in (os.environ.get("PATH") or "").split(os.pathsep):
+        d = d.strip('"').strip()
+        if d:
+            for n in exe_names:
+                cands.append(os.path.join(d, n))
+
+    for p in cands:
+        k = os.path.normcase(p)
+        if k not in seen and _is_executable(p):
+            seen.add(k)
+            out.append(p)
+    return out
+
+
+def resolve_mineru(explicit: str = "") -> str:
+    """决定 MinerU 的 `mineru-kit.exe` 路径。找不到返回空串（它是可选组件）。
+
+    优先级与 `resolve_python` / `resolve_ollama` 完全一致：
+      显式参数 > `ZOTERO_KB_MINERU` > 配置 env.mineru > 扁平键 mineru_exe
+      > 运行时状态 > 自动扫描（见 `_scan_for_mineru`）。
+    自动扫描命中时会记进运行时状态 —— 下次 PATH 变了也还找得到。
+
+    ⚠ 找不到**不是错误**：所有调用方都要按"没有 MinerU"降级
+      （解析走 `zreader.fulltext_for`，面板/插件不显示相关入口）。
+    """
+    cfg = _read_location_config()
+    env_cfg = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    state = read_runtime_state()
+
+    for cand in (explicit,
+                 os.environ.get("ZOTERO_KB_MINERU", ""),
+                 str(env_cfg.get("mineru") or ""),
+                 str(cfg.get("mineru_exe") or ""),
+                 str(state.get("mineru") or "")):
+        cand = (cand or "").strip()
+        if cand and _is_executable(os.path.expanduser(cand)):
+            return os.path.abspath(os.path.expanduser(cand))
+
+    found = _scan_for_mineru()
+    if found:
+        try:
+            write_runtime_state(mineru=found[0])
+        except OSError:
+            pass
+        return found[0]
+    return ""
+
+
+def mineru_home() -> str:
+    """MinerU 的 HOME（放 config.yaml 与模型的地方）。
+
+    优先配置里的 `env.mineru_home` / 扁平键 `mineru_home`；
+    没配就按"装在哪就在哪"推：`<mineru-kit 上一级>/...` 找不到就返回空，
+    让 MinerU 用自己的默认（~/.mineru）。
+    """
+    cfg = _read_location_config()
+    env_cfg = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    for cand in (os.environ.get("MINERU_HOME", ""),
+                 str(env_cfg.get("mineru_home") or ""),
+                 str(cfg.get("mineru_home") or "")):
+        cand = (cand or "").strip()
+        if cand and os.path.isdir(os.path.expanduser(cand)):
+            return os.path.abspath(os.path.expanduser(cand))
+    exe = resolve_mineru()
+    if exe:
+        # <repo>\.mineru\.venv\Scripts\mineru-kit.exe → <repo>\.mineru\home
+        guess = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(exe))), "home")
+        if os.path.isdir(guess):
+            return guess
     return ""
 
 

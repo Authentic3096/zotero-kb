@@ -26,19 +26,22 @@ class EnvTab:
 
 
     def _build_env_tab(self):
-        """运行环境页：项目目录 / Python / Ollama 三个位置 + 检测报告。
+        """运行环境页：项目目录 / Python / Ollama / MinerU 四个位置 + 检测报告。
 
-        为什么值得单独一页：这三个位置**互相独立**，而面板"打不开"
+        为什么值得单独一页：这四个位置**互相独立**，而面板"打不开"
         九成是因为其中一个不对。把它摆在明面上，用户自己就能看出来。
 
-        ⚠ 2026-10-05（用户要求）：这三个位置**可以直接在面板里改**，而且
+        ⚠ 2026-10-05（用户要求）：这几个位置**可以直接在面板里改**，而且
           写的是与 Zotero 插件设置**同一份配置**（知识库目录下
           `kb-location.json` 的 `env` 段，见 `schemas.save_env_config`；
           插件设置面板点「保存并检测」写的也是它）。
-        ⚠ 但要诚实说清一处差别：插件设置页里那三个框显示的是**插件自己记的
+        ⚠ 但要诚实说清一处差别：插件设置页里那几个框显示的是**插件自己记的
           pref**，插件的 `projectRoot()` / `pythonExe()` 会**优先**用它。
           所以"插件设置里曾经手填过某一项"时，想让这里说了算，得先把插件设置里
           那一项清空再保存。界面上（下面的说明与 tooltip）如实写了这句。
+        ⚠ MinerU 是**可选组件**（2026-10-05 起）：留空/找不到都不影响任何现有
+          功能，只是 PDF 解析走原来的 Zotero 缓存 + PyMuPDF；装它走
+          `scripts\\install-mineru.cmd` 或面板「知识库结构」页的安装引导。
         """
         f = self.tab_env
         head = ttk.Frame(f, padding=(10, 8, 10, 0))
@@ -50,7 +53,7 @@ class EnvTab:
         ttk.Label(
             f, foreground="#666", font=(self.ui_font, 9), justify="left",
             wraplength=920,
-            text="下面三个位置可以直接在这里改：填好（或点「浏览…」选）"
+            text="下面四个位置可以直接在这里改：填好（或点「浏览…」选）"
                  "再点「保存并重新检测」。写的是 Zotero 插件设置里那一项背后的"
                  "同一份配置（插件设置页点「保存并检测」写的也是它）。\n"
                  "留空 = 这一项交回自动探测（例如 Python 留空就用项目里的 .venv）。\n"
@@ -70,6 +73,9 @@ class EnvTab:
              "跑脚本用；优先 .venv\\Scripts\\pythonw.exe"),
             ("ollama", "Ollama 程序", "file",
              "本地模型（可选，不装也能用 API）"),
+            ("mineru", "MinerU（可选）", "file",
+             "mineru-kit.exe；装了 PDF 解析更准（公式成 LaTeX）。"
+             "不装也能用；安装见「知识库结构」页的安装引导"),
         ]
         for i, (key, label, kind, hint) in enumerate(rows):
             ttk.Label(body, text=label + "：").grid(row=i * 2, column=0,
@@ -157,7 +163,7 @@ class EnvTab:
             messagebox.showerror("保存失败", f"导不进 schemas：{exc}")
             return
         given = {}
-        for key in ("project_root", "python", "ollama"):
+        for key in ("project_root", "python", "ollama", "mineru"):
             if key in self.env_vars:
                 given[key] = (self.env_vars[key].get() or "").strip()
         try:
@@ -199,14 +205,28 @@ class EnvTab:
                     "project_root": S.resolve_project_root(),
                     "python": S.resolve_python(),
                     "ollama": S.resolve_ollama(),
+                    "mineru": S.resolve_mineru(),
                 }
             except Exception:  # noqa: BLE001
-                fallback = {"project_root": ROOT, "python": PY, "ollama": ""}
+                fallback = {"project_root": ROOT, "python": PY, "ollama": "",
+                            "mineru": ""}
             out = {k: (info.get(k) or fallback.get(k) or "（没找到）")
-                   for k in ("project_root", "python", "ollama")}
+                   for k in ("project_root", "python", "ollama", "mineru")}
             out["_server"] = bool(info.get("ok"))
             out["_kb"] = info.get("kb_dir") or self.kb_dir()
             out["_err"] = err
+            # MinerU 状态栏：光有"✓ 存在"没用，用户要知道**它到底能不能干活**
+            # （版本、GPU、档位）。探测自身缓存 60 秒，且**没装就不探**。
+            if out.get("mineru") and out["mineru"] != "（没找到）":
+                try:
+                    import mineru as MU
+                    mu = MU.probe()
+                    out["_mineru"] = MU.summary_line(mu)
+                except Exception as exc:  # noqa: BLE001
+                    out["_mineru"] = f"探测失败：{type(exc).__name__}: {exc}"
+            else:
+                out["_mineru"] = ("未检测到（可选组件，不装也能用）—— "
+                                  "「知识库结构」页有安装引导")
             self.out_queue.put(("env", out))
             # 排错用：探测失败时把原因写进日志（吞掉异常会让"服务没在跑"
             # 这句话看起来像结论，其实只是"请求失败了"，用户无从下手）

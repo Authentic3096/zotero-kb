@@ -691,6 +691,10 @@ class AppBase:
             hint.append("本机服务没在跑，上面是面板自己探测的结果"
                         "（点「启动本地服务」可以拉起它）。")
         hint.append(f"知识库位置：{info.get('_kb') or self.kb_dir()}")
+        # MinerU 是可选组件：只写"✓ 存在"没意义，要写它**能不能干活**
+        # （版本/GPU/档位），否则用户没法判断该不该动它。
+        if info.get("_mineru"):
+            hint.append(f"MinerU：{info['_mineru']}")
         # ⚠ 这里**不重复**"要改就去上面那三个框"那一段 —— 页面上方已经写了一遍，
         #   同一句话说两遍反而像没写完（第一版就是，用户看界面很挑这种）。
         self.env_note.set("\n".join(hint))

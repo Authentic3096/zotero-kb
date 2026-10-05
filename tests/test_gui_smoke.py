@@ -110,7 +110,7 @@ for fn in ("do_prompt_refresh", "do_prompt_load", "do_prompt_save",
            "do_prompt_reset", "do_prompt_probe"):
     check(f"提示词页有回调 {fn}", callable(getattr(app, fn, None)))
 
-# 用户明确要的两页必须在：知识库结构表（各文件夹存什么）、运行环境（三个路径）
+# 用户明确要的两页必须在：知识库结构表（各文件夹存什么）、运行环境（几个路径）
 check("结构表控件存在", getattr(app, "struct_tree", None) is not None)
 # 切片质量页：确保不是"加了个空页"（控件与动作都在）
 # ⚠ 页名 2026-10-05 由「解析健康」改为「损坏查询」（用户要求）
@@ -130,7 +130,8 @@ try:
 except Exception as exc:      # noqa: BLE001
     check("逐段复核窗能 import", False, str(exc))
 check("损坏查询页有图表开关", getattr(app, "q_figures_var", None) is not None)
-check("运行环境三个路径都有输入框", len(getattr(app, "env_vars", {})) == 3,
+check("运行环境四个路径都有输入框（含可选的 MinerU）",
+      len(getattr(app, "env_vars", {})) == 4,
       str(list(getattr(app, "env_vars", {}).keys())))
 # 用户 2026-10-05：「运行环境的设置能就在面板改吗（与插件设置同步）」
 # → 可以：两边读写同一份 kb-location.json。装配阶段能验的是"框和按钮画出来了"。
