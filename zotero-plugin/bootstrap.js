@@ -2,7 +2,7 @@
 //    不要直接改这里 —— 改 src/ 下的源文件，再跑：
 //        python tools/build_bootstrap.py
 //    改完没重新生成的话，打包前会被拒绝（tools/pack_plugin.py 会校验）。
-//    源码共 20 个文件，清单在 build_bootstrap.py 的 SRC_ORDER。
+//    源码共 21 个文件，清单在 build_bootstrap.py 的 SRC_ORDER。
 
 // ===== src/00-core.js =====
 /* eslint-disable no-undef */
@@ -105,6 +105,10 @@ var ZoteroKB = {
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
       step("startTaskPolling", () => self.startTaskPolling());
+      // MinerU（可选组件）的首次安装引导：**延迟 8 秒**跑，且只在"没装过 +
+      // 没问过"时才弹一次（见 19-mineruguide.js）。放在这里是为了让它跟别的
+      // 启动步骤一样有名字、失败也能在状态文件里看到（它自己不会抛）。
+      step("scheduleMineruGuide", () => self.scheduleMineruGuide());
       // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
       //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
       //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，
@@ -355,6 +359,13 @@ Object.assign(ZoteroKB, {
     // 一次性全部算完、再用**一个**汇总框问（见 askApplyBatch）——
     // 不用每篇弹一次：抓 5 篇弹 5 个模态框，点完"添加"还要连点 5 次。
     acquireAutoClassify: "zotero-kb.acquireAutoClassify",
+    // ---- MinerU（可选组件）的首次安装引导
+    //
+    // 「首次启动且没检测到 MinerU 时弹一次，之后不再打扰」—— 用户定的规矩。
+    // 所以**无论用户选「打开安装引导」还是「以后再说」都会把它置为 true**；
+    // 装了 MinerU 的用户一次都不弹（这个 pref 也不会被写）。
+    // 面板那侧还有入口：「知识库结构」页那个只在未安装时出现的按钮。
+    mineruGuideDone: "zotero-kb.mineruGuideDone",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },
@@ -1031,6 +1042,8 @@ Object.assign(ZoteroKB, {
     defaults[this.PREFS.categories] = "";   // 空=用知识库现有的
     defaults[this.PREFS.acquireConfirm] = false;
     defaults[this.PREFS.acquireAutoClassify] = true;
+    // MinerU 首次安装引导是否已经问过（问过就不再弹，见 19-mineruguide.js）
+    defaults[this.PREFS.mineruGuideDone] = false;
     // ⚠ 2026-10-05：chatQuitWarn / chatNumCtx 随「内容窗格聊天」一起删了
     //   （见 00-core.js 的 startup 里那段说明）。prefs.js 的默认值也删了。
     for (const [key, value] of Object.entries(defaults)) {
@@ -4026,18 +4039,20 @@ Object.assign(ZoteroKB, {
   },
 
   /**
-   * 用面板的 Python 打开一个文件（`tools/gui.py --open <path>`）。
+   * 起一个管理面板进程（`tools\gui.py` + 任意参数）。返回 true/false。
    *
-   * 为什么不直接在这里调 shell：插件沙箱里没有可靠的"用默认程序打开"接口，
-   * 而面板那边 `os.startfile` 一直在用、确定可用。让它代劳最省事。
+   * 为什么抽出来：面板不止一个"带参数启动"的用途 —— 打开某个 md
+   * （`--open <path>`）与打开 MinerU 安装引导（`--tab struct --mineru-guide`）
+   * 走的是同一条链。分开写两份的话，Subprocess / nsIProcess 那套兜底
+   * 迟早只有一处被修。
    */
-  openKbViaPanel: function (path) {
+  panelProcess: function (extraArgs) {
     var self = ZoteroKB;
     const root = self.projectRoot();
     const py = self.pythonExe();
     const gui = root ? root + "\\tools\\gui.py" : "";
     if (!py || !root || !self._exists(gui)) return false;
-    const args = ["-X", "utf8", gui, "--open", path];
+    const args = ["-X", "utf8", gui].concat(extraArgs || []);
     try {
       const { Subprocess } = ChromeUtils.importESModule(
         "resource://gre/modules/Subprocess.sys.mjs");
@@ -4045,7 +4060,7 @@ Object.assign(ZoteroKB, {
         command: py, arguments: args, workdir: root,
         stderr: "ignore", stdout: "ignore",
       }).catch(function (e) {
-        Zotero.debug("[zotero-kb] --open 进程：" + e);
+        Zotero.debug("[zotero-kb] 面板进程：" + e);
       });
       return true;
     } catch (e) {
@@ -4059,10 +4074,21 @@ Object.assign(ZoteroKB, {
         proc.runw(false, args, args.length);
         return true;
       } catch (e2) {
-        Zotero.debug("[zotero-kb] --open 也起不来：" + e2);
+        Zotero.debug("[zotero-kb] 面板进程也起不来：" + e2);
         return false;
       }
     }
+  },
+
+
+  /**
+   * 用面板的 Python 打开一个文件（`tools/gui.py --open <path>`）。
+   *
+   * 为什么不直接在这里调 shell：插件沙箱里没有可靠的"用默认程序打开"接口，
+   * 而面板那边 `os.startfile` 一直在用、确定可用。让它代劳最省事。
+   */
+  openKbViaPanel: function (path) {
+    return this.panelProcess(["--open", path]);
   },
 
   /**
@@ -5584,6 +5610,135 @@ Object.assign(ZoteroKB, {
     } catch (e) {
       try { return String(v); } catch (e2) { return "(无法序列化)"; }
     }
+  },
+});
+
+// ===== src/19-mineruguide.js =====
+/**
+ * 19-mineruguide.js —— MinerU（可选组件）的首次安装引导。
+ *
+ * ## 用户定的规矩（2026-10-05）
+ *
+ *   · 插件**首次启动**、且**没检测到** MinerU 时，弹**一次**对话框：
+ *     「打开安装引导」/「以后再说」。
+ *   · 选「以后再说」就收进角落 —— 入口留在面板「知识库结构」页那个按钮里
+ *     （面板那边**只在没装时才显示**，装了按钮就消失）。
+ *   · 所以：**无论选哪个都记 `mineruGuideDone`**，不再打扰。
+ *   · 已经装了 MinerU 的用户**一次都不弹**（连 pref 都不写）。
+ *
+ * ## 为什么先本地看一眼、再问服务
+ *
+ * 装 MinerU 的默认位置是项目目录下的 `.mineru\.venv\Scripts\mineru-kit.exe`
+ * （见 scripts/install-mineru.ps1）。这个判断**不需要服务在跑**，一次
+ * `exists` 就够，成本最低、也最不容易误报"没装"。
+ * 但也可能是用户自己 pip 装在别处（或者在 PATH 上），那只有服务端
+ * `/mineru-check`（走 schemas.resolve_mineru 的六级优先级）知道 ——
+ * 所以本地没找到时再问一次服务，服务没起来就按"没装"处理（提示用户去装）。
+ *
+ * ## 为什么不在这里直接弹 Tkinter 向导
+ *
+ * 插件沙箱里起不了窗口，而且安装要实时日志、要能取消 —— 那些都在面板里
+ * （`tools/panels/mineru_guide.py`）。这里只负责"拉面板并把窗口打开"，
+ * 用与「打开知识库」同一条 `Subprocess` + `nsIProcess` 兜底链。
+ */
+Object.assign(ZoteroKB, {
+
+  /** 默认安装在项目内的位置（与 install-mineru.ps1 的约定一致）。 */
+  mineruKitPath: function () {
+    const root = this.projectRoot ? this.projectRoot() : "";
+    return root ? root + "\\.mineru\\.venv\\Scripts\\mineru-kit.exe" : "";
+  },
+
+
+  /**
+   * 排一次首启引导检查。
+   *
+   * 延迟 8 秒：① 让主窗口、设置面板先就绪（首屏别抢时间）；
+   * ② 让本地服务有机会起来（`/health` 那次探测在 startup 里）。
+   * 用 `setTimeout` 而不是窗口钩子 —— 本机实测 `onMainWindowLoad` 在
+   * **Zotero 启动时已存在的那个窗口**上不会被调用（见 00-core.js 的说明）。
+   */
+  scheduleMineruGuide: function () {
+    var self = ZoteroKB;
+    setTimeout(function () {
+      try { self.maybeAskMineruGuide(); } catch (e) {
+        Zotero.debug("[zotero-kb] MinerU 引导检查失败：" + e);
+      }
+    }, 8000);
+  },
+
+
+  /** 首启检查：装了就什么都不做；没装就弹一次（然后就再也不弹）。 */
+  maybeAskMineruGuide: async function () {
+    var self = ZoteroKB;
+    if (self.getPref(self.PREFS.mineruGuideDone, false)) return;
+
+    // ① 本地快速判断（不依赖服务）
+    const kit = self.mineruKitPath();
+    if (kit && self._exists && self._exists(kit)) return;
+
+    // ② 问服务（可能装在别的路径）；服务没起来就问不到，按"没装"处理
+    let installed = false;
+    try {
+      const info = await self.request("GET", "/mineru-check");
+      installed = !!(info && info.ok);
+    } catch (e) {
+      Zotero.debug("[zotero-kb] /mineru-check 不可用（服务没起来？）：" + e);
+    }
+    if (installed) return;
+
+    // ③ 只弹一次：选什么都要记，免得每次启动都烦人
+    try { self.setPref(self.PREFS.mineruGuideDone, true); } catch (e) { /* ignore */ }
+    if (self.askMineruGuide() === 0) self.openMineruGuide();
+  },
+
+
+  /**
+   * 弹对话框。返回 0 =「打开安装引导」，1 =「以后再说」。
+   *
+   * 为什么用 `Services.prompt.confirmEx` 而不是自绘窗口：它是**同步**的、
+   * 三个按钮的文案都能自定义，而且不需要额外 xhtml —— 设置面板那套复用不了
+   * （那个是 Zotero 的 pane 容器，得挂在设置里才出现）。
+   */
+  askMineruGuide: function () {
+    var self = ZoteroKB;
+    // ⚠ 不要在界面文案里写 markdown 的 `**`：Tk 与 Zotero 的对话框都不渲染它，
+    //   用户看到的就是一串星号（用户提过这个毛病，本机也踩过）。
+    const body = "MinerU 是「可选」的 PDF 解析增强：装了它，正文更干净、"
+      + "公式会变成 LaTeX（能进检索与摘要）、表格与扫描件更稳。\n\n"
+      + "不装完全不影响现有功能（知识库仍用 Zotero 缓存文本 + PyMuPDF）。\n"
+      + "装它要下 5~9 GB、首次 5~20 分钟；装到项目目录下的 .mineru\\，"
+      + "不写系统 PATH、不动注册表，删目录即卸载。\n\n"
+      + "要不要现在打开安装引导？";
+    try {
+      const ps = Services.prompt;
+      const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
+        + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_IS_STRING;
+      const win = (Zotero.getMainWindow && Zotero.getMainWindow()) || null;
+      const btn = ps.confirmEx(
+        win, "知识库：可选装 MinerU（能让 PDF 解析更准）", body, flags,
+        "打开安装引导", "以后再说", null, null, {});
+      return btn;
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 弹 MinerU 引导失败：" + e);
+      return 1;
+    }
+  },
+
+
+  /** 拉面板并直接打开「MinerU 安装引导」窗口。 */
+  openMineruGuide: function () {
+    var self = ZoteroKB;
+    const ok = self.panelProcess
+      ? self.panelProcess(["--tab", "struct", "--mineru-guide"])
+      : false;
+    if (!ok) {
+      self.notify("打不开安装引导",
+        "没能拉起管理面板。可以自己打开面板 →「知识库结构」页 →"
+        + "「MinerU 安装引导」，或者双击项目里的 scripts\\install-mineru.cmd。",
+        null, true);
+    }
+    return ok;
   },
 });
 

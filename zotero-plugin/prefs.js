@@ -32,8 +32,10 @@ pref("extensions.zotero.zotero-kb.syncTarget", "");
 pref("extensions.zotero.zotero-kb.acquireConfirm", false);
 pref("extensions.zotero.zotero-kb.acquireAutoClassify", true);
 
-// ---- 2026-10-05：chatQuitWarn / chatNumCtx 两个默认值随「内容窗格聊天」删除
-// （那个分区、19-itempane.js、20-reader.js 与七个端点都没了）。
+// ---- MinerU（可选组件）的首次安装引导
+// 「首次启动且没检测到 MinerU 时弹一次，之后不再打扰」——用户定的规矩：
+// 取消后入口收进面板「知识库结构」页（那个按钮只在没装时显示）。
+pref("extensions.zotero.zotero-kb.mineruGuideDone", false);
 
 // ---- 运行环境（三个位置互相独立，谁也不能由谁推算）
 //

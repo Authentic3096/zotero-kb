@@ -165,6 +165,13 @@ Object.assign(ZoteroKB, {
     // 一次性全部算完、再用**一个**汇总框问（见 askApplyBatch）——
     // 不用每篇弹一次：抓 5 篇弹 5 个模态框，点完"添加"还要连点 5 次。
     acquireAutoClassify: "zotero-kb.acquireAutoClassify",
+    // ---- MinerU（可选组件）的首次安装引导
+    //
+    // 「首次启动且没检测到 MinerU 时弹一次，之后不再打扰」—— 用户定的规矩。
+    // 所以**无论用户选「打开安装引导」还是「以后再说」都会把它置为 true**；
+    // 装了 MinerU 的用户一次都不弹（这个 pref 也不会被写）。
+    // 面板那侧还有入口：「知识库结构」页那个只在未安装时出现的按钮。
+    mineruGuideDone: "zotero-kb.mineruGuideDone",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },

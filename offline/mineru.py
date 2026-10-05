@@ -257,7 +257,8 @@ def probe(exe: str = "", *, force: bool = False, with_gpu: bool = True,
         if ready:
             data["why"] = "可用（已就绪档位：" + "、".join(sorted(ready)) + "）"
         else:
-            data["why"] = "装了，但**模型还没下全**（跑一次 scripts\\install-mineru.cmd，或面板安装引导）"
+            data["why"] = ("装了，但「模型还没下全」"
+                           "（跑一次 scripts\\install-mineru.cmd，或面板的安装引导）")
     data["elapsed"] = round(time.time() - t0, 2)
     _CACHE[key] = {"at": time.time(), "data": data}
     return data

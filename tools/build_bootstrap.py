@@ -60,10 +60,8 @@ SRC_ORDER = [
     "16-weightcol",
     "17-windowhook",
     "18-taskpoll",
-    # ⚠ 2026-10-05：`19-itempane`（内容窗格里的「本地模型」分区）与
-    #   `20-reader`（阅读器里的选中入口）已随"窗格聊天"整条链删除 ——
-    #   用户判断那个窗格"没什么用而且 bug 多"。这两个名字**别再往清单里加**，
-    #   对应文件也不存在了（check_plugin.py 有一条反向检查盯着）。
+    # MinerU（可选组件）的首次安装引导：起面板 + 弹一次对话框
+    "19-mineruguide",
     "99-bootstrap",
 ]
 

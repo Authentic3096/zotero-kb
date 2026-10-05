@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .common import (
     KB_FILE_SPEC,
+    ROOT,
     ts,
 )
 
@@ -45,6 +47,16 @@ class StructTab:
                    command=self.open_folder).pack(side="right")
         ttk.Button(head, text="刷新", command=self.refresh_struct).pack(
             side="right", padx=6)
+        # MinerU 安装引导：**只在没检测到 MinerU 时才出现**（用户定的规矩：
+        # "如果检测到 minerU 就没这个按键"）。检测放在后台线程，结果回主线程
+        # 决定按钮要不要 pack —— 所以先建好、默认不显示。
+        self.mineru_btn = ttk.Button(
+            head, text="MinerU 安装引导", command=self.open_mineru_guide)
+        self._mineru_btn_shown = False
+        # ⚠ 用 `self.root.after` 而不是 `self.after`：App 是"混入类的组合"，
+        #   本身不是 Tk 控件（面板冒烟测试里就是在没有真 root 的情况下装配的，
+        #   写 self.after 会 AttributeError —— 本机测试逮到）。
+        self.root.after(300, self._check_mineru_button)
 
         # 用 Treeview 做表：能对齐、能排序、能选中
         cols = ("name", "what", "count", "size", "safe")
@@ -78,6 +90,51 @@ class StructTab:
             fill="x", padx=12, pady=(0, 8))
 
         self.refresh_struct()
+
+
+    # ---------------------------------------------------------- MinerU 引导
+
+    def _check_mineru_button(self):
+        """后台探一次 MinerU，决定「MinerU 安装引导」按钮显不显示。
+
+        用户规矩：**检测到就不显示**（装了就不该再被引导）。探测要跑子进程
+        （约 1~4 秒，`offline/mineru.py` 有 60 秒缓存），所以放线程里，
+        结果回主线程改界面（Tk 控件只能主线程碰）。
+        `refresh_struct()` 之后也会再调一次（用户点「刷新」时重新判断）。
+        """
+        def work():
+            ok = False
+            try:
+                import sys as _sys
+                if os.path.join(ROOT, "offline") not in _sys.path:
+                    _sys.path.insert(0, os.path.join(ROOT, "offline"))
+                import mineru as MU
+                ok = bool(MU.probe().get("ok"))
+            except Exception:      # noqa: BLE001
+                ok = False
+            self.after(0, lambda: self._apply_mineru_button(ok))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_mineru_button(self, installed: bool):
+        want = not installed
+        if want == self._mineru_btn_shown:
+            return
+        try:
+            if want:
+                self.mineru_btn.pack(side="right", padx=6)
+            else:
+                self.mineru_btn.pack_forget()
+        except tk.TclError:
+            return
+        self._mineru_btn_shown = want
+
+    def open_mineru_guide(self):
+        """打开安装引导窗口（与插件首启对话框进的是同一个）。"""
+        from .mineru_guide import MineruGuide
+        win = MineruGuide(self.root, self,
+                          on_done=self._check_mineru_button)
+        win.focus_set()
 
 
     def refresh_struct(self):

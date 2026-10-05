@@ -17,6 +17,8 @@ Object.assign(ZoteroKB, {
     defaults[this.PREFS.categories] = "";   // 空=用知识库现有的
     defaults[this.PREFS.acquireConfirm] = false;
     defaults[this.PREFS.acquireAutoClassify] = true;
+    // MinerU 首次安装引导是否已经问过（问过就不再弹，见 19-mineruguide.js）
+    defaults[this.PREFS.mineruGuideDone] = false;
     // ⚠ 2026-10-05：chatQuitWarn / chatNumCtx 随「内容窗格聊天」一起删了
     //   （见 00-core.js 的 startup 里那段说明）。prefs.js 的默认值也删了。
     for (const [key, value] of Object.entries(defaults)) {

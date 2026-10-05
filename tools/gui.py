@@ -227,6 +227,20 @@ def main() -> int:
         else:
             print(f"[!!] --tab {want}：没有这个页签。可用：{'、'.join(titles)}")
 
+    # --mineru-guide ：直接打开「MinerU 安装引导」窗口。
+    #
+    # 谁在用：Zotero 插件首次启动检测到**没装** MinerU 时弹的那个对话框，
+    # 选「打开安装引导」就会带这个参数拉起面板 —— 用户不用自己去翻菜单。
+    # 面板里也有入口：「知识库结构」页那个只在未安装时出现的按钮。
+    # ⚠ 这是个**开关**（没有值），所以不能用 `_arg_value` 判"非空"。
+    if "--mineru-guide" in sys.argv:
+        try:
+            from panels.mineru_guide import MineruGuide
+            MineruGuide(root, app, on_done=getattr(app, "_check_mineru_button",
+                                                   None))
+        except Exception as exc:      # noqa: BLE001
+            print(f"[XX] 打不开 MinerU 安装引导：{type(exc).__name__}: {exc}")
+
     app.say(f"[{ts()}] 面板就绪。")
     app.say(f"[{ts()}] 项目目录：{ROOT}")
     app.say(f"[{ts()}] 知识库：  {App.kb_dir()}")

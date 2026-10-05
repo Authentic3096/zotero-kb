@@ -98,6 +98,10 @@ var ZoteroKB = {
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
       step("startTaskPolling", () => self.startTaskPolling());
+      // MinerU（可选组件）的首次安装引导：**延迟 8 秒**跑，且只在"没装过 +
+      // 没问过"时才弹一次（见 19-mineruguide.js）。放在这里是为了让它跟别的
+      // 启动步骤一样有名字、失败也能在状态文件里看到（它自己不会抛）。
+      step("scheduleMineruGuide", () => self.scheduleMineruGuide());
       // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
       //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
       //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，

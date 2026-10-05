@@ -258,7 +258,91 @@ if (KB) {
   check("退出提醒的观察点也没了（quit-application-requested）",
     !calls.observers.some((o) => o.t === "quit-application-requested"),
     JSON.stringify(calls.observers.map((o) => o.t)));
-}
 
-console.log("\n通过 " + pass + "，失败 " + fail);
-process.exit(fail ? 1 : 0);
+  // ---- ⑦ MinerU（可选组件）的首次安装引导
+  //
+  // 用户定的规矩：**首次启动 + 没装 → 弹一次；取消也记 pref（不再弹）；
+  //   装了 / 服务说装了 → 一次都不弹。** 这几条都是"用户会不会被烦到"的
+  //   行为，所以桩里逐种情况跑一遍（`maybeAskMineruGuide` 是 async，所以
+  //   下面整段放在 async IIFE 里，最后在那边结算总数）。
+  check("有 MinerU 引导那批函数",
+    typeof KB.mineruKitPath === "function"
+    && typeof KB.scheduleMineruGuide === "function"
+    && typeof KB.maybeAskMineruGuide === "function"
+    && typeof KB.askMineruGuide === "function"
+    && typeof KB.openMineruGuide === "function"
+    && typeof KB.panelProcess === "function");
+  check("startup 里有 scheduleMineruGuide 这一步（失败也能在状态文件里看到）",
+    steps.indexOf("scheduleMineruGuide=ok") >= 0, steps);
+  // ⚠ 桩里 `projectRoot()` 是空的（pref 没填、也没有真文件系统），
+  //   所以这里临时钉一个假项目根 —— 否则 `mineruKitPath()` 返回空串，
+  //   "本地就看到了 exe" 那条分支根本走不到，等于没测。
+  const savedRootFn = KB.projectRoot;
+  KB.projectRoot = () => "D:\\repo";
+  check("mineruKitPath 指向项目里的 .mineru\\.venv\\Scripts\\mineru-kit.exe",
+    /\.mineru[\\/]\.venv[\\/]Scripts[\\/]mineru-kit\.exe$/.test(KB.mineruKitPath()),
+    KB.mineruKitPath());
+  check("askMineruGuide 走 Services.prompt.confirmEx 并返回按钮号",
+    KB.askMineruGuide() === 0, String(KB.askMineruGuide()));
+
+  const guideCase = async (opts) => {
+    const seen = { pref: [], panel: [], asked: 0 };
+    const saved = {
+      _exists: KB._exists, request: KB.request, setPref: KB.setPref,
+      getPref: KB.getPref, askMineruGuide: KB.askMineruGuide,
+      panelProcess: KB.panelProcess,
+    };
+    KB.getPref = (k, d) => (k === KB.PREFS.mineruGuideDone
+      ? !!opts.done : d);
+    KB.setPref = (k, v) => { seen.pref.push([k, v]); };
+    KB._exists = () => !!opts.localKit;
+    KB.request = async () => ({ ok: !!opts.serviceOk });
+    KB.askMineruGuide = () => { seen.asked++; return opts.choice; };
+    KB.panelProcess = (args) => { seen.panel.push(args); return true; };
+    try {
+      await KB.maybeAskMineruGuide();
+    } finally {
+      KB._exists = saved._exists;
+      KB.request = saved.request;
+      KB.setPref = saved.setPref;
+      KB.getPref = saved.getPref;
+      KB.askMineruGuide = saved.askMineruGuide;
+      KB.panelProcess = saved.panelProcess;
+    }
+    return seen;
+  };
+
+  (async () => {
+    let s = await guideCase({ done: true });
+    check("已经问过（pref=true）→ 不弹、不写 pref",
+      s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
+
+    s = await guideCase({ localKit: true });
+    check("本地就看到了 mineru-kit.exe → 不弹",
+      s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
+
+    s = await guideCase({ serviceOk: true });
+    check("本地没有但服务说装了 → 不弹",
+      s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
+
+    s = await guideCase({ choice: 1 });
+    check("没装 + 选「以后再说」→ 弹一次、记 pref、不开面板",
+      s.asked === 1
+      && s.pref.length === 1 && s.pref[0][0] === KB.PREFS.mineruGuideDone
+      && s.pref[0][1] === true && s.panel.length === 0,
+      JSON.stringify(s));
+
+    s = await guideCase({ choice: 0 });
+    check("没装 + 选「打开安装引导」→ 弹一次、记 pref、拉面板进向导",
+      s.asked === 1
+      && s.pref.length === 1 && s.pref[0][1] === true
+      && s.panel.length === 1
+      && s.panel[0].indexOf("--mineru-guide") >= 0
+      && s.panel[0].indexOf("--tab") >= 0,
+      JSON.stringify(s));
+
+    KB.projectRoot = savedRootFn;
+    console.log("\n通过 " + pass + "，失败 " + fail);
+    process.exit(fail ? 1 : 0);
+  })();
+}

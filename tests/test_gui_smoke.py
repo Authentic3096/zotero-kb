@@ -142,6 +142,31 @@ check("运行环境有保存回调（写同一份配置）",
       callable(getattr(app, "do_save_env", None)))
 check("运行环境有「浏览…」回调", callable(getattr(app, "do_browse_env", None)))
 
+# MinerU（可选组件）的安装引导入口：**只在没检测到 MinerU 时出现**（用户定的
+# 规矩）。装配阶段能验的是"控件与回调都在"，以及显隐逻辑两个方向都能切。
+check("知识库结构页有 MinerU 安装引导按钮控件",
+      getattr(app, "mineru_btn", None) is not None)
+check("有 open_mineru_guide / _check_mineru_button 回调",
+      callable(getattr(app, "open_mineru_guide", None))
+      and callable(getattr(app, "_check_mineru_button", None)))
+check("默认不显示（探测结果回来之前不占位）",
+      getattr(app, "_mineru_btn_shown", None) is False)
+try:
+    from panels.mineru_guide import MineruGuide, preflight  # noqa: F401
+    check("安装引导窗口能 import", True)
+except Exception as exc:      # noqa: BLE001
+    check("安装引导窗口能 import", False, str(exc))
+try:
+    app._apply_mineru_button(False)     # "没装" → 按钮出现
+    shown = getattr(app, "_mineru_btn_shown", None)
+    app._apply_mineru_button(True)      # "装了" → 按钮收起来
+    hidden = getattr(app, "_mineru_btn_shown", None)
+    check("按钮显隐两个方向都对（没装出现 / 装了收起）",
+          shown is True and hidden is False, f"shown={shown} hidden={hidden}")
+except Exception as exc:      # noqa: BLE001
+    check("按钮显隐两个方向都对（没装出现 / 装了收起）", False,
+          f"{type(exc).__name__}: {exc}")
+
 
 # 「打开知识库」的两个入口必须在**看得见的地方**（用户 2026-10-05 提的需求：
 # 知识库目录里是 22X9PMR6.md 这种编号，靠人自己去翻等于没解决）。

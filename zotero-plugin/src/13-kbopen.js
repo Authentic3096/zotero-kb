@@ -141,18 +141,20 @@ Object.assign(ZoteroKB, {
   },
 
   /**
-   * 用面板的 Python 打开一个文件（`tools/gui.py --open <path>`）。
+   * 起一个管理面板进程（`tools\gui.py` + 任意参数）。返回 true/false。
    *
-   * 为什么不直接在这里调 shell：插件沙箱里没有可靠的"用默认程序打开"接口，
-   * 而面板那边 `os.startfile` 一直在用、确定可用。让它代劳最省事。
+   * 为什么抽出来：面板不止一个"带参数启动"的用途 —— 打开某个 md
+   * （`--open <path>`）与打开 MinerU 安装引导（`--tab struct --mineru-guide`）
+   * 走的是同一条链。分开写两份的话，Subprocess / nsIProcess 那套兜底
+   * 迟早只有一处被修。
    */
-  openKbViaPanel: function (path) {
+  panelProcess: function (extraArgs) {
     var self = ZoteroKB;
     const root = self.projectRoot();
     const py = self.pythonExe();
     const gui = root ? root + "\\tools\\gui.py" : "";
     if (!py || !root || !self._exists(gui)) return false;
-    const args = ["-X", "utf8", gui, "--open", path];
+    const args = ["-X", "utf8", gui].concat(extraArgs || []);
     try {
       const { Subprocess } = ChromeUtils.importESModule(
         "resource://gre/modules/Subprocess.sys.mjs");
@@ -160,7 +162,7 @@ Object.assign(ZoteroKB, {
         command: py, arguments: args, workdir: root,
         stderr: "ignore", stdout: "ignore",
       }).catch(function (e) {
-        Zotero.debug("[zotero-kb] --open 进程：" + e);
+        Zotero.debug("[zotero-kb] 面板进程：" + e);
       });
       return true;
     } catch (e) {
@@ -174,10 +176,21 @@ Object.assign(ZoteroKB, {
         proc.runw(false, args, args.length);
         return true;
       } catch (e2) {
-        Zotero.debug("[zotero-kb] --open 也起不来：" + e2);
+        Zotero.debug("[zotero-kb] 面板进程也起不来：" + e2);
         return false;
       }
     }
+  },
+
+
+  /**
+   * 用面板的 Python 打开一个文件（`tools/gui.py --open <path>`）。
+   *
+   * 为什么不直接在这里调 shell：插件沙箱里没有可靠的"用默认程序打开"接口，
+   * 而面板那边 `os.startfile` 一直在用、确定可用。让它代劳最省事。
+   */
+  openKbViaPanel: function (path) {
+    return this.panelProcess(["--open", path]);
   },
 
   /**
