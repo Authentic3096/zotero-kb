@@ -49,10 +49,10 @@ class ParseTab:
         ttk.Label(
             f, foreground="#666", font=(self.ui_font, 9), justify="left",
             wraplength=920,
-            text="MinerU 是**可选**的 PDF 解析增强：装了它，正文更干净、"
+            text="MinerU 是「可选」的 PDF 解析增强：装了它，正文更干净、"
                  "公式会变成 LaTeX（能进检索）、表格与扫描件更稳。"
                  "不装也能用 —— 正文走 Zotero 缓存 + PyMuPDF，与以前逐字节一致。\n"
-                 "下面「解析器」选 MinerU 档位后，构建只会**重解析那一批**"
+                 "下面「解析器」选 MinerU 档位后，构建只会重解析那一批"
                  "（已解析且 PDF 没变的会按指纹跳过，几秒一篇；真解析约 5~35 秒/篇）。"
         ).pack(fill="x", padx=12, pady=(6, 4))
 
@@ -116,6 +116,9 @@ class ParseTab:
         vs.pack(side="right", fill="y")
         self.parse_tree.bind("<Double-1>", lambda _e: self.do_parse_selected())
         self._tip(self.parse_tree, "双击一行 = 解析这一篇；选中后可用上面的按钮")
+        # 进这一页就自动读一次状态：不读的话表格是空的、提示停在"正在读状态…"，
+        # 用户会以为坏了（本机截图核对时发现的）。
+        self.root.after(400, self.refresh_parse)
 
     # ================================================================ 读状态
 
@@ -217,7 +220,7 @@ class ParseTab:
             f"补全缺失：MinerU {self.parse_tier.get()} 档",
             [os.path.join(ROOT, "tools", "kb_admin.py"), "mineru", "missing",
              "--tier", self.parse_tier.get()],
-            confirm=f"会把**还没有 MinerU 产物**的文献用 {self.parse_tier.get()} "
+            confirm=f"会把「还没有 MinerU 产物」的文献用 {self.parse_tier.get()} "
                     f"档解析一遍（几十分钟，可随时点「停止当前任务」）。\n"
                     f"已解析且 PDF 没变的会按指纹跳过。继续？")
 
@@ -226,7 +229,7 @@ class ParseTab:
             f"全库重解析：MinerU {self.parse_tier.get()} 档",
             [os.path.join(ROOT, "tools", "kb_admin.py"), "mineru", "reparse",
              "--tier", self.parse_tier.get()],
-            confirm=f"会把**全库正文**换成 MinerU {self.parse_tier.get()} 档解析的结果"
+            confirm=f"会把「全库正文」换成 MinerU {self.parse_tier.get()} 档解析的结果"
                     f"（并重建切片与向量，几十分钟）。\n"
                     f"PDF 没变、档位没变的那批会按指纹跳过（几秒一篇）。\n"
                     f"建议先点「只补缺失的」。继续？")

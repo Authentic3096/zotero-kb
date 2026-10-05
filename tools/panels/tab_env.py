@@ -661,17 +661,18 @@ class EnvTab:
         if oll.get("up"):
             state = ("✅ 正在运行" + ("，本机模型：" + "、".join(models[:6])
                                     if models else
-                                    "，但还没有模型（`ollama pull "
-                                    + "qwen3:4b-instruct`）"))
+                                    "，但还没有模型（命令行跑 ollama pull "
+                                    + "qwen3:4b-instruct）"))
         elif out.get("path"):
-            state = "⚠ 装了但**没启动** —— 点上面的「启动 Ollama」"
+            state = "⚠ 装了但没启动 —— 点上面的「启动 Ollama」"
         else:
             state = ("✗ 没装（可选组件）。可以点「Ollama 安装引导」，"
                      "或把服务商改成 openai 用 API 模型")
         note = (f"Ollama：{state}\n"
                 f"程序位置：{path}\n"
-                "这一区保存到 kb\\llm-config.json（面板与服务端所有模型功能都用它）；"
-                "Zotero 插件右键菜单用的是插件自己的 pref → 点「同步到 Zotero 插件」推过去。")
+                "这一区保存到知识库目录下的 llm-config.json（面板与服务端所有模型功能"
+                "都用它）；Zotero 插件右键菜单用的是插件自己的 pref → "
+                "点「同步到 Zotero 插件」推过去。")
         if out.get("err"):
             note += f"\n读配置出错：{out['err']}"
         self.llm_note.set(note)
