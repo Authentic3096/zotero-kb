@@ -74,7 +74,6 @@
   仍然用**旧目录**的解释器（用 `os.path.samefile` 认项目身份才拦住）。
 
 ### ④ 发版：改个版本号、打个 tag，剩下的自动做
-
 **版本号怎么定**（约定）：
 
 | 改动 | 动哪一位 | 发布说明 |
@@ -100,6 +99,17 @@ git tag -a v0.25.2 -m "统一作者署名为 DeepSeek and Authentic3096" && git 
 第 2 步不能省。`updates.json` 本该在发版后才更新，但 CI 有一条「它与 manifest
 版本必须一致」的守门员 —— 只改了版本号就推，CI 会红。两者一起提交最省事；
 发布链里也保留了「发现不一致就自动改并提交回 main」作为兜底。
+
+**还想改已经发出去的说明**：tag 附注只在**新建** Release 时被采用；Release 已存在时
+工作流只覆盖附件、不动正文。所以正文要单独改一次：
+
+```powershell
+python tools\set_release_body.py --tag v0.25.2 --body 说明.md   # 改正文
+python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前正文开头
+```
+
+脚本用本机凭据管理器里的 `gh:github.com:<用户名>`（以前用 gh CLI 留下的通用凭据），
+运行时读取、不落盘、不打印；取不到就退回 `GITHUB_TOKEN` 环境变量。不需要装 gh CLI。
 
 `.github/workflows/release.yml` 会依次：**跑自检 → 打包 xpi → 审计 →
 生成 updates.json → 发 Release（xpi 作附件）→ 把 updates.json 提交回 main**。
