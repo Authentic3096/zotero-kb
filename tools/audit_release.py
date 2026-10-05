@@ -284,14 +284,37 @@ def audit_paths():
           "没有本机路径", not high, f"{len(high)} 处")
 
     # 用户名绝不能出现在任何地方（包括文档、诊断脚本）
+    #
+    # ⚠ 2026-10-05 修（CI 上必挂的坑，本机用"全新 clone"复现出来的）：
+    #   这条原来是"裸词出现即算泄漏"。在 GitHub Actions 上 `expanduser("~")`
+    #   是 `/home/runner` → 用户名 **runner**，而代码/文档里到处都有 `runner`
+    #   这个词（MinerU 的 runner 参数、测试里的 runner…）→ 每次 CI 都红，
+    #   报的却是"隐私泄漏"，看日志要绕半天。
+    #   现在分两档：
+    #     · 通用名（runner/build/ubuntu/root/…）或跑在 CI 里 → 只认**路径上下文**
+    #       （`\Users\<名>`、`/home/<名>`、`/Users/<名>`）——真泄漏（机器路径）
+    #       照样抓得住，普通单词不再误报；
+    #     · 其它名字 → 保持原来的严格规则（裸词出现即泄漏）。
+    #   降级时**打印说明**，不静默。
     user = os.path.basename(os.path.expanduser("~"))
+    GENERIC_USERS = {"public", "user", "admin", "runner", "build", "ubuntu",
+                     "root", "circleci", "vsts", "gcp", "vscode", "test",
+                     "user1", "administrator"}
+    in_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+    loose = in_ci or (user or "").lower() in GENERIC_USERS
     hits: list[str] = []
-    if user and user.lower() not in ("public", "user", "admin"):
+    if user and user.lower() != "public":
+        ctx = re.compile(r"(?:\\\\Users\\\\|/home/|/Users/)" + re.escape(user),
+                         re.I)
         for p in iter_files():
             rel = os.path.relpath(p, ROOT)
             for i, ln in enumerate(read(p).split("\n"), 1):
-                if user in ln:
+                hit = bool(ctx.search(ln)) if loose else (user in ln)
+                if hit:
                     hits.append(f"{rel}:{i}  {ln.strip()[:80]}")
+    if loose:
+        print(f"  ℹ 用户名「{user}」按通用名/CI 处理：只在路径上下文里算泄漏"
+              f"（{'CI 环境' if in_ci else '命中通用名表'}）")
     check(f"全仓库没有本机用户名（{user}）", not hits,
           f"{len(hits)} 处：{hits[:2]}")
 
