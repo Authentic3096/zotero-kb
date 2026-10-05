@@ -43,6 +43,55 @@ Object.assign(ZoteroKB, {
    */
   KB_XHTML: "http://www.w3.org/1999/xhtml",
 
+  /**
+   * 把一段 HTML **片段**灌进容器（对两种解析器都稳）。
+   *
+   * ⚠ 为什么不用 `el.innerHTML = html`（2026-10-05 实测）：
+   *   主窗口是 XUL 文档。往 XHTML 命名空间的元素设 innerHTML 会按 HTML 解析、
+   *   往 XUL 命名空间的元素设则按 **XML** 解析 —— 后者遇到一点不合规（未闭合的
+   *   `<br/>`、XML 不认识的实体、MathML 里的边角）就**整段丢弃且不报错**
+   *   （现象：提示行写着"读了 34414 字"、正文一片空白；用户反馈「每页正文完全
+   *   打不开，每一篇都是」，而带 32 个 `<math>` 的正文与 0 个 `<math>` 的摘要
+   *   表现不同，正好对上）。
+   * 现在统一：DOMParser 按 text/html 解析 → importNode 到本容器。
+   * HTML 解析是**宽容**的，片段里有什么都能落地；解析不了也只会少几个节点，
+   * 不会整段消失。真出异常时把异常文字显示出来（下次一眼看到原因）。
+   */
+  kbviewSetHtml: function (doc, el, text) {
+    try {
+      if (typeof DOMParser === "function") {
+        const parsed = new DOMParser().parseFromString(
+          "<div id='kbroot'>" + String(text == null ? "" : text) + "</div>",
+          "text/html");
+        const root = parsed.getElementById("kbroot");
+        if (root) {
+          el.textContent = "";
+          const frag = doc.createDocumentFragment();
+          while (root.firstChild) {
+            frag.appendChild(doc.importNode(root.firstChild, true));
+          }
+          el.appendChild(frag);
+          return true;
+        }
+      }
+    } catch (e) {
+      // 落到下面的兜底
+      try {
+        el.textContent = "（渲染出错：" + e + "）";
+      } catch (e2) { /* ignore */ }
+      return false;
+    }
+    try {
+      el.innerHTML = String(text == null ? "" : text);
+      return true;
+    } catch (e) {
+      try {
+        el.textContent = "（渲染出错：" + e + "）";
+      } catch (e2) { /* ignore */ }
+      return false;
+    }
+  },
+
   /** 建一个 XHTML 命名空间的元素（窗格里凡是会装 HTML 的都该用它）。 */
   kbviewEl: function (doc, tag) {
     return doc.createElementNS(ZoteroKB.KB_XHTML, tag);
@@ -184,7 +233,9 @@ Object.assign(ZoteroKB, {
     bar.setAttribute("style", "display:flex; gap:6px; align-items:center;"
       + " flex-wrap:nowrap; margin-bottom:4px;");
     const sel = self.kbviewEl(doc, "select");
-    sel.setAttribute("style", "max-width:7.5em; flex:0 0 auto; white-space:nowrap;");
+    // ⚠ 原来写了 `max-width:7.5em` —— 窗格里 select 的字号继承自 Zotero（比 12px 大），
+    //   加上下拉箭头就截断成「摘要与要」（用户截图反馈）。改成按内容自适应。
+    sel.setAttribute("style", "flex:0 0 auto; white-space:nowrap;");
     for (const lv of (self.kbLevels() || [])) {
       const op = self.kbviewEl(doc, "option");
       op.setAttribute("value", lv.id);
@@ -264,8 +315,14 @@ Object.assign(ZoteroKB, {
         + (isHtml ? "　公式已渲染" : "　公式为原文文本");
       hint.textContent = hintText;
       hint.setAttribute("title", hintText);   // 截断了也能悬停看全
-      view.innerHTML = (isHtml ? text : self.md2html(text)) ||
-        "<p style='opacity:0.75'>（这一级是空的）</p>";
+      self.kbviewSetHtml(doc, view, (isHtml ? text : self.md2html(text))
+        || "<p style='opacity:0.75'>（这一级是空的）</p>");
+      // 注入后如果容器是空的（极少数解析失败），说明白，别让用户对着空白猜
+      if (!view.firstChild) {
+        self.kbviewSetHtml(doc, view,
+          "<p style='opacity:0.75'>这一级的内容没渲染出来（"
+          + text.length + " 字已读到）—— 请把这一行报给维护者。</p>");
+      }
     };
 
     sel.addEventListener("change", () => {
