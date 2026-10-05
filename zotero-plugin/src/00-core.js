@@ -105,6 +105,9 @@ var ZoteroKB = {
       // 能力探测：DSH 接上了没、本地模型可用不可用。右键菜单只读它的缓存
       // （菜单是同步构建的，等不了网络），所以这一步只负责"排上周期探测"。
       step("scheduleCapsRefresh", () => self.scheduleCapsRefresh());
+      // 右侧栏「知识库」分区（20-kbview.js）：只读展示 kb/ 里的 md。
+      // ⚠ 与已删掉的「窗格本地模型对话」不同 —— 那个是交互（调模型），这个是只读。
+      step("registerKbViewSection", () => self.registerKbViewSection());
       // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
       //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
       //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，

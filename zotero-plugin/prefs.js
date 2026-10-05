@@ -39,6 +39,10 @@ pref("extensions.zotero.zotero-kb.mineruGuideDone", false);
 // 可选组件（MinerU + Ollama）的安装引导是否已经问过
 pref("extensions.zotero.zotero-kb.optionalGuideDone", false);
 
+// 右侧栏「知识库」分区显示哪一级（20-kbview.js）。默认「分节纲要」
+// —— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
+pref("extensions.zotero.zotero-kb.kbviewLevel", "outline");
+
 // ---- 运行环境（三个位置互相独立，谁也不能由谁推算）
 //
 // 「项目目录」= 用户填的（权威来源，设置面板「运行环境」区）

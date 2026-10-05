@@ -23,3 +23,10 @@
 # Right now nothing in the plugin goes through ftl (settings.xhtml and the
 # context menus use literals). Add new strings here and run
 # tools/check_plugin.py.
+
+# 右侧栏「知识库」分区（20-kbview.js）：**只读**展示 kb/ 里的 md。
+#   ⚠ 这两条必须写成「只有名字、值留空」：registerSection 的 header/sidenav
+#     l10nID 是必填，而 Zotero 会对分区调 translateFragment —— 给了值反而
+#     会把节点内容抹掉（结果是标题空白 + body 拿不到，且不报错）。
+zotero-kb-kbview-header =
+zotero-kb-kbview-sidenav =

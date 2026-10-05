@@ -242,8 +242,63 @@ if (KB) {
   //
   // 桩里故意留着会记账的 ItemPaneManager / Reader（见上面的注释）：
   // 谁把 registerSection / registerEventListener 加回来，这两条立刻红。
-  check("没有注册任何内容窗格分区（窗格已删除）", calls.sections.length === 0,
+  // ⚠ 2026-10-05 晚改成正向：用户要求「把知识库 md 显示在右侧栏」→
+  //   现在**应该**注册一个分区（zotero-kb-kbview）。被删掉的是"对话窗格"，
+  //   所以上面那批 paneSend/chatOf 函数名仍然必须不存在（见 check_plugin）。
+  check("注册了「知识库」分区",
+    calls.sections.length === 1
+    && calls.sections[0].paneID === "zotero-kb-kbview",
     JSON.stringify(calls.sections.map((s) => s.paneID)));
+  const sec0 = calls.sections[0] || {};
+  check("分区 header/sidenav 的 l10nID 与图标都在（缺了就是标题空白且不报错）",
+    sec0.header && sec0.header.l10nID === "zotero-kb-kbview-header"
+    && sec0.header.icon && sec0.sidenav
+    && sec0.sidenav.l10nID === "zotero-kb-kbview-sidenav"
+    && sec0.sidenav.icon, JSON.stringify(sec0.header));
+  check("分区只对普通条目开启",
+    KB.kbviewEnabled({ isRegularItem: () => true }, "library") === true
+    && KB.kbviewEnabled({ isRegularItem: () => false }, "library") === false
+    && KB.kbviewEnabled({ isRegularItem: () => true }, "reader") === false);
+
+  // ---- md2html：知识库 md 里真正用到的语法（纯函数，最容易出错的一块）
+  const html = KB.md2html([
+    "# 标题", "", "**粗体**与*斜体*和`代码`", "", "- 项目一", "- 项目二", "",
+    "1. 第一", "2. 第二", "", "> 引用一行", "",
+    "$$E = m c^2$$", "", "[链接](https://x.test)", "", "![图注](images/a.jpg)",
+  ].join("\n"));
+  check("md2html 渲染标题", html.indexOf("font-weight:600") >= 0);
+  check("md2html 渲染粗体/斜体/代码",
+    html.indexOf("<strong>粗体</strong>") >= 0
+    && html.indexOf("<em>斜体</em>") >= 0
+    && html.indexOf("<code>代码</code>") >= 0, html.slice(0, 160));
+  check("md2html 渲染无序与有序列表",
+    html.indexOf("<ul") >= 0 && html.indexOf("<ol") >= 0
+    && html.indexOf("项目一") >= 0 && html.indexOf("第一") >= 0);
+  check("md2html 渲染引用", html.indexOf("<blockquote") >= 0);
+  check("md2html 渲染公式（原样保留 LaTeX 文本）",
+    html.indexOf("E = m c^2") >= 0 && html.indexOf("monospace") >= 0);
+  check("md2html 渲染链接、图片降级成图注",
+    html.indexOf('<a href="https://x.test">链接</a>') >= 0
+    && html.indexOf("[图：图注]") >= 0);
+  check("md2html 转义 HTML（笔记里有 < & 也不炸）",
+    KB.md2html("<b>x</b> & y").indexOf("&lt;b&gt;x&lt;/b&gt; &amp; y") >= 0,
+    KB.md2html("<b>x</b> & y"));
+  check("md2html 空输入不抛", KB.md2html("") === "" && KB.md2html(null) === "");
+
+  // ---- kbviewPickLevel：选中那一级没生成时按 纲要→摘要→档案 回退
+  check("kbviewOrder 把「分节纲要」排在摘要之前",
+    KB.kbviewOrder("fulltext").join(",") === "fulltext,outline,tldr,card",
+    KB.kbviewOrder("fulltext").join(","));
+  check("级别回退：首选不在就用纲要",
+    KB.kbviewPickLevel("fulltext", (id) => id === "outline").levelId === "outline");
+  check("级别回退会标出已回退",
+    KB.kbviewPickLevel("fulltext", (id) => id === "outline").fellBack === true);
+  check("首选就在时不回退",
+    KB.kbviewPickLevel("outline", (id) => id === "outline").fellBack === false);
+  check("一级都没有时返回空 + 不抛",
+    KB.kbviewPickLevel("outline", () => false).levelId === "");
+  check("存在性判断抛异常也不炸",
+    KB.kbviewPickLevel("outline", () => { throw new Error("x"); }).levelId === "");
   check("没有注册阅读器选中入口（随窗格一起删了）", calls.readers.length === 0,
     JSON.stringify(calls.readers.map((r) => r.type)));
   check("startup 里不再有窗格/退出提醒那三步",

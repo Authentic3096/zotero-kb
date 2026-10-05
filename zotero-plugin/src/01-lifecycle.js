@@ -22,6 +22,7 @@ Object.assign(ZoteroKB, {
     } catch (e) { /* ignore */ }
     try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
     try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
+      try { self.unregisterKbViewSection(); } catch (e) { /* ignore */ }
     // ⚠ 2026-10-05：内容窗格分区（ItemPaneManager）、退出提醒（quit guard）、
     //   以及"对话不落盘所以清掉 chatState"这三件事随窗格一起删了。
     //   阅读器的监听本来也不需要手动摘（registerEventListener 传了 pluginID）。
@@ -176,6 +177,9 @@ Object.assign(ZoteroKB, {
     // ⚠ 旧版本只有 mineruGuideDone；升级上来的用户那条 pref 还是 true，
     //   所以 19-mineruguide.js 里**两个都认**，不会二次打扰。
     optionalGuideDone: "zotero-kb.optionalGuideDone",
+    // 右侧栏「知识库」分区显示哪一级（2026-10-05 新增，见 20-kbview.js）。
+    // 默认「分节纲要」—— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
+    kbviewLevel: "zotero-kb.kbviewLevel",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },

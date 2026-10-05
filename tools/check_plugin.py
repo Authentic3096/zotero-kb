@@ -287,6 +287,12 @@ def main() -> int:
                 # 少任何一个都是"菜单该标的没标"，所以名字一起盯着。
                 "refreshCaps", "probeDsh", "probeLocalModel", "capLabel",
                 "scheduleCapsRefresh",
+                # 右侧栏「知识库」分区（20-kbview.js）—— 只读展示 kb/ 里的 md。
+                # 少任何一个分别是：分区不注册 / 卸载留空壳 / 渲染不出来 /
+                # 级别回退失灵 / markdown 渲染坏掉，所以名字一起盯着。
+                "registerKbViewSection", "unregisterKbViewSection",
+                "kbviewRender", "kbviewPickLevel", "kbviewOrder",
+                "kbviewPath", "md2html",
                 # ⚠ 2026-10-05：这里原来还盯着「内容窗格里的本地模型分区」
                 #   （19-itempane.js / 20-reader.js）那 25 个函数名。
                 #   用户要求把窗格整条链删掉，所以那批名字一起删了。
@@ -309,8 +315,11 @@ def main() -> int:
     gone = ("registerItemPane", "registerReaderEvents", "registerQuitGuard",
             "unregisterQuitGuard", "hasUnsavedChat", "chatOf",
             "paneRender", "panePaint", "paneSend", "paneClear",
-            "paraStart", "paraRender", "panePropose", "paneLocate",
-            "ItemPaneManager")
+            "paraStart", "paraRender", "panePropose", "paneLocate")
+    # ⚠ 2026-10-05 晚：`ItemPaneManager` 从这条反向清单里**移除了** ——
+    #   用户要求「把知识库里的 md 显示在右侧栏，方便和原文对照」，
+    #   而 registerSection 必然要调它。被删掉的是**对话窗格**（上面那批函数名），
+    #   不是这个 API 名字本身；新的 20-kbview.js 是只读展示，不发请求、不改数据。
     # ⚠ 只在**去掉注释之后**的代码里找：src 里现在有好几处注释在解释
     #   "这些东西被删了、别加回来"，注释里当然会出现这些名字 ——
     #   不剥注释的话这条检查会因为"写清楚了为什么删"而变红（本机实测撞到）。
