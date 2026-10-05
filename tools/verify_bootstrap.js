@@ -118,6 +118,10 @@ const Zotero = {
     },
   },
 
+  // ⚠ 2026-10-05：窗格（内容窗格里的「本地模型」分区）已按用户要求整条删除。
+  //   这两个桩**故意留着并记账**：谁把 registerSection / registerEventListener
+  //   加回来，末尾那两条反向 check 立刻红 —— 比"API 不存在时报错"更早、
+  //   也更明确地指出"你不该把它加回来"。
   ItemPaneManager: {
     registerSection(opts) { calls.sections.push(opts); return opts.paneID; },
     unregisterSection() { return true; },
@@ -208,14 +212,10 @@ if (KB) {
   }
 
   const steps = (calls.status.find((s) => s.startupSteps) || {}).startupSteps || "";
-  check("startup 各步全过（含 initLocale/registerItemPane/ReaderEvents/QuitGuard）",
-    steps.indexOf("FAIL") < 0
-    && steps.indexOf("initLocale=ok") >= 0
-    && steps.indexOf("registerItemPane=ok") >= 0
-    && steps.indexOf("registerReaderEvents=ok") >= 0
-    && steps.indexOf("registerQuitGuard=ok") >= 0, steps);
+  check("startup 各步全过（含 initLocale）",
+    steps.indexOf("FAIL") < 0 && steps.indexOf("initLocale=ok") >= 0, steps);
 
-  // ---- ⑤ 界面文案真的出得来（2026-10-05 用户报"按钮全是空框"）
+  // ---- ⑤ 界面文案那套挂载还在（2026-10-05 用户报"按钮全是空框"的根因）
   check("initLocale 把 ftl 挂到了窗口（MozXULElement.insertFTLIfNeeded）",
     calls.ftlLinks.includes(KB.FTL_FILE),
     JSON.stringify({ links: calls.ftlLinks, file: KB.FTL_FILE }));
@@ -228,104 +228,36 @@ if (KB) {
   const loc = (calls.status.find((s) => s.locale) || {}).locale || "";
   check("状态文件里记了 locale 那一步的结果（排查用）",
     loc.indexOf(KB.FTL_FILE) >= 0 && loc.indexOf("ok") >= 0, loc);
-  check("ftl 里确实有每条 id 的中文（zh-CN 与 en-US 的 id 集合一致）",
-    Object.keys(MSG_ZH).length > 20
-    && Object.keys(MSG_ZH).sort().join() === Object.keys(MSG_EN).sort().join(),
+  // ⚠ 2026-10-05：两个 ftl 现在是**空的**（那些文案全是内容窗格分区用的，
+  //   窗格删了就没人引用了）。所以这里只保留"两份 id 集合一致"这条 ——
+  //   以后往回加文案时，中英两份仍然要同步。
+  check("zh-CN 与 en-US 的 ftl id 集合一致（现在都是空集）",
+    Object.keys(MSG_ZH).sort().join() === Object.keys(MSG_EN).sort().join(),
     `zh=${Object.keys(MSG_ZH).length} en=${Object.keys(MSG_EN).length}`);
 
-  const sec = calls.sections[0];
-  check("注册了内容窗格分区", !!sec, "registerSection 没被调用");
-
-  // ---- 内容窗格自检（2026-10-05：注册太早会让 Zotero 建出"半成品"元素 ——
-  //      模板里的 <div data-type="body"> 不在，正文永远空白；自愈就是把这条
-  //      检出来并注销重注册）。这里只验"判定逻辑"，定时器在桩里不跑。
-  check("有 paneState / schedulePaneSelfCheck（自检入口）",
-    typeof KB.paneState === "function" && typeof KB.schedulePaneSelfCheck === "function");
-  const fakeSec = makeEl();
-  fakeSec.dataset = { pane: "zotero-kb\\@x-zotero-kb-chat" };
-  calls.fakeSections = [fakeSec];
-  check("没有 body div 时判为 broken（就是坏元素那条路）",
-    KB.paneState() === "broken", KB.paneState());
-  fakeSec.querySelector = () => ({ tagName: "html:div" });
-  check("有 body div 时判为 ok（不会误修）", KB.paneState() === "ok", KB.paneState());
-  calls.fakeSections = [];
-  check("条目窗格还没建出来时判为 wait（不误修）",
-    KB.paneState() === "wait", KB.paneState());
-
-  if (sec) {
-    check("paneID 与 PANE_ID 一致", sec.paneID === KB.PANE_ID, sec.paneID);
-    check("pluginID 是插件 id", sec.pluginID === "zotero-kb@authentic3096.github.io",
-      sec.pluginID);
-    check("header 有 l10nID 与 icon",
-      !!(sec.header && sec.header.l10nID && sec.header.icon),
-      JSON.stringify(sec.header));
-    check("sidenav 有 l10nID 与 icon（20×20 那版）",
-      !!(sec.sidenav && sec.sidenav.l10nID
-        && /sidenav-icon\.svg$/.test(sec.sidenav.icon)),
-      JSON.stringify(sec.sidenav));
-    check("onRender / onItemChange 都是函数",
-      typeof sec.onRender === "function" && typeof sec.onItemChange === "function");
-    check("sectionButtons 至少一个（清空对话）",
-      Array.isArray(sec.sectionButtons) && sec.sectionButtons.length > 0
-      && typeof sec.sectionButtons[0].onClick === "function");
-  }
-
-  const rd = calls.readers[0];
-  check("注册了阅读器选中事件", !!rd && rd.type === "renderTextSelectionPopup",
+  // ---- ⑥ 窗格那条链**必须不在**（2026-10-05 用户要求整条删除）
+  //
+  // 桩里故意留着会记账的 ItemPaneManager / Reader（见上面的注释）：
+  // 谁把 registerSection / registerEventListener 加回来，这两条立刻红。
+  check("没有注册任何内容窗格分区（窗格已删除）", calls.sections.length === 0,
+    JSON.stringify(calls.sections.map((s) => s.paneID)));
+  check("没有注册阅读器选中入口（随窗格一起删了）", calls.readers.length === 0,
     JSON.stringify(calls.readers.map((r) => r.type)));
-  check("注册时带了 pluginID（卸载时自动摘）",
-    !!rd && rd.pluginID === "zotero-kb@authentic3096.github.io",
-    rd && rd.pluginID);
-
-  check("观察了 quit-application-requested（退出提醒）",
-    calls.observers.some((o) => o.t === "quit-application-requested"),
+  check("startup 里不再有窗格/退出提醒那三步",
+    steps.indexOf("registerItemPane") < 0
+    && steps.indexOf("registerReaderEvents") < 0
+    && steps.indexOf("registerQuitGuard") < 0, steps);
+  check("插件对象上不再有窗格那批函数",
+    typeof KB.registerItemPane === "undefined"
+    && typeof KB.paneRender === "undefined"
+    && typeof KB.paneSend === "undefined"
+    && typeof KB.registerReaderEvents === "undefined"
+    && typeof KB.registerQuitGuard === "undefined",
+    ["registerItemPane", "paneRender", "paneSend", "registerReaderEvents",
+     "registerQuitGuard"].filter((f) => typeof KB[f] !== "undefined").join(","));
+  check("退出提醒的观察点也没了（quit-application-requested）",
+    !calls.observers.some((o) => o.t === "quit-application-requested"),
     JSON.stringify(calls.observers.map((o) => o.t)));
-
-  // onRender 真跑一遍：桩 doc/body，看它建了哪些控件、有没有抛
-  if (sec && sec.onRender) {
-    const body = makeEl();
-    try {
-      sec.onRender({ doc, body, item: { key: "AAAA1111", isRegularItem: () => true } });
-      check("onRender 能建出界面", body.children.length >= 4,
-        "子元素 " + body.children.length);
-      const kinds = body.children.map((c) => c.attributes["data-l10n-id"] || c.tagName || "div");
-      check("输入框用了 FTL 的 placeholder 属性形式",
-        body.children.some((c) => c.attributes["data-l10n-attrs"] === "placeholder"),
-        JSON.stringify(kinds));
-      check("输入框的文案没有被写成内容（placeholder 那个坑）",
-        body.children.every((c) => !/placeholder-ask/.test(c._text || "")),
-        "textarea 的 textContent/textContent 里出现了提示语");
-
-      // ⚠ 这条就是用户截图报的那个毛病：桩环境的文档**不翻译**，
-      //   所以按钮必须有非空文字（来自 l10n() 的同步兜底），
-      //   而且文字要真的取自 ftl（不是 raw id）。
-      const buttons = [];
-      const collect = (el) => {
-        if (el.tagName === "button" || el.attributes["data-l10n-id"]) {
-          buttons.push(el);
-        }
-        (el.children || []).forEach(collect);
-      };
-      body.children.forEach(collect);
-      const labels = buttons
-        .filter((b) => /^zotero-kb-btn-/.test(b.attributes["data-l10n-id"] || ""))
-        .map((b) => String(b._text || ""));
-      check("每个按钮都有非空文字（不允许出现「空框按钮」）",
-        labels.length >= 5 && labels.every((t) => t.trim().length > 0),
-        JSON.stringify(labels));
-      check("按钮文字取自 ftl（不是 raw id）",
-        labels.every((t) => !/^zotero-kb-/.test(t)),
-        JSON.stringify(labels));
-      const ids = buttons
-        .map((b) => b.attributes["data-l10n-id"])
-        .filter((x) => /^zotero-kb-/.test(x || ""));
-      const missing = ids.filter((id) => !MSG_ZH[id]);
-      check("用到的每个 l10n id 都在 ftl 里有中文", missing.length === 0,
-        JSON.stringify(missing));
-    } catch (e) {
-      check("onRender 能建出界面", false, String(e));
-    }
-  }
 }
 
 console.log("\n通过 " + pass + "，失败 " + fail);

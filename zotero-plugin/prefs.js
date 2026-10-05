@@ -32,13 +32,8 @@ pref("extensions.zotero.zotero-kb.syncTarget", "");
 pref("extensions.zotero.zotero-kb.acquireConfirm", false);
 pref("extensions.zotero.zotero-kb.acquireAutoClassify", true);
 
-// ---- 内容窗格「本地模型」分区
-// 退出 Zotero 前提醒"这个窗格里的对话不会被保存"（对话框里带「下次不再提示」）。
-// 默认开：按需求对话**确实不落盘**，不提醒的话用户会以为聊过的东西还在。
-pref("extensions.zotero.zotero-kb.chatQuitWarn", true);
-// 聊天的上下文窗口（Ollama num_ctx）。默认 16384 才装得下"注入全文级"
-// （8192 大约只够一篇 6 页论文的一半）。
-pref("extensions.zotero.zotero-kb.chatNumCtx", 16384);
+// ---- 2026-10-05：chatQuitWarn / chatNumCtx 两个默认值随「内容窗格聊天」删除
+// （那个分区、19-itempane.js、20-reader.js 与七个端点都没了）。
 
 // ---- 运行环境（三个位置互相独立，谁也不能由谁推算）
 //

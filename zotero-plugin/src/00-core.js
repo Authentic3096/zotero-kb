@@ -49,7 +49,6 @@ var ZoteroKB = {
   weightColumnKey: null,// ItemTreeManager 返回的列 dataKey（注销时要）
   taskTimer: null,      // 任务轮询的 setTimeout 句柄
   _statusExtra: {},     // 状态文件的"累积字段"（见 writeStatusFile 的说明）
-  _paneCheckRunning: false,  // 内容窗格分区的自检是否在跑（防抖）
   taskPolling: false,   // 轮询开关（比 taskTimer 更能表达"是否在轮询"）
   taskBusy: false,      // 防止上一轮还没跑完就再来一轮
   tickCount: 0,         // 轮询心跳：触发次数（排查"定时器没跑"用）
@@ -99,12 +98,11 @@ var ZoteroKB = {
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
       step("startTaskPolling", () => self.startTaskPolling());
-      // 内容窗格里的「本地模型」分区（19-itempane.js）与阅读器里的选中入口
-      // （20-reader.js）。两个都**不能**让插件启动失败：老版本 Zotero 没有
-      // `ItemPaneManager` 时只写状态文件（见各自的实现）。
-      step("registerItemPane", () => self.registerItemPane());
-      step("registerReaderEvents", () => self.registerReaderEvents());
-      step("registerQuitGuard", () => self.registerQuitGuard());
+      // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
+      //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
+      //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，
+      //   要求整条链删掉，于是 19-itempane.js / 20-reader.js 与这三个 step
+      //   都不再存在。**别照着旧文档或旧提交把它们加回来。**
 
       // ⚠ 工具栏按钮与右键菜单**必须在这里也注册一次**，不能只靠 onMainWindowLoad。
       // 实测（用任务队列在 Zotero 内查证）：

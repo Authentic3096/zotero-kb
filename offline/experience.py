@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 # outcome 白名单（与 MCP 工具、learn.py 的 pending 一致）
 OUTCOMES = ("effective", "ineffective", "partial", "unknown")
 # source 白名单。dsh=DSH 对话里记的；llm=小模型抽取并经人确认的；
-# user=用户手填；zotero-chat=Zotero 窗格里那个本地模型聊天框记的。
+# user=用户手填。（原来的 zotero-chat 随"内容窗格聊天"一起删了，2026-10-05）
 SOURCES = ("dsh", "llm", "user", "zotero-chat")
 
 # 可编辑字段（顺序即界面/CLI 里的展示顺序）
@@ -639,6 +639,83 @@ def main(argv: list[str] | None = None) -> int:
     print("  自检结果：", "通过" if ok else "**不通过**")
     conn.close()
     return 0 if ok else 1
+
+
+# ---------------------------------------------------------------- 起草一条经验
+#
+# ⚠ 这个函数**原来在 offline/kbchat.py 里**（那是"Zotero 内容窗格聊天助手"的
+#   模块）。2026-10-05 用户要求把窗格那条链整个删掉，于是它被搬到这里 ——
+#   它跟聊天没关系，只是"把用户的大白话整理成一条经验草稿"，面板「经验库 →
+#   新建经验」的草稿按钮（端点 `/exp-draft`）一直在用它。
+#
+# 为什么 import 写在函数里：`judge` / `prompts` / `learn` 都在 offline 下，
+# 模块级 import 会绕出环（learn → experience 也成立）。懒加载最省事。
+
+
+def draft_experience(text: str, ref_id: int = 0, model: str = "",
+                     conn=None) -> dict:
+    """把用户的大白话整理成一条经验草稿（**不落库**）。
+
+    另外给出：相似的已有经验（用户点"其实是改这条"）、提到的文献候选
+    （**显示标题**，因为关联错文献＝权重加到别的论文上）。
+    """
+    import judge
+    import prompts as PR
+
+    res = judge.generate(PR.render("draft", text=text),
+                         system=PR.get("draft", "system"), model=model,
+                         json_mode=True, temperature=0.1, timeout=240.0)
+    if not res.get("ok"):
+        return {"ok": False, "error": res.get("error") or "模型调用失败"}
+    good, data = judge.parse_json(res.get("text") or "")
+    if not good or not isinstance(data, dict):
+        return {"ok": False, "error": "模型输出不是 JSON",
+                "raw": str(res.get("text"))[:300]}
+    draft = {
+        "asked": str(data.get("asked") or "")[:400],
+        "outcome": str(data.get("outcome") or "unknown").strip().lower(),
+        "method": str(data.get("method") or "")[:300],
+        "context": str(data.get("context") or "")[:300],
+        "reason": str(data.get("reason") or "")[:600],
+        "evidence": str(data.get("evidence") or "")[:200],
+        "tags": split_list(data.get("tags")),
+        "item_keys": split_list(data.get("item_keys")),
+        "similar_hint": str(data.get("similar_hint") or "")[:200],
+    }
+    if draft["outcome"] not in OUTCOMES:
+        draft["outcome"] = "unknown"
+    similar, items = [], []
+    if conn is not None:
+        try:
+            for row in conn.execute(
+                    "SELECT id, asked, outcome, item_keys FROM experience "
+                    "ORDER BY id DESC LIMIT 80"):
+                if str(row["asked"])[:12] and str(row["asked"])[:12] in text:
+                    similar.append({"id": row["id"], "asked": str(row["asked"])[:80],
+                                    "outcome": row["outcome"]})
+        except Exception:      # noqa: BLE001
+            pass
+        try:
+            import learn                      # 复用已有的"文本→文献 key"匹配
+            items = learn.match_items(text, conn)
+        except Exception:      # noqa: BLE001
+            items = []
+    titles = []
+    if conn is not None and (draft["item_keys"] or items):
+        keys = list(dict.fromkeys(draft["item_keys"] + items))
+        for k in keys:
+            row = None
+            try:
+                row = conn.execute("SELECT title FROM items WHERE key=?",
+                                   (k,)).fetchone()
+            except Exception:      # noqa: BLE001
+                row = None
+            titles.append({"key": k, "title": (row["title"] if row else "")[:80]})
+        draft["item_keys"] = [t["key"] for t in titles]
+    return {"ok": True, "draft": draft, "similar": similar[:5],
+            "items": titles, "ref_id": int(ref_id or 0),
+            "model": res.get("model") or "",
+            "note": "这是草稿。确认后才写库（写库时会重算权重）。"}
 
 
 if __name__ == "__main__":

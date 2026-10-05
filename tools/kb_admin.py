@@ -345,6 +345,84 @@ def cmd_edit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drop_legacy_tables(args: argparse.Namespace) -> int:
+    """删掉已废弃的三张表（逐段检查层）。
+
+    ## 为什么要单独一个命令、还要 --yes
+
+    这三张表（`para_check` / `para_override` / `fulltext_patch`）装的是
+    **用户确认过的劳动成果**（哪段查过、改了哪里），删了不可逆。
+    2026-10-05 用户拍板：「删就都删了」—— 逐段检测那条链（窗格入口、
+    七个端点、kbchat/paras、面板复核页）全没了，留着表也没人能产生或查看它。
+    所以给这个命令，而不是在 `connect()` 里悄悄 DROP：
+      · 默认**只预览**（列出表名与行数），`--yes` 才真删；
+      · 真删前**自动备份 `index.db`** 到 `kb/backups/`（`--no-backup` 可跳过）；
+      · 备份失败就不删（宁可留着表，也不能在没有退路的情况下销毁数据）。
+    """
+    legacy = ("para_check", "para_override", "fulltext_patch")
+    conn = S.connect(S.INDEX_DB)
+    try:
+        have = {}
+        for t in legacy:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (t,)).fetchone()
+            if not row:
+                continue
+            n = conn.execute(f"SELECT COUNT(*) AS n FROM {t}").fetchone()["n"]
+            have[t] = n
+        if not have:
+            print("这三张表都不在库里（新库不会再建）。什么都不用做。")
+            return 0
+        print("将要删除的表：")
+        for t, n in have.items():
+            print(f"  {t:18s} {n} 行")
+        if not args.yes:
+            print("\n这是**预览**（没删任何东西）。要真删：")
+            print("  python tools/kb_admin.py drop-legacy-tables --yes")
+            return 0
+
+        if not args.no_backup:
+            backup = _backup_index_db()
+            if not backup:
+                print("备份失败 —— 不删。检查 kb/backups 是否可写，"
+                      "或确认不要备份时加 --no-backup。")
+                return 2
+            print(f"已备份：{backup}")
+
+        for t in have:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        conn.commit()
+        print("已删除：" + "、".join(have))
+        print("（经验层、权重、切片、向量都没动）")
+        return 0
+    finally:
+        conn.close()
+
+
+def _backup_index_db() -> str:
+    """把 index.db 备份到 kb/backups/，返回路径；失败返回空串。"""
+    import sqlite3
+    from datetime import datetime as _dt
+
+    src = S.INDEX_DB
+    if not os.path.exists(src):
+        return ""
+    out_dir = os.path.join(os.path.dirname(src), "backups")
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        dst = os.path.join(out_dir, f"index-before-drop-{stamp}.db")
+        # 用 sqlite 自己的 backup API：WAL 模式下直接拷文件可能缺数据
+        with sqlite3.connect(src) as src_conn:
+            with sqlite3.connect(dst) as dst_conn:
+                src_conn.backup(dst_conn)
+        return dst
+    except Exception as exc:      # noqa: BLE001
+        print(f"备份出错：{type(exc).__name__}: {exc}")
+        return ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="经验层管理")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -387,6 +465,14 @@ def main() -> int:
     p_edit.add_argument("--evidence")
     p_edit.add_argument("--tags")
 
+    p_drop = sub.add_parser(
+        "drop-legacy-tables",
+        help="删掉已废弃的三张表（逐段检查层）；默认只预览，--yes 才真删")
+    p_drop.add_argument("--yes", action="store_true",
+                        help="真的 DROP（不传就只打印将要删什么）")
+    p_drop.add_argument("--no-backup", action="store_true",
+                        help="跳过删除前的 index.db 备份（不推荐）")
+
     args = parser.parse_args()
     if args.cmd == "list":
         return cmd_list(args)
@@ -398,6 +484,8 @@ def main() -> int:
         return cmd_add(args)
     if args.cmd == "edit":
         return cmd_edit(args)
+    if args.cmd == "drop-legacy-tables":
+        return cmd_drop_legacy_tables(args)
     if args.cmd == "export":
         return cmd_export(args)
     return cmd_import(args)

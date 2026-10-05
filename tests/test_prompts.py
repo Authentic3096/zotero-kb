@@ -158,9 +158,13 @@ check("extract 提示词明确排除工程/工具链",
       extract_sys[:80])
 check("extract 提示词说明为什么要紧（检索加权）",
       "检索加权" in extract_sys, extract_sys[:80])
-check("propose 提示词同样排除（窗格那条写入路径）",
-      "一律不算经验" in PR.get("propose", "system"),
-      PR.get("propose", "system")[:80])
+# ⚠ 2026-10-05：`chat` / `para` / `propose` 三条提示词随"内容窗格里的本地模型
+#   对话"一起删了（连同 kbchat.py 与那七个端点）。原来这里断言的是
+#   `propose` 的口径 —— 现在改成**反向钉住**：这三条不该再被加回来，
+#   否则谁把旧代码恢复一半，这里是第一道红灯。
+for _gone in ("chat", "para", "propose"):
+    check(f"已删提示词 {_gone} 不该回来", PR.get(_gone, "title") == "",
+          PR.get(_gone, "title")[:40])
 try:
     sys.path.insert(0, os.path.join(ROOT, "offline"))
     import learn as LN

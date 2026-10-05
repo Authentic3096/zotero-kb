@@ -206,11 +206,14 @@ class ExperienceEditor(tk.Toplevel):
                 import sys
                 if os.path.join(ROOT, "offline") not in sys.path:
                     sys.path.insert(0, os.path.join(ROOT, "offline"))
-                import kbchat
+                # ⚠ 2026-10-05：起草经验的实现从 offline/kbchat.py 搬到了
+                #   offline/experience.py（kbchat 那个模块随"内容窗格聊天"
+                #   一起删了）。语义没变：仍然只出草稿、不写库。
+                import experience as EXP
                 import schemas as S
                 conn = S.connect(S.INDEX_DB)
                 try:
-                    res = kbchat.draft_experience(text, conn=conn)
+                    res = EXP.draft_experience(text, conn=conn)
                 finally:
                     conn.close()
             except Exception as exc:      # noqa: BLE001

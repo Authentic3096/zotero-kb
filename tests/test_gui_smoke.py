@@ -104,7 +104,9 @@ check("提示词页有下拉框", getattr(app, "prompt_combo", None) is not None
 check("提示词页有 system 编辑框", getattr(app, "prompt_system", None) is not None)
 check("提示词页有 user 编辑框", getattr(app, "prompt_user", None) is not None)
 check("提示词页列出了全部提示词",
-      len(getattr(app, "prompt_combo", None).cget("values") or ()) >= 9,
+      # 2026-10-05：chat / para / propose 三条随"内容窗格聊天"一起删了，
+      # 9 条 → 6 条（tag / summary / extract / metafill / draft / chunks）
+      len(getattr(app, "prompt_combo", None).cget("values") or ()) >= 6,
       str(getattr(app, "prompt_combo", None).cget("values")))
 for fn in ("do_prompt_refresh", "do_prompt_load", "do_prompt_save",
            "do_prompt_reset", "do_prompt_probe"):
@@ -119,16 +121,17 @@ check("损坏查询页有检查按钮", getattr(app, "q_check_btn", None) is not
 check("损坏查询页有修复按钮", getattr(app, "q_fix_btn", None) is not None)
 check("损坏查询页有「重建+修复」按钮",
       getattr(app, "q_chain_btn", None) is not None)
-# 逐段检查的进度与正文修正（窗格那条链的产物）也要在面板里管得着：
-# 改错了要能撤销、进度乱了要能清空。
-check("损坏查询页有「逐段进度与正文修正」按钮",
-      getattr(app, "q_para_btn", None) is not None)
-check("有 do_para_review 回调", callable(getattr(app, "do_para_review", None)))
+# ⚠ 2026-10-05：这里原来断言「逐段进度与正文修正」按钮与 para_review 窗口。
+#   用户要求把"内容窗格里的本地模型对话"整条链删干净（窗格、七个端点、
+#   kbchat/paras、三张表、复核页），所以那些断言改成**反向钉住**：
+#   入口与模块都不该再存在。
+check("损坏查询页不再有逐段复核按钮",
+      getattr(app, "q_para_btn", None) is None)
 try:
-    from panels.para_review import ParaReview  # noqa: F401
-    check("逐段复核窗能 import", True)
-except Exception as exc:      # noqa: BLE001
-    check("逐段复核窗能 import", False, str(exc))
+    from panels import para_review  # noqa: F401
+    check("逐段复核模块（para_review）已删除", False, "还能 import 到")
+except Exception:  # noqa: BLE001
+    check("逐段复核模块（para_review）已删除", True)
 check("损坏查询页有图表开关", getattr(app, "q_figures_var", None) is not None)
 check("运行环境四个路径都有输入框（含可选的 MinerU）",
       len(getattr(app, "env_vars", {})) == 4,

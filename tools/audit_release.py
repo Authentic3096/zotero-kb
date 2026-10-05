@@ -36,8 +36,13 @@ import zipfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 不扫的目录：依赖、数据、备份、会话产物
+#
+# ⚠ `.mineru` 是**可选组件 MinerU 的本地安装**（scripts/install-mineru.ps1 装的：
+#   venv + 下下来的模型）。模型目录里有 tokenizer 的 vocab/merges 文件，
+#   里面成片都是"看着像 token 的随机串"，扫它只会刷出一屏误报
+#   （本机实测：几十条 token 误报全部来自 .mineru）。它跟 .venv 同类，跳过。
 SKIP_DIRS = {".venv", "kb", ".git", "__pycache__", ".tools",
-             "node_modules"}
+             ".mineru", "node_modules"}
 # 迁移备份目录（migrate_kb.py 生成，名带时间戳）——按前缀忽略，别写死某一个
 SKIP_PREFIXES = ("_kb-backup-",)
 # 只扫这些后缀（文本类）

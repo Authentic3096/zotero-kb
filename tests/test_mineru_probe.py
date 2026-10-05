@@ -72,16 +72,16 @@ model.vlm.engine.source: file
 """
 
 # 没装模型时（首次装完 mineru-kit、还没跑 models download）。
-SHOW_MISSING = """配置文件: C:\\Users\\x\\.mineru\\config.yaml
+SHOW_MISSING = """配置文件: C:\\mineru-home\\.mineru\\config.yaml
 配置文件存在: false
-model.base_dir: C:\\Users\\x\\.mineru\\models
+model.base_dir: C:\\mineru-home\\.mineru\\models
 生效的小模型后端: onnx
 生效的 VLM 引擎: llama-cpp
 仓库:
   MinerU-4_models_torch: 缺失
-(C:\\Users\\x\\.mineru\\models\\MinerU-4_models_torch)
+(C:\\mineru-home\\.mineru\\models\\MinerU-4_models_torch)
   MinerU-4_models_onnx: 缺失
-(C:\\Users\\x\\.mineru\\models\\MinerU-4_models_onnx)
+(C:\\mineru-home\\.mineru\\models\\MinerU-4_models_onnx)
 模型档位:
   basic: MinerU-4_models_onnx
   standard: MinerU-4_models_onnx, MinerU2.5-Pro-2605-1.2B-GGUF

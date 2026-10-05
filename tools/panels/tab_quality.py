@@ -79,11 +79,11 @@ class QualityTab:
         self.q_chain_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="看某篇明细",
                    command=self.do_quality_detail).pack(side="left", padx=6)
-        # 逐段检查的进度与确认过的正文修正（窗格里那条"全文级段落检测"的产物）。
-        # 挂在这一页：它们回答的也是"这篇的正文可不可用"。
-        self.q_para_btn = ttk.Button(btns, text="逐段进度与正文修正",
-                                     command=self.do_para_review)
-        self.q_para_btn.pack(side="left", padx=6)
+        # ⚠ 这里原来还有一个「逐段进度与正文修正」（para_review.py）。
+        #   2026-10-05 用户要求把"内容窗格里的本地模型对话"整条链删掉：
+        #   窗格、七个端点、kbchat/paras、以及 para_check / para_override /
+        #   fulltext_patch 三张表一起没了 —— 逐段检测的**入口与产物都没有了**，
+        #   所以这一页不再需要那个按钮。
 
         # ---- 图表提取开关
         #
@@ -412,27 +412,6 @@ class QualityTab:
             self.refresh_quality()
         threading.Thread(target=work, daemon=True,
                          name="kb-rebuild-repair").start()
-
-
-    def do_para_review(self):
-        """看选中那篇的**逐段检查进度与正文修正**（可撤销修正、可清空进度）。
-
-        为什么这两个动作都要留着：
-          · 修正改错了 —— 没有撤销就只能去改数据库；
-          · 进度乱了（正文重建过、指纹对不上）—— 没有清空就只能从头翻。
-        """
-        sel = self.q_tree.selection()
-        if not sel:
-            self.q_note.set("先在上面选一篇（双击也行），再看逐段进度")
-            return
-        vals = self.q_tree.item(sel[0], "values")
-        key = str(vals[0]).strip() if vals else ""
-        if not key:
-            self.q_note.set("这一行没有 key，先刷新统计")
-            return
-        from .para_review import ParaReview
-        win = ParaReview(self.root, self, key, on_done=self.refresh_quality)
-        win.focus_set()
 
 
     def do_quality_detail(self):

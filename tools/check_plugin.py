@@ -109,6 +109,19 @@ def rough_balance(src: str) -> list[str]:
     return problems
 
 
+def _strip_comments(src: str) -> str:
+    """把 JS 注释剥掉，只留代码。
+
+    为什么需要：有一条检查是"某个名字**不该**再出现"（窗格那条链删干净了没有），
+    而源码里恰恰有多处注释在解释"这些东西被删了、别加回来" —— 注释里当然会
+    出现这些名字。不剥注释的话，**写清楚为什么删反而会让检查变红**（本机实测）。
+    只做粗剥（`/* */` 与行首 `//`），够用且不会误伤字符串里的 URL 之类。
+    """
+    out = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    out = re.sub(r"^\s*//.*$", "", out, flags=re.M)
+    return out
+
+
 def main() -> int:
     print("=" * 64)
     print("Zotero 插件静态检查与打包")
@@ -266,23 +279,39 @@ def main() -> int:
                 # "菜单里少一项"或"点了没反应"，所以一起盯着。
                 "kbLevels", "kbLevelsMissing", "openKbPath", "openKbViaPanel",
                 "openKbLevel", "openKbFolder",
-                # 内容窗格「本地模型」分区（19-itempane.js）与阅读器选中入口
-                # （20-reader.js）。少任何一个都是"按钮点了没反应"或"窗格空白"，
-                # 而这类故障在 Zotero 里**没有任何报错** —— 所以名字一起盯着。
-                "registerItemPane", "registerReaderEvents", "registerQuitGuard",
-                "unregisterQuitGuard", "hasUnsavedChat", "chatOf", "panePaint",
-                "paneRender", "paneSend", "paneInject", "paneLocate",
-                "panePropose", "paneClear", "paraStart", "paraLoadPlan",
-                "paraShowCurrent", "paraCheckOne", "paraPrefetch", "paraRender",
-                "paraRenderButtons", "paraNext", "paraExit", "enterWriteMode",
-                "paintWrite", "confirmWrite", "onReaderSelection",
-                "readerItemKey", "readerLocate"]
+                # ⚠ 2026-10-05：这里原来还盯着「内容窗格里的本地模型分区」
+                #   （19-itempane.js / 20-reader.js）那 25 个函数名。
+                #   用户要求把窗格整条链删掉，所以那批名字一起删了。
+                #   **别照着旧提交加回来**；要确认它们真的没了，看下面那条
+                #   "不该出现的函数名"检查。
+                ]
     missing = [f for f in internal if f"{f}:" not in src]
     if missing:
         print(f"  [XX] 缺内部函数：{missing}")
         problems.extend(f"缺 {f}" for f in missing)
     else:
         print(f"  [OK] {len(internal)} 个内部函数齐备")
+
+    # 反向：窗格那条链的函数名**不该**再出现（删干净了没有）
+    #
+    # 为什么要有这条：删掉 19-itempane.js / 20-reader.js 之后，最容易出的问题是
+    # "只删了一半"—— 比如 startup 里还留着 registerItemPane() 的调用（一调就抛，
+    # 整个插件启动失败），或者端点删了、服务端 handler 还在。这里列一遍，
+    # 谁把半截代码恢复回来立刻红灯。
+    gone = ("registerItemPane", "registerReaderEvents", "registerQuitGuard",
+            "unregisterQuitGuard", "hasUnsavedChat", "chatOf",
+            "paneRender", "panePaint", "paneSend", "paneClear",
+            "paraStart", "paraRender", "panePropose", "paneLocate",
+            "ItemPaneManager")
+    # ⚠ 只在**去掉注释之后**的代码里找：src 里现在有好几处注释在解释
+    #   "这些东西被删了、别加回来"，注释里当然会出现这些名字 ——
+    #   不剥注释的话这条检查会因为"写清楚了为什么删"而变红（本机实测撞到）。
+    still = [f for f in gone if f in _strip_comments(src)]
+    if still:
+        print(f"  [XX] 窗格那条链应该已删，但代码里还有：{still}")
+        problems.extend(f"残留 {f}" for f in still)
+    else:
+        print(f"  [OK] 窗格 / 逐段检查那条链已删除（{len(gone)} 个名字都没了）")
 
     # ---------------------------------------------------------- 首选项键对齐
     #
@@ -384,7 +413,7 @@ def main() -> int:
             r"""paneButton\(\s*[^,\n]+,\s*['"]([^'"]+)['"]""", bsrc))
         used |= set(re.findall(r"""l10nText\(\s*['"]([^'"]+)['"]""", bsrc))
         # 还有"程序化取字符串"那条路：`formatValueSync("id")` —— 忘了在 ftl 里定义时
-        # 界面上同样是空白（`zotero-kb-pane-title` 就是这么加的，见 19-itempane.js）。
+        # 界面上同样是空白（2026-10-05 那版分区标题就是这么加的）。
         used |= set(re.findall(
             r"""formatValueSync?\(\s*['"]([^'"]+)['"]""", bsrc))
         for key in sorted(used):
@@ -432,7 +461,7 @@ def main() -> int:
     # 用 Node 的 vm 把真机 bootstrap.js 跑起来，断言"分区注册的字段齐、阅读器
     # 事件注册了、退出观察挂上了、onRender 能建出界面"。
     # 为什么值得单独跑一遍：插件里"字段名写错/名字写错"在 Zotero 里**没有任何
-    # 报错**，只表现为"按钮点了没反应"或"窗格空白" —— 而真机验证要重启 Zotero。
+    # 报错**，只表现为"点了没反应"或"界面空白" —— 而真机验证要重启 Zotero。
     print("\n[桩环境结构验证]")
     # 找 node：**不写死任何本机路径**（这是要公开的仓库，audit_release 会拦）。
     # 顺序：环境变量 → PATH → 标准安装位置 → DSH 运行时自带的那个
@@ -505,7 +534,7 @@ def main() -> int:
         if ftl_in_xpi:
             print(f"  [OK] 包内本地化：{', '.join(sorted(ftl_in_xpi))}")
         else:
-            print("  [XX] 包里没有 locale/**/*.ftl —— 内容窗格的分区标题会是空白")
+            print("  [XX] 包里没有 locale/**/*.ftl —— 需要界面文案时无处安放")
             problems.append("xpi 缺 locale/**/*.ftl")
         xpi_for_paths = xpi
 

@@ -17,11 +17,8 @@ Object.assign(ZoteroKB, {
     defaults[this.PREFS.categories] = "";   // 空=用知识库现有的
     defaults[this.PREFS.acquireConfirm] = false;
     defaults[this.PREFS.acquireAutoClassify] = true;
-    // 内容窗格「本地模型」分区：退出前提醒"对话不会保存"（对话框带"下次不再提示"）
-    defaults[this.PREFS.chatQuitWarn] = true;
-    // 聊天的上下文窗口（Ollama 的 num_ctx）。16384 才装得下"注入全文级"：
-    // 默认的 8192 大约只够一篇 6 页论文的一半。
-    defaults[this.PREFS.chatNumCtx] = 16384;
+    // ⚠ 2026-10-05：chatQuitWarn / chatNumCtx 随「内容窗格聊天」一起删了
+    //   （见 00-core.js 的 startup 里那段说明）。prefs.js 的默认值也删了。
     for (const [key, value] of Object.entries(defaults)) {
       try {
         if (Zotero.Prefs.get(key) === undefined) {

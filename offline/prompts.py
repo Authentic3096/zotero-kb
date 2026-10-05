@@ -162,109 +162,11 @@ pages（起止页码）{creator_hint}。
   "evidence": {"date": "", "DOI": "", "volume": "", "issue": "", "pages": "",
                 "creators": ""}}""",
     },
-    "chat": {
-        "title": "窗格聊天（按需注入上下文后的问答）",
-        "where": "Zotero 右侧内容窗格「本地模型」分区的普通对话",
-        "placeholders": ["context", "history", "question"],
-        "keys": [],
-        "system": (
-            "你是这篇文献的阅读助手，只在用户给的上下文范围内回答。"
-            "上下文没写的内容不要编；不确定就直说「这篇里没有」。"
-            "回答用中文、简洁、直接给结论，不要客套。"
-            "如果用户的问题提示某个结论应当记进经验库或修正正文，"
-            "**不要自行写入** —— 只用一句话说明你建议记什么、改哪里，"
-            "由界面带着用户确认。"
-        ),
-        "user": """【这篇文献的上下文】
-{context}
-
-【已经聊过的】（可能为空）
-{history}
-
-【用户现在问】
-{question}""",
-    },
-    "para": {
-        "title": "逐段检查（提取损坏 / 边界 / 顺序 / 碎片）",
-        "where": "窗格里「全文级段落检测」逐段调用；面板「损坏查询」复核也用它",
-        "placeholders": ["page", "signals", "prev_tail", "next_head", "text"],
-        "keys": ["verdict", "kind", "reason"],
-        # ⚠ 这一条的每一条判据都必须**可核对**：界面会把客观信号与结论并排显示。
-        #   历史上吃过一次亏：让模型对每个切片"读着像不像句子"打分，
-        #   结果判错 60%，同一模型对同一文本给出相反结论（见 check_chunks.py 开头）。
-        "system": (
-            "你在核对一篇论文的**正文提取质量**。一次只看一段，逐条判断下面四件事：\n"
-            "1. 提取损坏：有没有乱码、符号汤（如矩阵碎片 `⎡BX BY BZ⎦`）、英文断词、"
-            "页眉页脚混入正文？\n"
-            "2. 段落边界：这一段和上一段/下一段是不是**本来同一段**被拆开了"
-            "（典型是跨页，或上一段末尾是小写/逗号）？或者这一段里是不是**粘了"
-            "两段**（中间有明显的另一段开头）？\n"
-            "3. 阅读顺序：双栏排版有没有被读成交错（句子在栏宽处硬切、"
-            "上下句接不上、页眉页码夹在段中间）？\n"
-            "4. 碎片混入：公式、表格碎片、参考文献碎片是不是被当成正文了？\n\n"
-            "只给**最小修正**：能替换几个字就别重写整段。"
-            "拿不准时 verdict 给 ok 或 unsure —— 宁可放过，也不要把正常的"
-            "学术文本（公式、参考文献、表格、封面）判成坏的。\n"
-            "输出 JSON。"
-        ),
-        "user": """页码：p.{page}
-
-【服务端算出来的客观信号】（不依赖模型，可与你的结论对照）
-{signals}
-
-【上一段末尾】
-{prev_tail}
-
-【本段】
-{text}
-
-【下一段开头】
-{next_head}
-
-输出 JSON：
-{{"verdict": "ok|suspect|damaged|unsure",
-  "kind": "text|boundary|order|fragment|none",
-  "join_with": "prev|next|",
-  "before": "要被替换掉的那一小段原文（没有就空串）",
-  "after": "替换成什么（没有就空串）",
-  "reason": "一句话理由（要能对应上面某条信号）"}}""",
-    },
-    "propose": {
-        "title": "把对话里「该记的东西」整理成写入建议",
-        "where": "窗格的写入模式（用户确认后才落库）",
-        "placeholders": ["instruction", "key", "transcript"],
-        "keys": ["experiences", "weights", "patches"],
-        # ⚠ 这是"经验库会被污染"的那条路径，口径必须收得很紧：
-        #   经验库参与**检索加权**，工具链/工程类的记录进错地方会让排序变脏。
-        "system": (
-            "你在把一段关于某篇文献的讨论，整理成**可以落库的改动建议**。"
-            "三条硬口径：\n"
-            "1. 经验只记**与文献内容或研究方法有关**的尝试与结论"
-            "（用了什么方法、结果如何、为什么）。"
-            "工程/工具链/配置/安装/打包这类「关于知识库自己怎么搭」的内容"
-            "**一律不算经验**，不要放进 experiences。\n"
-            "2. 只记讨论里**明确写出**的结论；没写的留空，绝不推测。"
-            "outcome 只能 effective / ineffective / partial / unknown，"
-            "没明确结论就用 unknown。\n"
-            "3. 正文修正只给**最小改动**（before 必须是原文里能逐一找到的片段）。"
-            "找不到确切原文就不要给 patches。\n"
-            "输出 JSON，没有内容的数组给空数组。"
-        ),
-        "user": """文献 key：{key}
-用户的意图：{instruction}
-
-【讨论片段】
-{transcript}
-
-输出 JSON：
-{{"experiences": [{{"asked": "", "outcome": "unknown", "method": "",
-                 "reason": "", "context": "", "evidence": "", "tags": [],
-                 "item_keys": []}}],
-  "weights": [{{"key": "", "pinned": null, "manual": null, "note": ""}}],
-  "patches": [{{"page": 0, "kind": "text", "before": "", "after": "",
-               "note": ""}}],
-  "joins": [{{"page": 0, "para_index": 0, "with_prev": 1, "reason": ""}}]}}""",
-    },
+    # ⚠ 2026-10-05：下面三条随"内容窗格里的本地模型对话"一起删了 ——
+    #   `chat`（窗格问答）、`para`（逐段检查）、`propose`（把讨论整理成写入
+    #   建议）。它们的调用方（offline/kbchat.py、七个端点、窗格 UI）都没了。
+    #   别照着旧文档/旧注释加回来。活下来的是：tag / summary / extract /
+    #   metafill / draft / chunks。
     "draft": {
         "title": "把用户的大白话整理成一条经验",
         "where": "面板「经验库 → 修改/增添经验」（有本地模型时）",
@@ -334,20 +236,13 @@ SAMPLES: dict[str, dict] = {
     "extract": {"text": "我试了位置-磁矩分离，误差从 19.78% 降到 0.000000%。"},
     "metafill": {"text": "示例首页正文：2025 年 12 月，DOI: 10.1234/abc.2025.001",
                  "creator_hint": "", "creator_rules": ""},
-    "chat": {"context": "【摘要级视图】本文提出…", "history": "（还没聊过）",
-             "question": "这篇用了什么方法？"},
-    "para": {"page": 1, "signals": "symbol_ratio=0.02; cjk_ratio=0.9",
-             "prev_tail": "（这一页的第一段）", "next_head": "（这一页的最后一段）",
-             "text": "示例段落：本文提出了一种分离求解方法，实测误差更小。"},
-    "propose": {"key": "AAAA1111", "instruction": "把这次讨论整理一下",
-                "transcript": "我：分离求解试过了，误差小很多。\n模型：那可以记一条经验。"},
+    # ⚠ chat / para / propose 的样例随那三条提示词一起删了（2026-10-05）
     "draft": {"text": "我用分离求解试了一下，误差比联合反演小很多。"},
     "chunks": {"fragments": "[片段 1]\n示例正文，看起来是正常的中文段落。"},
 }
 
 # 哪些提示词要求模型回 JSON（试跑时用 json_mode，并展示解析结果）
-JSON_PROMPTS = ("tag", "summary", "extract", "metafill", "para", "propose",
-                "draft", "chunks")
+JSON_PROMPTS = ("tag", "summary", "extract", "metafill", "draft", "chunks")
 
 
 def probe(pid: str, model: str = "") -> dict:
