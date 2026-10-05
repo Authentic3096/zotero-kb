@@ -6186,6 +6186,22 @@ Object.assign(ZoteroKB, {
   KBVIEW_ID: "zotero-kb-kbview",
   kbviewPaneID: null,
 
+  /**
+   * XHTML 命名空间。
+   *
+   * ⚠ 这个常量是**修 bug 用的**（2026-10-05 实测）：Zotero 主窗口是 XUL 文档，
+   *   `doc.createElement("div")` 建出来的元素在 **XUL 命名空间**里 —— 给它设
+   *   `innerHTML` 时按 **XML** 解析：片段里只要有一个没闭合的标签（比如 `<br>`），
+   *   **整段内容会被丢掉**，而且不报错（用户看到的正是"提示行显示读了 34414 字、
+   *   正文一片空白"）。用 `createElementNS(XHTML, …)` 建元素就会按 HTML 解析。
+   */
+  KB_XHTML: "http://www.w3.org/1999/xhtml",
+
+  /** 建一个 XHTML 命名空间的元素（窗格里凡是会装 HTML 的都该用它）。 */
+  kbviewEl: function (doc, tag) {
+    return doc.createElementNS(ZoteroKB.KB_XHTML, tag);
+  },
+
   /** 注册分区（缺 ItemPaneManager 就如实记状态，不抛）。 */
   registerKbViewSection: function () {
     var self = ZoteroKB;
@@ -6311,31 +6327,36 @@ Object.assign(ZoteroKB, {
       if (old) old.remove();
     } catch (e) { /* ignore */ }
 
-    const wrap = doc.createElement("div");
+    const wrap = self.kbviewEl(doc, "div");
     wrap.className = "zotero-kb-kbview";
     wrap.setAttribute("style", "padding:4px 6px; font-size:12px; line-height:1.5;");
 
-    const bar = doc.createElement("div");
+    // 工具条：**单行不换行**（用户反馈：提示文字换行后"重新读取"被挤到第二行）。
+    // 做法：select/按钮 nowrap，提示占剩余宽度并省略号截断（min-width:0 是关键，
+    // flex 子项默认 min-width:auto 不会收缩）。
+    const bar = self.kbviewEl(doc, "div");
     bar.setAttribute("style", "display:flex; gap:6px; align-items:center;"
-      + " margin-bottom:4px;");
-    const sel = doc.createElement("select");
-    sel.setAttribute("style", "max-width:60%;");
+      + " flex-wrap:nowrap; margin-bottom:4px;");
+    const sel = self.kbviewEl(doc, "select");
+    sel.setAttribute("style", "max-width:7.5em; flex:0 0 auto; white-space:nowrap;");
     for (const lv of (self.kbLevels() || [])) {
-      const op = doc.createElement("option");
+      const op = self.kbviewEl(doc, "option");
       op.setAttribute("value", lv.id);
       op.textContent = lv.label;
       sel.appendChild(op);
     }
     sel.value = self.kbviewLevel();
-    const btn = doc.createElement("button");
+    const btn = self.kbviewEl(doc, "button");
     btn.textContent = "重新读取";
-    btn.setAttribute("style", "padding:1px 6px;");
-    const hint = doc.createElement("span");
-    hint.setAttribute("style", "opacity:0.65; font-size:11px;");
+    btn.setAttribute("style", "padding:1px 6px; flex:0 0 auto; white-space:nowrap;");
+    const hint = self.kbviewEl(doc, "span");
+    hint.setAttribute("style", "opacity:0.65; font-size:11px; flex:1 1 auto;"
+      + " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;");
+    hint.setAttribute("title", "");
     bar.append(sel, btn, hint);
     wrap.append(bar);
 
-    const view = doc.createElement("div");
+    const view = self.kbviewEl(doc, "div");
     view.className = "zotero-kb-kbview-body";
     wrap.append(view);
     body.append(wrap);
@@ -6351,14 +6372,14 @@ Object.assign(ZoteroKB, {
         prefer, (id) => !!(byId[id] && byId[id].exists));
       if (!picked.levelId) {
         view.textContent = "";
-        const p = doc.createElement("div");
+        const p = self.kbviewEl(doc, "div");
         p.setAttribute("style", "opacity:0.75;");
         // 把"知识库目录 + 试过的路径"一并显示：用户反馈"有的文献打不开"时，
         // 这一行就能看出是"没建索引"还是"知识库位置没定下来"（省一轮来回）。
         p.textContent = "知识库里还没有这一篇的任何分级文件。"
           + "先在管理面板「手动更新」建一次索引，"
           + "或用右键菜单「重建本条目知识库」。";
-        const probe = doc.createElement("div");
+        const probe = self.kbviewEl(doc, "div");
         probe.setAttribute("style", "opacity:0.6; font-size:11px; margin-top:4px;"
           + " word-break:break-all;");
         const kb = self.kbDir();
@@ -6391,9 +6412,12 @@ Object.assign(ZoteroKB, {
         }
       }
       const lvLabel = (byId[picked.levelId] || {}).label || picked.levelId;
-      hint.textContent = lvLabel + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
+      const hintText = lvLabel
+        + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
         + "　" + text.length + " 字"
         + (isHtml ? "　公式已渲染" : "　公式为原文文本");
+      hint.textContent = hintText;
+      hint.setAttribute("title", hintText);   // 截断了也能悬停看全
       view.innerHTML = (isHtml ? text : self.md2html(text)) ||
         "<p style='opacity:0.75'>（这一级是空的）</p>";
     };

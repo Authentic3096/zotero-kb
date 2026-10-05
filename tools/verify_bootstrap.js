@@ -268,7 +268,20 @@ if (KB) {
   // .html（公式已渲染成 MathML）优先、没有才回退 md
   const kvSrc = fs.readFileSync(
     path.join(PLUGIN, "src", "20-kbview.js"), "utf8");
-    check("窗格优先读 .html（公式渲染），没有才回退 md",
+    // ⚠ 2026-10-05 实测的坑：Zotero 主窗口是 XUL 文档，`doc.createElement("div")`
+  //   建出来的元素在 XUL 命名空间 → 给它设 innerHTML 时按 **XML** 解析，
+  //   片段里一个没闭合的标签（`<br>`）就让**整段被丢弃**（提示行显示"读了 34414 字"
+  //   而正文空白）。必须用 createElementNS(XHTML, …)。
+  check("窗格容器用 XHTML 命名空间（否则 HTML 片段会被整段丢弃）",
+    kvSrc.indexOf("createElementNS") >= 0
+    && kvSrc.indexOf("KB_XHTML") >= 0
+    && kvSrc.indexOf("kbviewEl(doc, \"div\")") >= 0);
+  check("工具条单行不换行（提示过长不再把按钮挤到第二行）",
+    kvSrc.indexOf("flex-wrap:nowrap") >= 0
+    && kvSrc.indexOf("text-overflow:ellipsis") >= 0);
+  check("提示行同时写进 title（截断了也能悬停看全）",
+    kvSrc.indexOf('hint.setAttribute("title", hintText)') >= 0);
+  check("窗格优先读 .html（公式渲染），没有才回退 md",
     kvSrc.indexOf('.md$/i, ".html"') >= 0
     && kvSrc.indexOf("公式已渲染") >= 0);
 

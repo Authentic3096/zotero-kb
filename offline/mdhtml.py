@@ -102,7 +102,9 @@ def render(md_text: str) -> str:
     def flush_buf():
         nonlocal buf
         if buf:
-            out.append("<p>" + "<br>".join(buf) + "</p>")
+            # ⚠ 用自闭合的 `<br/>`：窗格那边可能按 XML 解析（XUL 文档里
+            #   非 XHTML 命名空间的 innerHTML），未闭合的标签会让**整段被丢弃**。
+            out.append("<p>" + "<br/>".join(buf) + "</p>")
             buf = []
 
     def close_list():
