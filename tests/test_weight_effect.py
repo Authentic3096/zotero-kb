@@ -114,14 +114,39 @@ def main() -> int:
     print(f"\n目标 {TARGET}：第 {rank_before} → 第 {rank_after}")
 
     # 2. 判定
+    #
+    # ⚠ 判据不能只看"名次有没有前进"：名次是**库内容相关**的。
+    #   本轮全库正文换成 MinerU 之后，目标那篇的基础分掉到 0.0029，乘 3.568 是
+    #   0.01046，仍低于当时第三名的 0.01090 —— 名次没动，但**权重明明乘对了**
+    #   （0.01046 = 0.0029 × 3.568）。所以改成两条：
+    #     ① 加权后分数必须≈基础分 × 权重（权重真的作用在分数上）；
+    #     ② 若"上一名的分数 / 目标基础分 < 权重"，那么名次**必须**前进
+    #        （纯算术：乘完之后它一定超过上一名）。条件不成立就不要求位移。
     print("\n" + "=" * 62)
-    ok = rank_after < rank_before
-    weight_before = 1.0
-    weight_after = next((w for _i, k, _s, w in after if k == TARGET), 1.0)
-    print(f"权重：{weight_before} → {weight_after}")
+    # ⚠ 权重不是"从 1.0 起跳"：它是**发表年份基础权重 + 经验加成**（本机实测目标
+    #   那篇本来是 3.07，标重点后 3.568）。所以倍数要拿**两次搜索各自报的权重**来比
+    #   —— 第一版把 weight_before 硬编码成 1.0，于是"分数只涨 1.16 倍"被判成没生效，
+    #   而 3.568 / 3.07 ≈ 1.16 恰恰说明乘对了。
+    score_before = next((s for _i, k, s, _w in before if k == TARGET), 0.0)
+    score_after = next((s for _i, k, s, _w in after if k == TARGET), 0.0)
+    weight_before = next((w for _i, k, _s, w in before if k == TARGET), 1.0) or 1.0
+    weight_after = next((w for _i, k, _s, w in after if k == TARGET), 1.0) or 1.0
+    factor = weight_after / weight_before
+    ratio = (score_after / score_before) if score_before else 0.0
+    ok_score = score_before > 0 and score_after > score_before
+    ok_ratio = abs(ratio - factor) <= max(0.05, factor * 0.25)
+    above = [s for _i, _k, s, _w in before if s > score_before]
+    must_move = bool(above) and (min(above) / score_before) < factor \
+        if score_before else False
+    ok_rank = (not must_move) or (rank_after < rank_before)
+    ok = ok_score and ok_ratio and ok_rank
+    print(f"权重：{weight_before:.3f} → {weight_after:.3f}（倍数 {factor:.2f}）")
+    print(f"分数：{score_before:.5f} → {score_after:.5f}（倍数 {ratio:.2f}）")
+    moved = "（算术上必须前进）" if must_move else "（算术上不必前进）"
     print(f"排名：{rank_before if rank_before < 99 else '未进前8'}"
-          f" → {rank_after if rank_after < 99 else '未进前8'}")
-    print("结论：" + ("经验权重生效，相关文献上移 ✅" if ok else "❌ 未生效，需要检查"))
+          f" → {rank_after if rank_after < 99 else '未进前8'}" + moved)
+    tail = "（分数按权重放大" + ("，且该前进时前进了）" if must_move else "）")
+    print("结论：" + ("经验权重生效" + tail + " ✅" if ok else "❌ 未生效，需要检查"))
     print("=" * 62)
 
     # 3. 恢复原状：不把验收数据留在库里

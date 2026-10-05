@@ -924,8 +924,10 @@ def fulltext_for(item, tier: str = "basic", kb_dir: str = "", force: bool = Fals
             except Exception:      # noqa: BLE001
                 pass
         return ([], "")
-    src = res["source"] + ("+cached" if res.get("cached") else "")
-    return (list(res["pages"]), src)
+    # ⚠ 不往来源里加 "+cached"：`items.fulltext_src` 记的是**文本从哪来**，
+    #   "这次命中了指纹"是**本次运行**的统计（MANIFEST 的 `mineru_cached` 记它）。
+    #   带后缀会让这一列永久留着 `mineru-basic+cached` 这种运行态噪声。
+    return (list(res["pages"]), res["source"])
 
 
 def status_for(key: str, kb_dir: str = "") -> dict:

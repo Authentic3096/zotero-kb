@@ -71,6 +71,29 @@ def sample_title(offset: int = 0):
     return rows[offset % len(rows)][0] or ""
 
 
+def sample_item(offset: int = 0):
+    """取一条真实文献的 `(key, title)`。没有就返回 `("", "")`。
+
+    为什么要它：断言要**跟着库内容走** —— 比如"标重点后这篇更靠前"，
+    被测的 key、查询词、期望在结果里出现的片段，必须取自**同一篇**，
+    否则库里内容一变（本轮全库正文换成了 MinerU）测试就误报。
+    """
+    conn = _connect()
+    if conn is None:
+        return ("", "")
+    try:
+        row = conn.execute(
+            "SELECT key, title FROM items WHERE length(title) > 8 ORDER BY key "
+            "LIMIT 1 OFFSET ?", (offset,)).fetchone()
+    except sqlite3.Error:
+        return ("", "")
+    finally:
+        conn.close()
+    if not row:
+        return ("", "")
+    return (row[0] or "", row[1] or "")
+
+
 def sample_titles(n: int = 24) -> list[str]:
     """取 n 条真实标题（**一次连接**，别在循环里反复开库）。"""
     conn = _connect()

@@ -438,7 +438,14 @@ def _mineru_keys(only_missing: bool, tier: str) -> list[str]:
             out.append(r["key"])
             continue
         st = M.status_for(r["key"])
-        if not st["parsed"] or st["tier"] != tier:
+        # ⚠ 三条取或，缺一条就会出现"产物在、库里还是老正文"的不一致：
+        #   · 产物缺失 / 档位不同 → 要解析；
+        #   · **库里来源还不是 mineru-<档位>** → 要重建。本机 ZNAKFIM2 就是这么漏的：
+        #     上一轮被杀掉的那次运行写了产物、重建那一步没跑到，这次"补缺失"
+        #     看它有产物就跳过 —— 结果库里留着 Zotero 缓存的老正文。
+        src = str(r["fulltext_src"] or "")
+        if (not st["parsed"] or st["tier"] != tier
+                or not src.startswith(f"mineru-{tier}")):
             out.append(r["key"])
     return out
 

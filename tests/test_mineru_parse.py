@@ -337,8 +337,10 @@ def test_fulltext_for_fallback():
         check("成功时返回 (2 页, mineru-basic)",
               len(pages) == 2 and src == "mineru-basic", f"{len(pages)} {src}")
         pages2, src2 = M.fulltext_for(It("K2", [Att(pdf)]), tier="basic", kb_dir=kb)
-        check("第二次带 +cached 后缀（来源可追溯）",
-              src2 == "mineru-basic+cached", src2)
+        # ⚠ 来源标记**不带**运行态后缀：+cached 属于"本次运行"的统计
+        #   （MANIFEST 的 mineru_cached），写进 items.fulltext_src 会永久留噪声。
+        check("来源标记就是 mineru-basic（不带 +cached）",
+              src2 == "mineru-basic", src2)
         pages3, src3 = M.fulltext_for(It("K3", []), tier="basic", kb_dir=kb)
         check("没有 PDF 附件 → ([], '')（调用方回落）",
               pages3 == [] and src3 == "", f"{pages3} {src3}")

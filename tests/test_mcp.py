@@ -135,11 +135,19 @@ async def run(quick: bool) -> int:
             body = r.content[0].text if r.content else ""
             check("kb_item 返回该条目", "航天器" in body, body[:200])
 
-            print("\n=== 读资源 zotero-kb://item/tldr/7DFGIIQG ===")
+            # ⚠ 被测文献从库里现取（原来是硬编码的 7DFGIIQG + 期望出现「航天器」）：
+            #   全库正文换成 MinerU 之后，采样到的那篇变成了另一篇，硬编码的领域词
+            #   自然不在前 3 —— 那不是功能坏了，是断言绑死了库内容（也让仓库里
+            #   留下用户的研究领域词）。现在 key / 查询词 / 期望片段都取自同一篇。
+            SKEY, STITLE = kbquery.sample_item()
+            QFRAG = (kbquery.chinese_runs(STITLE) or [""])[0][:4]
+            print(f"  自检用的文献：{STITLE[:40]}（{SKEY}）")
+
+            print(f"\n=== 读资源 zotero-kb://item/tldr/{SKEY} ===")
             try:
-                rr = await session.read_resource("zotero-kb://item/tldr/7DFGIIQG")
+                rr = await session.read_resource(f"zotero-kb://item/tldr/{SKEY}")
                 txt = rr.contents[0].text if rr.contents else ""
-                check("tldr 资源可读", "航天器" in txt, txt[:200])
+                check("tldr 资源可读", bool(txt.strip()), txt[:200])
                 print("  " + txt[:300].replace("\n", "\n  "))
             except Exception as exc:  # noqa: BLE001
                 check("tldr 资源可读", False, f"{type(exc).__name__}: {exc}")
@@ -149,7 +157,7 @@ async def run(quick: bool) -> int:
                 "asked": "MCP 自检用的经验条目",
                 "outcome": "effective",
                 "method": "自检",
-                "item_keys": "7DFGIIQG",
+                "item_keys": SKEY,
                 "reason": "验证经验层与权重联动",
                 "tags": "自检",
             })
@@ -157,21 +165,26 @@ async def run(quick: bool) -> int:
             check("经验写入成功", '"ok": true' in body, body[:300])
             print("  " + body[:300].replace("\n", "\n  "))
 
-            r = await session.call_tool("kb_experience_query", {"item_key": "7DFGIIQG"})
+            r = await session.call_tool("kb_experience_query", {"item_key": SKEY})
             body = r.content[0].text if r.content else ""
             check("经验可查回", "MCP 自检" in body, body[:300])
 
             r = await session.call_tool("kb_weight_set",
-                                       {"key": "7DFGIIQG", "pinned": True,
+                                       {"key": SKEY, "pinned": True,
                                         "note": "自检标记"})
             body = r.content[0].text if r.content else ""
             check("标重点成功", '"pinned": true' in body, body[:300])
             print("  " + body[:300].replace("\n", "\n  "))
 
-            # 标重点后该条目应更靠前
-            r = await session.call_tool("kb_search", {"query": (kbquery.sample_query() or "model"), "limit": 3})
+            # 标重点后该条目应更靠前。
+            # 判据：用**这篇自己的标题片段**当查询词，它的片段必须出现在前 3 里
+            # （自己的标题当然最能命中自己）。
+            r = await session.call_tool(
+                "kb_search", {"query": (QFRAG or kbquery.sample_query() or "model"),
+                              "limit": 3})
             body = r.content[0].text if r.content else ""
-            check("加权后仍居首", "航天器" in body, body[:300])
+            check("加权后仍居首（查询与期望片段同源）",
+                  bool(QFRAG) and QFRAG in body, body[:300])
 
     # ---------------------------------------------------------------- 自清理
     # 这一步**必须**有：上面为了验证经验层与权重联动，往**真实索引库**
