@@ -67,11 +67,12 @@ class ExperienceTab:
         mid = ttk.Frame(f, padding=(10, 2, 10, 0))
         mid.pack(fill="both", expand=True)
         cols = ("id", "date", "outcome", "source", "items", "asked", "suspect")
-        # ⚠ 高度 9 行而不是 11：列表下面还有一行操作按钮（改选中/删除/采纳/丢弃），
-        #   给 11 行时默认窗口高度下那一行正好被挤出可视区（要不滚一下才能点到）。
+        # ⚠ 高度 8 行（不是 11）：列表下面还有一行操作按钮（改选中/删除/采纳/丢弃），
+        #   给 11 行时那一行会被挤出可视区（要不滚一下才能点到）。8 行 + 缩短的
+        #   说明正好装得下（实测：默认窗口下这一格给 361px、内容需要 340px）。
         #   条目多了不影响 —— 列表自己带滚动条，按钮位置是固定的。
         self.exp_tree = ttk.Treeview(mid, columns=cols, show="headings",
-                                     height=9, selectmode="extended")
+                                     height=8, selectmode="extended")
         for col, width, label, stretch in (
             ("id", 54, "id", False), ("date", 84, "日期", False),
             ("outcome", 66, "效果", False), ("source", 62, "来源", False),

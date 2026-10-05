@@ -49,9 +49,11 @@ class AppBase:
             pass
         # 初始尺寸按屏幕来，别用固定值 —— 屏幕小的时候要能装下，
         # 屏幕大的时候默认就给足空间（实测 2560x1440 下 1000x720 显得局促）。
+        # ⚠ 高度原来硬顶 880：在 1440p 屏上白白浪费 150px，而"内容要滚才能看完 /
+        #   日志只剩几行"的抱怨有一部分就是这么来的。改成按屏幕 0.72 走（上限 1080）。
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        w = min(1180, max(900, int(sw * 0.46)))
-        h = min(880, max(620, int(sh * 0.62)))
+        w = min(1240, max(900, int(sw * 0.46)))
+        h = min(1080, max(620, int(sh * 0.72)))
         x = max(0, (sw - w) // 2)
         y = max(0, int((sh - h) * 0.35))
         root.geometry(f"{w}x{h}+{x}+{y}")
