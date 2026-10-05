@@ -2,7 +2,7 @@
 //    不要直接改这里 —— 改 src/ 下的源文件，再跑：
 //        python tools/build_bootstrap.py
 //    改完没重新生成的话，打包前会被拒绝（tools/pack_plugin.py 会校验）。
-//    源码共 21 个文件，清单在 build_bootstrap.py 的 SRC_ORDER。
+//    源码共 22 个文件，清单在 build_bootstrap.py 的 SRC_ORDER。
 
 // ===== src/00-core.js =====
 /* eslint-disable no-undef */
@@ -109,6 +109,9 @@ var ZoteroKB = {
       // 没问过"时才弹一次（见 19-mineruguide.js）。放在这里是为了让它跟别的
       // 启动步骤一样有名字、失败也能在状态文件里看到（它自己不会抛）。
       step("scheduleOptionalGuides", () => self.scheduleOptionalGuides());
+      // 能力探测：DSH 接上了没、本地模型可用不可用。右键菜单只读它的缓存
+      // （菜单是同步构建的，等不了网络），所以这一步只负责"排上周期探测"。
+      step("scheduleCapsRefresh", () => self.scheduleCapsRefresh());
       // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
       //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
       //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，
@@ -1813,6 +1816,26 @@ Object.assign(ZoteroKB, {
     let line = (idx != null ? (idx + ". ") : "")
       + sug.field + "　→　" + shown
       + "　〔" + src + "·" + conf + "置信〕";
+    // ⚠ 双源标注（2026-10-05 起服务端可能给 sources/agreement）：
+    //   两路一致 = 更可信；两路不一致 = 这条是"按来源优先表取的一路"，
+    //   另一路的值必须给用户看见 —— 否则他会以为工具只找到这一个值。
+    //   老服务端不给这几个键时，这段整块跳过（向后兼容）。
+    if (Array.isArray(sug.sources) && sug.sources.length) {
+      const tag = { both: "两路一致", single: "单路",
+                    conflict: "⚠ 两路不一致", "model-picked": "模型选了这一路" }
+        [sug.agreement] || "";
+      const names = sug.sources.map(function (s) {
+        return s === "pdf" ? "PDF 原文" : (s === "mineru" ? "MinerU" : s);
+      }).join("＋");
+      if (tag) line += "　[" + tag + "：" + names + "]";
+    }
+    if (Array.isArray(sug.alternatives) && sug.alternatives.length) {
+      line += "\n     另一路给出的是："
+        + sug.alternatives.map(function (a) {
+          const n = a.source === "pdf" ? "PDF 原文" : "MinerU";
+          return String(a.value) + "（" + n + "）";
+        }).join(" / ");
+    }
     // ⚠ pages 的低置信建议单独提示：本机实测模型会把"该页页码"（例如 564）
     //   当成页码范围写进来 —— 值本身是合法数字，不提示的话很难发现。
     if (sug.field === "pages" && sug.confidence === "low") {
@@ -1963,6 +1986,15 @@ Object.assign(ZoteroKB, {
                + (res.item_type ? ("　类型：" + res.item_type) : ""));
     lines.push("正文来源：" + (res.fulltext_source || "没有可用正文")
                + (res.fulltext_pages != null ? ("　读到 " + res.fulltext_pages + " 页") : ""));
+    // 双源（2026-10-05）：这句能一眼看出"这次到底看了几路"，以及另一路为什么没用上
+    // —— 用户报障时最常见的问题就是"为什么没抽到"（老服务端不给 sources 时跳过）。
+    if (res.sources && res.sources.line) {
+      lines.push("看了哪几路：" + res.sources.line
+                 + (res.sources.mineru && res.sources.mineru.ok === false
+                    && res.sources.mineru.why
+                    ? ("　（MinerU："
+                       + String(res.sources.mineru.why).slice(0, 40) + "）") : ""));
+    }
     lines.push("");
     lines.push("这几个字段在 PDF 首页里都没找到可靠依据，"
                + "所以这次没有任何可补的值：");
@@ -4490,6 +4522,7 @@ Object.assign(ZoteroKB, {
           // 漏掉的话每弹一次右键菜单就会多留一份（会看出来越用越多）。
           // ⚠ 新建的顶层项**必须同时**在这里登记 id，否则下一轮就重复了。
           for (const id of ["zotero-kb-send-menu",
+                            "zotero-kb-localmenu",
                             "zotero-kb-classify-item",
                             "zotero-kb-pin-item",
                             "zotero-kb-metafill-item",
@@ -4526,10 +4559,19 @@ Object.assign(ZoteroKB, {
             && !it.isNote() && !it.isAnnotation());
           if (!real.length) return;
 
+          // ---- 标题按"能力状态"给（19-caps.js 探测，菜单只读缓存）
+          //
+          // 用户 2026-10-05：「右键文献的菜单能实现不填死吗，dsh 没接到就不显示」，
+          // 随后拍板成**显示但标「未连接」**（藏起来反而让人找不到入口去修）。
+          const dshCap = self.capLabel ? self.capLabel("dsh")
+            : { label: "发送到 DSH", tooltip: "" };
+          const lmCap = self.capLabel ? self.capLabel("localModel")
+            : { label: "连接到本地模型", tooltip: "" };
           const menu = doc.createXULElement
             ? doc.createXULElement("menu") : doc.createElement("menu");
           menu.id = "zotero-kb-send-menu";
-          menu.setAttribute("label", "发送到 DSH");
+          menu.setAttribute("label", dshCap.label);
+          if (dshCap.tooltip) menu.setAttribute("tooltiptext", dshCap.tooltip);
           // 对齐其他插件（jasminum / pdf2zh）的样子：menu-iconic + image。
           // 没有这两样时，菜单项在 Zotero 10 里跟内置项长得不一样（没图标、
           // 行高偏小），一眼就能看出是"外来的"。
@@ -4611,6 +4653,37 @@ Object.assign(ZoteroKB, {
           //   · 在 Zotero 里看到某篇觉得"它该归哪儿"，那一刻就想问 —— 右键是
           //     最短路径；去管理面板还得先找出这篇的 key。
           //   · 弹窗里可以「应用 / 调整 / 跳过」，调整就是跟模型对话改分类。
+          // ----「连接到本地模型」二级菜单（用户要求：原来那两条合并到这里）
+          //
+          // 为什么要合并：两条（分类建议 / 补全元数据）都是"要本地模型"的动作，
+          // 平铺在顶层既占地方、又让"模型没连上"这件事没有统一的落点 ——
+          // 合并之后标题本身就能写「（未连接）」，提示也只有一份。
+          const lmMenu = doc.createXULElement
+            ? doc.createXULElement("menu") : doc.createElement("menu");
+          lmMenu.id = "zotero-kb-localmenu";
+          lmMenu.setAttribute("class", "menu-iconic");
+          lmMenu.setAttribute("image", self.rootURI + "toolbar-icon.svg");
+          lmMenu.setAttribute("label", lmCap.label);
+          lmMenu.setAttribute("tooltiptext", lmCap.tooltip || "");
+          const lmPopup = doc.createXULElement
+            ? doc.createXULElement("menupopup") : doc.createElement("menupopup");
+          lmMenu.appendChild(lmPopup);
+          // ⚠ 子菜单里**不能**放 disabled 的 menuitem（会让整个子菜单点不开，
+          //   见本文件下面「选择已有对话」那段的教训）。所以"未连接"用一条
+          //   普通 menuitem 说明，点了只提示、不做动作。
+          if (self.caps && self.caps.localModel !== true) {
+            const hintText = (self.caps.localModel === null)
+              ? "（正在检查本地模型…）"
+              : ("（未连接：" + (self.caps.localWhy || "未知原因") + "）");
+            mkIn(lmPopup, hintText, () => {
+              self.notify("本地模型未连接",
+                (self.caps.localWhy || "原因未知")
+                + "\n\n① 面板「运行环境」→「启动 Ollama」；"
+                + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
+                null, true);
+            }, { ready: "", tooltip: lmCap.tooltip || "" });
+          }
+
           const classify = doc.createXULElement
             ? doc.createXULElement("menuitem") : doc.createElement("menuitem");
           classify.id = "zotero-kb-classify-item";
@@ -4618,8 +4691,8 @@ Object.assign(ZoteroKB, {
           classify.setAttribute("image", self.rootURI + "toolbar-icon.svg");
           classify.setAttribute(
             "label", real.length > 1
-              ? ("分类建议（本地模型）· " + real.length + " 篇")
-              : "分类建议（本地模型）");
+              ? ("分类建议 · " + real.length + " 篇")
+              : "分类建议");
           classify.setAttribute(
             "tooltiptext",
             "让本地模型判断这篇该归到哪个分类，可一键应用；\n"
@@ -4643,6 +4716,11 @@ Object.assign(ZoteroKB, {
             try { runOne(0); } catch (e) { Zotero.logError(e); }
           });
 
+          // ⚠ 必须显式挂进「连接到本地模型」子菜单：原来它是靠插入时那句
+          //   `menu.after(classify)` 蹭进 popup 的；改成二级菜单后那句没了，
+          //   漏了这一行就会"分类建议"整项消失（菜单里不报错，很难查）。
+          lmPopup.appendChild(classify);
+
           // ---- 第三项：标重点 / 取消重点（用户要求"右键菜单没有标重点"）
           //
           // 标签按当前状态动态给：已标重点的显示「取消重点」，
@@ -4660,9 +4738,14 @@ Object.assign(ZoteroKB, {
           pinItem.setAttribute(
             "label", (isPinned ? "取消重点" : "标为重点")
               + (real.length > 1 ? ("· " + real.length + " 篇") : ""));
+          // ⚠ 这句原来写"权重 ×4"，与实现不符（用户 2026-10-05 指出）。
+          //   真实口径：raw = 年份基础(0.95~1.05) + 3.0×重点 + 人工分 + 2.0×有效…
+          //   然后**取 1+ln(raw)**；基础权重 1 时标重点 = 1+ln(4) ≈ 2.4 倍，
+          //   已有经验时 raw 更大、相对增幅更小（所以写"约"）。
           pinItem.setAttribute(
             "tooltiptext",
-            "重点文献在检索时会明显往前排（权重 ×4）。\n"
+            "重点文献在检索时会明显往前排：权重乘数从约 1.0 提到约 2.4 倍"
+            + "（算法是 1+ln(年份基础分 + 3×重点 + 经验加分)）。\n"
             + "这是「哪些文献对我重要」的手工标记，"
             + "和「用过哪些方法」的经验是两回事。");
           pinItem.addEventListener("command", () => {
@@ -4682,7 +4765,7 @@ Object.assign(ZoteroKB, {
           //   跟"发送"毫无关系，用户按上一轮的要求期待的是"在「标重点」之后"。
           //   这里改成 `mkIn(popup, ...)` 放到顶层，并给它一个 id 供每次重建菜单
           //   时清理（不给 id 的话每弹一次右键就多留一份，本项目踩过）。
-          const rebuild = mkIn(popup, "重建知识库条目（这一篇）", () => {
+          const rebuild = mkIn(popup, "重建本条目知识库", () => {
             self.rebuildItems(real).catch((e) => Zotero.logError(e));
           }, {
             image: self.rootURI + "toolbar-icon.svg",
@@ -4702,8 +4785,8 @@ Object.assign(ZoteroKB, {
           //     那一瞬间，右键是最短路径（同「分类建议」的理由）。
           //   · 与分类建议不同的是：这一项**一定会写 Zotero 库**，所以服务端
           //     只出建议，写回必须由用户在弹窗里勾选确认（见 applyMeta）。
-          const metaFill = mkIn(popup,
-            "补全元数据（本地模型）"
+          const metaFill = mkIn(lmPopup,
+            "补全元数据"
               + (real.length > 1 ? ("· " + real.length + " 篇") : ""),
             () => {
               // ⚠ 单篇 / 多选**走两条不同的路**（用户 2026-10-03 拍板的形态）：
@@ -4873,10 +4956,9 @@ Object.assign(ZoteroKB, {
             let ref = anchor;
             while (isRealSep(nextReal(ref))) ref = nextReal(ref);
             ref.after(menu);
-            menu.after(classify);
-            classify.after(pinItem);
-            pinItem.after(metaFill);
-            metaFill.after(rebuild);
+            menu.after(lmMenu);
+            lmMenu.after(pinItem);
+            pinItem.after(rebuild);
             rebuild.after(openMenu);
             // 下方：下一个真实元素已经是分隔符就不用加
             if (!isRealSep(nextReal(openMenu))) openMenu.after(mkMarkedSep("zotero-kb-sep-after"));
@@ -4887,10 +4969,9 @@ Object.assign(ZoteroKB, {
             const before = mkMarkedSep("zotero-kb-sep-before");
             popup.insertBefore(before, popup.firstChild);
             before.after(menu);
-            menu.after(classify);
-            classify.after(pinItem);
-            pinItem.after(metaFill);
-            metaFill.after(rebuild);
+            menu.after(lmMenu);
+            lmMenu.after(pinItem);
+            pinItem.after(rebuild);
             rebuild.after(openMenu);
             if (!isRealSep(nextReal(openMenu))) openMenu.after(mkMarkedSep("zotero-kb-sep-after"));
             Zotero.debug("[zotero-kb] 找不到内置锚点，菜单放到最前面");
@@ -5615,6 +5696,231 @@ Object.assign(ZoteroKB, {
     } catch (e) {
       try { return String(v); } catch (e2) { return "(无法序列化)"; }
     }
+  },
+});
+
+// ===== src/19-caps.js =====
+/**
+ * 19-caps.js —— 「能力探测」：DSH 连上了没、本地模型可用不可用。
+ *
+ * ## 为什么单独一个文件
+ *
+ * 右键菜单要按"当前有没有这个能力"改文案（用户 2026-10-05 的要求：
+ * 「右键文献的菜单能实现不填死吗，dsh 没接到就不显示，本地模型（或者接外部 api）
+ * 没读取到也不显示对应的两条」→ 后来拍板成**显示但标「未连接」**）。
+ * 而"怎么判断有没有"这件事不该散在菜单代码里（菜单是同步构建的，
+ * 探测是异步的、还会失败），所以：
+ *
+ *   · 本文件只负责**探测 + 缓存 + 给出文案**（纯函数 `capLabel` 便于桩测试）；
+ *   · `14-menus.js` 只读缓存（`caps.dsh` / `caps.localModel`），不自己探测。
+ *
+ * ## 三种状态，不是两种
+ *
+ * `true` = 确认可用；`false` = 确认不可用；`null` = **还没探到 / 探不出来**。
+ * 为什么要留 `null`：本机常年"Ollama 装了但没启动"、"DSH 装着但没开"，
+ * 把"未知"当成"不可用"会让用户在最需要入口的时候看不到任何提示。
+ * 所以文案分三档：正常 / （未连接）/ （检测中）。
+ *
+ * ## 探测的成本与"别乱丢文件"
+ *
+ * DSH 那条是真的往桥的 `requests/` 里投一个 `list-sessions` 请求（几千字节），
+ * 所以：① 只在启动后与超过 TTL 时探；② **上次超时后的 5 分钟内不再探**
+ * （否则 DSH 没开时会每 30 秒往那个目录里堆一个没人处理的请求文件）；
+ * ③ 超时后**把自己的那个请求文件删掉**（只删自己刚写的那个，绝不碰别的）。
+ */
+Object.assign(ZoteroKB, {
+
+  /** 能力缓存：`true` / `false` / `null`（未知）。菜单只读它。 */
+  caps: { dsh: null, dshWhy: "", localModel: null, localWhy: "", at: 0,
+          dshTimeoutAt: 0 },
+
+  CAP_TTL_MS: 30000,            // 缓存有效期
+  DSH_TIMEOUT_BACKOFF_MS: 300000,   // 上次探测超时后的冷却（5 分钟）
+
+
+  /**
+   * 探一次能力（异步，**不抛**）。`force=true` 时忽略 TTL。
+   *
+   * ⚠ 菜单是同步构建的，所以这里**绝不能**被菜单直接 await —— 菜单读 `caps`，
+   *   这里在后台更新它（并在更新后不做任何界面重绘：下次弹出菜单自然是新的）。
+   */
+  refreshCaps: function (force) {
+    var self = ZoteroKB;
+    const now = Date.now();
+    if (!force && self.caps.at && (now - self.caps.at) < self.CAP_TTL_MS) {
+      return Promise.resolve(self.caps);
+    }
+    self.caps.at = now;
+    return Promise.all([
+      self.probeDsh(force).catch(function () { return null; }),
+      Promise.resolve(self.probeLocalModel()),
+    ]).then(function (r) {
+      self.caps.dsh = r[0] === null ? self.caps.dsh : !!r[0];
+      self.caps.localModel = r[1];
+      return self.caps;
+    });
+  },
+
+
+  /**
+   * DSH 桥是否活着。返回 `true` / `false`（拿不到就是 false，并把原因写进 caps）。
+   *
+   * 判据分两步（先便宜后昂贵）：
+   *   ① 桥目录 `<home>\.dsh\zotero-bridge\requests` 存在吗 —— 不存在说明
+   *      DSH 侧插件从没装载过（一条 `IOUtils.exists` 就够，零成本）；
+   *   ② 投一个 `list-sessions` 请求，等 3 秒 —— 有回复才叫"接上了"。
+   */
+  probeDsh: async function (force) {
+    var self = ZoteroKB;
+    const root = self.bridgeDir();
+    const reqDir = root + "\\requests";
+    const resDir = root + "\\results";
+    if (!self.bridgeDirPath || !root) {
+      self.caps.dshWhy = "拿不到桥目录（~/.dsh/zotero-bridge）";
+      return false;
+    }
+    let exists = false;
+    try {
+      exists = await IOUtils.exists(reqDir);
+    } catch (e) {
+      exists = false;
+    }
+    if (!exists) {
+      self.caps.dshWhy = "桥目录不存在（DSH 侧插件未装载）";
+      return false;
+    }
+    // 上个探测刚超时过 → 冷却期内不再打扰那个目录
+    if (!force && self.caps.dshTimeoutAt
+        && (Date.now() - self.caps.dshTimeoutAt) < self.DSH_TIMEOUT_BACKOFF_MS) {
+      self.caps.dshWhy = "上次探测超时（冷却中，请确认 DSH 在运行）";
+      return false;
+    }
+    const id = "z" + Date.now().toString(36)
+      + Math.random().toString(36).slice(2, 7);
+    const dst = reqDir + "\\" + id + ".json";
+    const resFile = resDir + "\\" + id + ".json";
+    try {
+      await IOUtils.writeUTF8(dst, JSON.stringify(
+        { id: id, kind: "list-sessions", at: new Date().toISOString() }, null, 1));
+    } catch (e) {
+      self.caps.dshWhy = "投递请求失败：" + e;
+      return false;
+    }
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      await new Promise(function (r) { setTimeout(r, 250); });
+      try {
+        if (await IOUtils.exists(resFile)) {
+          self.caps.dshWhy = "";
+          self.caps.dshTimeoutAt = 0;
+          return true;
+        }
+      } catch (e) { /* 下一轮再试 */ }
+    }
+    // 超时：把自己刚写的请求文件删掉（只删自己这个，别碰 DSH 的目录）
+    self.caps.dshTimeoutAt = Date.now();
+    self.caps.dshWhy = "投了请求但 3 秒没回复（DSH 没在运行？）";
+    try {
+      await IOUtils.remove(dst, { ignoreAbsent: true });
+    } catch (e) { /* 删不掉也无妨 */ }
+    return false;
+  },
+
+
+  /**
+   * 本地模型可用不可用。返回 `true` / `false` / `null`（未知）。
+   *
+   * 判据用**已经拿到的**信息，不再发新请求：
+   *   · 插件 pref 里选了 `openai` → 有 apiKey（和 baseUrl）就算可用；
+   *   · 选了 `ollama` → 看 `serverInfo.ollama`（`/health` 报的：文件在不在 +
+   *     API 通不通 + 有哪些模型）→ `api_up && models.length` 才算可用；
+   *   · 拿不到 `/health` 的结果 → `null`（未知），界面上写"检测中"。
+   */
+  probeLocalModel: function () {
+    var self = ZoteroKB;
+    let provider = "";
+    try {
+      provider = String(self.getPref(self.PREFS.provider, "") || "").trim();
+    } catch (e) { provider = ""; }
+    if (!provider) provider = "ollama";
+    if (provider === "openai") {
+      const key = String(self.getPref(self.PREFS.apiKey, "") || "").trim();
+      const base = String(self.getPref(self.PREFS.apiBaseUrl, "") || "").trim();
+      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境→模型接入）";
+      return !!key && !!base;
+    }
+    const info = (self.serverInfo && self.serverInfo.ollama) || null;
+    if (!info) {
+      self.caps.localWhy = "还没拿到本地服务状态（点面板「服务状态」看一眼）";
+      return null;
+    }
+    if (!info.exists) {
+      self.caps.localWhy = "没找到 Ollama（可选组件；也可改用 API 模型）";
+      return false;
+    }
+    if (!info.api_up) {
+      self.caps.localWhy = "Ollama 没在运行（面板「运行环境」页点「启动 Ollama」）";
+      return false;
+    }
+    const models = info.models || [];
+    if (!models.length) {
+      self.caps.localWhy = "Ollama 在跑，但一个模型都没有（ollama pull qwen3:4b-instruct）";
+      return false;
+    }
+    self.caps.localWhy = "";
+    return true;
+  },
+
+
+  /**
+   * 菜单文案（**纯函数**，桩环境直接测）：按能力状态给标题与提示。
+   *
+   * `kind` = "dsh" | "localModel"；返回 `{label, tooltip}`。
+   * 三档：正常 → 原名；确认不可用 → 附「（未连接）」+ 怎么办；未知 → 「（检测中）」。
+   */
+  capLabel: function (kind) {
+    var self = ZoteroKB;
+    const st = (kind === "dsh") ? self.caps.dsh : self.caps.localModel;
+    const why = (kind === "dsh") ? self.caps.dshWhy : self.caps.localWhy;
+    if (kind === "dsh") {
+      const base = "发送到 DSH";
+      if (st === true) {
+        return { label: base,
+                 tooltip: "把这篇的路径发到 DSH 里（新建对话或选已有对话）" };
+      }
+      if (st === false) {
+        return { label: base + "（未连接）",
+                 tooltip: "DSH 没接上：" + (why || "未知原因")
+                   + "\n\n要接上：确认 DSH 桌面端在运行、且装了 zotero-bridge 插件；"
+                   + "装完重启 DSH。" };
+      }
+      return { label: base + "（检测中）",
+               tooltip: "正在检查 DSH 连接……" };
+    }
+    const base2 = "连接到本地模型";
+    if (st === true) {
+      return { label: base2,
+               tooltip: "用本地模型做「分类建议」和「补全元数据」" };
+    }
+    if (st === false) {
+      return { label: base2 + "（未连接）",
+               tooltip: "本地模型用不了：" + (why || "未知原因")
+                 + "\n\n两个办法：① 面板「运行环境」→「启动 Ollama」；"
+                 + "② 在「模型接入」里改用 API 模型（填地址与 Key）。" };
+    }
+    return { label: base2 + "（检测中）",
+             tooltip: "正在检查本地模型……" };
+  },
+
+
+  /** 排一次周期探测（用 setTimeout 链，不用 setInterval —— 沙箱里后者可能不触发）。 */
+  scheduleCapsRefresh: function () {
+    var self = ZoteroKB;
+    const tick = function () {
+      self.refreshCaps(false).catch(function () { /* 探测失败不是错误 */ });
+      setTimeout(tick, 60000);
+    };
+    setTimeout(tick, 12000);      // 启动 12 秒后第一次（等 healthCheck 先跑完）
   },
 });
 

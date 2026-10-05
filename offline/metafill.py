@@ -141,6 +141,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import prompts as PR  # noqa: E402 —— 提示词注册表（用户可改）
 import schemas as S  # noqa: E402
 import zreader  # noqa: E402
+import metafill_sources as MS  # noqa: E402 —— 双源首页正文（PDF 原文 + MinerU）
 
 # judge 只是"可选后端"。放在 try 里是因为：这个模块的规则部分不依赖模型，
 # 而 judge 会 import urllib/sqlite 等一堆东西。万一将来 judge 的依赖出问题
@@ -1243,8 +1244,8 @@ def _truthy(value) -> bool:
     return s in ("1", "true", "yes", "y", "是", "true.", "t")
 
 
-def _model_suggest(pages: list[str], need: list[str], model: str = ""
-                   ) -> tuple[dict[str, tuple[str, str]], dict]:
+def _model_suggest(pages: list[str], need: list[str], model: str = "",
+                   text: str = "") -> tuple[dict[str, tuple[str, str]], dict]:
     """调本地模型抽缺失字段，返回 `({字段: (值, 证据文本)}, 附带信息)`。
 
     need 是"规则没搞定、且当前为空"的字段 —— 只问这些，不问全部。为什么：
@@ -1262,7 +1263,9 @@ def _model_suggest(pages: list[str], need: list[str], model: str = ""
     """
     if judge is None or not need:
         return {}, {}
-    text = head_text(pages, HEAD_PAGES)[:6000]
+    # `text` 由调用方给（双源合并文本）；没给就退回"只看 A 路前两页"的老行为。
+    if not text:
+        text = head_text(pages, HEAD_PAGES)[:6000]
     if len(text.strip()) < MIN_TEXT_CHARS:
         return {}, {}
     want_creators = "creators" in need
@@ -1313,8 +1316,12 @@ def _model_suggest(pages: list[str], need: list[str], model: str = ""
     return out, meta
 
 
-def _verify_evidence(pages: list[str], ev: str) -> dict:
+def _verify_evidence(pages: list[str], ev: str,
+                     pages_extra: list[str] | None = None) -> dict:
     """核对模型给的证据是否真的在正文里，返回 evidence dict。
+
+    ⚠ `pages_extra`（双源模式，2026-10-05 加）：模型看到的是**两路合并文本**，
+      它指的原文可能来自 MinerU 那一路。只查 A 路会把真证据判成"编的"。
 
     为什么要校验：模型给的"证据"也可能是编的（本机实测见过它把参考文献里的
     一行抄来当证据）。证据是用户唯一能核对的东西 —— 证据本身是假的，
@@ -1322,6 +1329,8 @@ def _verify_evidence(pages: list[str], ev: str) -> dict:
     标 `verified=False`，让用户知道"这条只能自己看 PDF 确认"。
     """
     text = head_text(pages, HEAD_PAGES)
+    if ev and pages_extra:
+        text = text + "\n" + head_text(pages_extra, HEAD_PAGES)
     if ev:
         # 去掉空白再比：正文里的换行/空格和模型复述的不一定一致
         flat = re.sub(r"\s+", "", text)
@@ -1509,10 +1518,51 @@ def _current_values(item) -> dict:
     return out
 
 
-def suggest_for_item(item, model: str = "", use_model: bool = True) -> dict:
+def _creators_line(cr: dict) -> str:
+    """把作者候选渲染成一行串（**只用于两路一致性比较**，不是写入值）。"""
+    names = []
+    for c in (cr or {}).get("creators") or []:
+        last = str(c.get("lastName") or "").strip()
+        first = str(c.get("firstName") or "").strip()
+        names.append((last + first).strip() or last)
+    return "; ".join(n for n in names if n)
+
+
+def _with_agreement(sug: dict, row: dict) -> dict:
+    """给一条建议补上"来源/一致性/备选/说明"四个键（双源模式下统一走这里）。"""
+    sug["sources"] = [v["source"] for v in (row.get("values") or [])
+                      if v.get("source")]
+    sug["agreement"] = row.get("agreement", "single")
+    alts = []
+    for a in row.get("alternatives") or []:
+        alts.append({"value": a.get("value"), "source": a.get("source")})
+    sug["alternatives"] = alts
+    sug["note"] = MS.agreement_note(sug.get("field", ""), row) \
+        if sug["agreement"] != "both" else "两路正文一致（更可信）"
+    return sug
+
+
+def suggest_for_item(item, model: str = "", use_model: bool = True,
+                     sources_override: dict | None = None) -> dict:
     """给一个已加载的 Item 生成补全建议（**不修改任何数据**）。
 
     调用方已经加载过 item 时用它，省一次 Zotero 查询。
+
+    ## 双源（2026-10-05，用户要求）
+
+    用户原话：「元数据补全能不能同时读首页和 MinerU 首页，然后本地模型综合一下
+    再给出来。」所以：
+
+      · **A 路** = PDF 原文字面（`zreader.fulltext_for`，老行为）；
+      · **B 路** = MinerU 逐页正文（`<kb>/mineru/<KEY>/pages.json`）；
+      · 规则抽取**在每一路上各跑一遍**（同一个判定口径，纯函数）；
+      · 两路值一致 → `agreement="both"`（置信度高）；只有一路 → `"single"`；
+        两路不一致 → `"conflict"`：**不擅自合并**，交给模型裁决；
+      · 模型看到的是**两路合并文本 + 候选清单**（`MS.prompt_text`），
+        它给的证据在任一路里能找到就算核对通过。
+
+    ⚠ 退化路径都要能走：只有 A、只有 B、两路都没有、模型不可用 ——
+      每条路径都写进 `notes`，用户能看出"是没找到还是工具没工作"。
     """
     key = str(getattr(item, "key", "") or "")
     title = str(getattr(item, "title", "") or "")
@@ -1547,99 +1597,128 @@ def suggest_for_item(item, model: str = "", use_model: bool = True) -> dict:
         # "模型兜底"根本不会执行，键就会缺席 —— 调用方（插件/CLI）按固定
         # 结构取值时会 KeyError。自检里抓到过一次。宁可给个明确的状态。
         "model": {"used": False, "reason": "规则已完成，无需调用模型"},
+        # 双源状态也一开始就占位（同上，避免键缺席）
+        "sources": {"pdf": {}, "mineru": {}, "line": ""},
     }
 
     if not missing:
         result["notes"].append("这几个字段都已有值，无可补")
         return result
 
-    # ---- 取正文（只看前两页）
-    pages: list[str] = []
-    source = ""
-    try:
-        reader = _get_reader()
-        pages, source = reader.fulltext_for(item, use_model=False)
-    except Exception as exc:  # noqa: BLE001
-        # 读正文失败不该让整个模块挂掉：这条建议就当"没找到"，
-        # 把原因写进 notes 让用户知道是坏了还是真没有。
-        result["notes"].append(f"读取正文失败：{type(exc).__name__}: {exc}")
-    pages = pages or []
-    result["fulltext_source"] = source
-    result["fulltext_pages"] = len(pages)
+    # ---- 取两路正文
+    srcs = sources_override or MS.gather(item)
+    result["sources"] = {
+        "pdf": {k: srcs["pdf"].get(k) for k in ("ok", "source", "why")},
+        "mineru": {k: srcs["mineru"].get(k) for k in ("ok", "source", "why", "tier")},
+        "line": MS.sources_line(srcs),
+    }
+    result["fulltext_source"] = srcs["pdf"].get("source") or srcs["mineru"].get("source") or ""
+    result["fulltext_pages"] = max(len(srcs["pdf"].get("pages") or []),
+                                   len(srcs["mineru"].get("pages") or []))
+    result["notes"].append("首页正文来源：" + MS.sources_line(srcs))
 
-    if not head_text(pages).strip():
-        result["notes"].append("没有可用的 PDF 正文（缺少 PDF、或扫描件提不出文字），"
-                              "只能靠规则/模型之外的办法补字段")
-        return result
-    if len(head_text(pages).strip()) < MIN_TEXT_CHARS:
-        result["notes"].append("首页正文过短，判据不足，未做抽取")
+    if not srcs.get("any"):
+        result["notes"].append("两路都没拿到可用正文（" + MS.why_no_text(srcs) + "）")
         return result
 
-    text = head_text(pages, HEAD_PAGES)
-    hits: dict[str, tuple[str, int, int]] = {}
-    # 字段的"附带信息"。为什么不让 hits 里有的存三元组、有的存四元组：
-    # 下面按 `value, s, e = hits[field]` 解包，元组长短不一就会当场 ValueError。
-    # 分开存之后，加新的附带信息（比如将来给 pages 标"这是推算出来的"）
-    # 不需要动 hits 的结构。
-    hit_meta: dict[str, dict] = {}
+    pages_by_source = {"pdf": list(srcs["pdf"].get("pages") or []),
+                       "mineru": list(srcs["mineru"].get("pages") or [])}
+    head_by_source = {name: MS.head_text(pages) if pages else ""
+                      for name, pages in pages_by_source.items()}
 
-    # ---- 第一步：规则（DOI / 卷 / 期 / 页，以及能规则化的日期）
-    found = _extract_volume_issue_pages(text)
-    for field, trip in found.items():
-        if field in missing:
-            hits[field] = trip
-    if "DOI" in missing:
-        doi = _extract_doi(text)
-        if doi:
-            hits["DOI"] = doi
-    if "date" in missing:
-        d = _extract_date(text)
-        if d:
-            # d 是 (值, 起, 止, 形态分, 日期类型)：前三个进 hits，
-            # 类型单独记 —— 界面要靠它显示"这是网络首发日期，不是正式出版日期"。
-            hits["date"] = (d[0], d[1], d[2])
-            hit_meta["date"] = {"date_kind": d[4]}
+    # ---- 第一步：规则，在**每一路**上各跑一遍（同一套纯函数）
+    per_source: dict[str, dict] = {}
+    meta_by_source: dict[str, dict] = {}
+    creators_by_source: dict[str, dict] = {}
+    for name in ("pdf", "mineru"):
+        pages_s = pages_by_source[name]
+        text_s = head_by_source[name]
+        if not pages_s or not text_s.strip():
+            continue
+        if len(text_s.strip()) < MIN_TEXT_CHARS:
+            result["notes"].append(
+                f"{'A（PDF 原文）' if name == 'pdf' else 'B（MinerU）'}首页过短"
+                f"（{len(text_s.strip())} 字 < {MIN_TEXT_CHARS}），这一路不做抽取")
+            continue
+        hits_s: dict[str, tuple[str, int, int]] = {}
+        found = _extract_volume_issue_pages(text_s)
+        for field, trip in found.items():
+            if field in missing:
+                hits_s[field] = trip
+        if "DOI" in missing:
+            doi = _extract_doi(text_s)
+            if doi:
+                hits_s["DOI"] = doi
+        if "date" in missing:
+            d = _extract_date(text_s)
+            if d:
+                hits_s["date"] = (d[0], d[1], d[2])
+                meta_by_source.setdefault(name, {})["date_kind"] = d[4]
+        if "creators" in missing:
+            cr = extract_creators(pages_s, title=title)
+            if cr:
+                creators_by_source[name] = cr
+                hits_s["creators"] = (_creators_line(cr), cr["start"], cr["end"])
+        per_source[name] = hits_s
 
-    for field in FIELDS:
-        if field in hits:
-            value, s, e = hits[field]
-            sug = {
-                "field": field, "current": "", "value": value,
-                "source": "rule", "confidence": "high",
-                "evidence": build_evidence(pages, s, e),
-            }
-            _attach_date_kind(sug, hit_meta.get(field, {}).get("date_kind", ""))
-            result["suggestions"].append(sug)
+    merged = MS.merge_candidates(per_source)
 
-    # ---- 第二步：作者（creators）
+    # ---- 第二步：把**已定**的规则候选落成建议；冲突的留给模型
+    conflict_fields: list[str] = []
+    for field, row in merged.items():
+        if field == "creators":
+            continue                      # 多值字段单独处理（见下）
+        primary = row["primary"]
+        if row["agreement"] == "conflict":
+            conflict_fields.append(field)
+            continue
+        sug = {
+            "field": field, "current": "", "value": primary["value"],
+            "source": "rule", "confidence": "high",
+            "evidence": build_evidence(pages_by_source[primary["source"]],
+                                       primary["start"], primary["end"]),
+        }
+        _attach_date_kind(sug, (meta_by_source.get(primary["source"]) or {})
+                          .get("date_kind", ""))
+        result["suggestions"].append(_with_agreement(sug, row))
+
+    if "creators" in merged:
+        row = merged["creators"]
+        if row["agreement"] == "conflict":
+            conflict_fields.append("creators")
+        else:
+            name = row["primary"]["source"]
+            cr = creators_by_source.get(name) or {}
+            sug = _creator_suggestion(
+                cr, build_evidence(pages_by_source[name],
+                                   row["primary"]["start"], row["primary"]["end"]),
+                source="rule", confidence="high")
+            result["suggestions"].append(_with_agreement(sug, row))
+
+    # ---- 第三步：模型兜底 + 冲突裁决
     #
-    # 为什么它不走上面那条 hits 路：hits 的值是"一个字符串 + 一处偏移"，
-    # 而作者是**有序多值**，还要逐名拆分。硬塞进 hits 只能塞一个拼接串，
-    # 后面每个读 hits 的地方都要再解析一次（多一次出错机会）。
-    creators_done = False
-    if "creators" in missing:
-        cr = extract_creators(pages, title=title)
-        if cr:
-            result["suggestions"].append(_creator_suggestion(
-                cr, build_evidence(pages, cr["start"], cr["end"]),
-                source="rule", confidence="high"))
-            creators_done = True
-
-    # ---- 第三步：模型兜底（只问规则没搞定的字段）
-    still = [f for f in missing if f not in hits]
-    if creators_done and "creators" in still:
-        still.remove("creators")
+    # 只问"规则没搞定的字段"和"两路不一致的字段"。为什么少问：少问就少编
+    # （模型对没问的字段没有机会瞎给值），提示词短一点小模型的注意力也更集中。
+    resolved = {s["field"] for s in result["suggestions"]}
+    still = [f for f in missing if f not in resolved]
+    merged_text = MS.prompt_text(srcs, merged)
     if still and use_model:
         avail, hint = model_available()
         if not avail:
             # 优雅退化：不抛异常，只说明为什么没有模型建议
             result["model"] = {"used": False, "reason": hint or "本地模型不可用"}
             result["notes"].append(
-                f"本地模型不可用（{hint or '未启动'}），已退化为纯规则抽取")
+                f"本地模型不可用（{hint or '未启动'}），已退化为纯规则抽取"
+                + ("；两路冲突的字段按来源优先表取一路（见每条建议的说明）"
+                   if conflict_fields else ""))
         else:
-            got, model_meta = _model_suggest(pages, still, model=model)
+            ask_pages = pages_by_source["mineru"] or pages_by_source["pdf"]
+            got, model_meta = _model_suggest(ask_pages, still, model=model,
+                                             text=merged_text)
             result["model"] = {"used": True, "backend": "judge",
-                               "fields_asked": still}
+                               "fields_asked": still,
+                               "saw_sources": result["sources"]["line"],
+                               "conflict_fields": list(conflict_fields)}
             for field in still:
                 if field not in got:
                     continue
@@ -1647,42 +1726,85 @@ def suggest_for_item(item, model: str = "", use_model: bool = True) -> dict:
                 value = _clean_value(field, raw)
                 if not value:
                     continue
-                # 值要和"当前值"比一下：模型可能把已有的值又抄一遍，
-                # 但那个字段本来就不在 missing 里，所以这里不用管。
                 sug = {
                     "field": field, "current": "", "value": value,
                     "source": "model", "confidence": "low",   # 模型会错，标 low
-                    "evidence": _verify_evidence(pages, ev),
+                    "evidence": _verify_evidence(pages_by_source["pdf"] or ask_pages,
+                                                 ev,
+                                                 pages_extra=pages_by_source["mineru"]),
                 }
                 if field == "date":
                     # 类型优先**从它给的证据原文判**，而不是信它自己声明的
                     # `date_kind`：证据是它在正文里指出的那段字，属于"原文级"
                     # 信息；自我归类只是它的说法，小模型在这类标签上并不可靠。
-                    # 证据里看不出标签时才退到它声明的类型，最后才是 unknown。
-                    kind = kind_from_text(ev) or model_meta.get("date_kind", "") \
-                        or DATE_KIND_UNKNOWN
+                    evidence_text = str((sug.get("evidence") or {}).get("text") or "")
+                    kind = (kind_from_text(evidence_text or ev)
+                            or model_meta.get("date_kind", "") or DATE_KIND_UNKNOWN)
                     _attach_date_kind(sug, kind)
-                result["suggestions"].append(sug)
+                if field in conflict_fields and field in merged:
+                    # 模型对它裁了：标清"它选了哪一路"，另一路进 alternatives
+                    row = merged[field]
+                    picked = MS.norm_value(field, value)
+                    match = next((v for v in row["values"]
+                                  if MS.norm_value(field, v["value"]) == picked),
+                                 None)
+                    if match:
+                        row = dict(row, agreement="model-picked",
+                                   primary=match,
+                                   alternatives=[v for v in row["values"]
+                                                 if v is not match])
+                    result["suggestions"].append(_with_agreement(sug, row))
+                else:
+                    result["suggestions"].append(sug)
             # 作者由模型抽出时走这里（`got` 里没有它 —— 多值字段见 _model_suggest）。
-            # 为什么证据也照"验证过的原文"走：模型说"作者是这几位"时，
-            # 用户唯一能核对的就是它指的那行原文；原文定位不到就标 verified=False。
             if "creators" in still and model_meta.get("creators"):
                 cr = {"creators": model_meta["creators"],
                       "partial": bool(model_meta.get("creators_partial")),
                       "unsplit": len([c for c in model_meta["creators"]
                                       if not c.get("firstName")])}
-                result["suggestions"].append(_creator_suggestion(
-                    cr, _verify_evidence(pages, model_meta.get("creators_evidence", "")),
-                    source="model", confidence="low"))
+                sug = _creator_suggestion(
+                    cr, _verify_evidence(pages_by_source["pdf"] or ask_pages,
+                                         model_meta.get("creators_evidence", ""),
+                                         pages_extra=pages_by_source["mineru"]),
+                    source="model", confidence="low")
+                result["suggestions"].append(sug)
     elif still:
         result["model"] = {"used": False, "reason": "use_model=False"}
 
-    # ---- 收尾：没抽到的字段说一声
+    # ---- 收尾 1：冲突字段如果模型也没裁出来，就按"来源优先表"给一路 + 备选
+    #
+    # 为什么不直接丢掉：两路各给一个值时，"哪个都不给"对用户最没用 ——
+    # 他会以为工具没找到。给一路 + 明确写出另一路 + 让他自己按 PDF 核对，才有用。
+    got_fields = {s["field"] for s in result["suggestions"]}
+    for field in conflict_fields:
+        if field in got_fields:
+            continue
+        row = merged[field]
+        primary = row["primary"]
+        if field == "creators":
+            name = primary["source"]
+            cr = creators_by_source.get(name) or {}
+            sug = _creator_suggestion(
+                cr, build_evidence(pages_by_source[name],
+                                   primary["start"], primary["end"]),
+                source="rule", confidence="medium")
+        else:
+            sug = {
+                "field": field, "current": "", "value": primary["value"],
+                "source": "rule", "confidence": "medium",
+                "evidence": build_evidence(pages_by_source[primary["source"]],
+                                           primary["start"], primary["end"]),
+            }
+            _attach_date_kind(sug, (meta_by_source.get(primary["source"]) or {})
+                              .get("date_kind", ""))
+        result["suggestions"].append(_with_agreement(sug, row))
+
+    # ---- 收尾 2：没抽到的字段说一声
     got_fields = {s["field"] for s in result["suggestions"]}
     for field in missing:
         if field not in got_fields:
             result["skipped"].append(
-                {"field": field, "why": "当前为空，但正文首页里没找到可靠依据"})
+                {"field": field, "why": "当前为空，但两路首页正文里都没找到可靠依据"})
     return result
 
 

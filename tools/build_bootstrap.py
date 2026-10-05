@@ -60,6 +60,8 @@ SRC_ORDER = [
     "16-weightcol",
     "17-windowhook",
     "18-taskpoll",
+    # 能力探测（DSH 连上了没 / 本地模型可用不可用）—— 右键菜单按它改文案
+    "19-caps",
     # MinerU（可选组件）的首次安装引导：起面板 + 弹一次对话框
     "19-mineruguide",
     "99-bootstrap",

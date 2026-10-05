@@ -262,6 +262,83 @@ if (KB) {
     !calls.observers.some((o) => o.t === "quit-application-requested"),
     JSON.stringify(calls.observers.map((o) => o.t)));
 
+  // ---- ⑦ 能力探测（19-caps.js）：菜单文案按它走
+  check("有能力探测那批函数",
+    typeof KB.refreshCaps === "function"
+    && typeof KB.probeDsh === "function"
+    && typeof KB.probeLocalModel === "function"
+    && typeof KB.capLabel === "function"
+    && typeof KB.scheduleCapsRefresh === "function");
+  check("startup 里有 scheduleCapsRefresh 这一步",
+    steps.indexOf("scheduleCapsRefresh=ok") >= 0, steps);
+
+  // 三档文案：可用 / 未连接 / 检测中（用户要的是"显示但标未连接"）
+  KB.caps.dsh = true;
+  check("DSH 可用时标题就是「发送到 DSH」",
+    KB.capLabel("dsh").label === "发送到 DSH", KB.capLabel("dsh").label);
+  KB.caps.dsh = false;
+  KB.caps.dshWhy = "桥目录不存在（DSH 侧插件未装载）";
+  check("DSH 未连接时标题带（未连接）且提示说清怎么接上",
+    KB.capLabel("dsh").label.indexOf("（未连接）") >= 0
+    && KB.capLabel("dsh").tooltip.indexOf("DSH") >= 0,
+    JSON.stringify(KB.capLabel("dsh")));
+  KB.caps.dsh = null;
+  check("还没探到时标题写「（检测中）」",
+    KB.capLabel("dsh").label.indexOf("（检测中）") >= 0,
+    KB.capLabel("dsh").label);
+
+  KB.caps.localModel = true;
+  check("本地模型可用时标题是「连接到本地模型」",
+    KB.capLabel("localModel").label === "连接到本地模型");
+  KB.caps.localModel = false;
+  KB.caps.localWhy = "Ollama 没在运行";
+  check("本地模型未连接时带（未连接）且给出两条办法",
+    KB.capLabel("localModel").label.indexOf("（未连接）") >= 0
+    && KB.capLabel("localModel").tooltip.indexOf("启动 Ollama") >= 0,
+    JSON.stringify(KB.capLabel("localModel")));
+
+  // probeLocalModel 的判据（不发新请求，用已有信息）
+  const savedPrefs = {};
+  const oGet = KB.getPref;
+  KB.getPref = (k, d) => (k === KB.PREFS.provider ? "ollama" : d);
+  KB.serverInfo = null;
+  check("拿不到 /health 结果时 → null（未知，不是不可用）",
+    KB.probeLocalModel() === null);
+  KB.serverInfo = { ollama: { exists: true, api_up: true,
+                              models: ["qwen3:4b-instruct"] } };
+  check("ollama 在跑且有模型 → true", KB.probeLocalModel() === true);
+  KB.serverInfo = { ollama: { exists: true, api_up: false, models: [] } };
+  check("ollama 装了没启动 → false 且 why 提到「启动 Ollama」",
+    KB.probeLocalModel() === false && KB.caps.localWhy.indexOf("启动 Ollama") >= 0,
+    KB.caps.localWhy);
+  KB.serverInfo = { ollama: { exists: false, api_up: false, models: [] } };
+  check("没装 ollama → false", KB.probeLocalModel() === false);
+  KB.getPref = (k, d) => (k === KB.PREFS.provider ? "openai" : d);
+  KB.serverInfo = null;
+  check("选 API 但没填 key → false", KB.probeLocalModel() === false);
+  KB.getPref = oGet;
+  KB.serverInfo = null;
+
+  // 菜单清理 id：二级菜单的容器 id 必须在清理名单里
+  const menuSrc = fs.readFileSync(
+    path.join(PLUGIN, "src", "14-menus.js"), "utf8");
+  // 不该出现的断言要在**剥掉注释**的代码里扫：源码里刻意留了
+  // `这句原来写"权重 x4"，与实现不符` 这类说明，扫注释会误报
+  // （与 tools/check_plugin.py 那条反向检查同一个道理）。
+  const menuCode = menuSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+  check("菜单清理名单里有 zotero-kb-localmenu（否则每弹一次多留一份）",
+    menuSrc.indexOf('"zotero-kb-localmenu"') >= 0);
+  check("「分类建议」「补全元数据」挂在二级菜单容器里",
+    menuSrc.indexOf("lmPopup.appendChild(classify)") >= 0
+    && menuSrc.indexOf("mkIn(lmPopup,") >= 0);
+  check("重建项已改名「重建本条目知识库」",
+    menuSrc.indexOf('"重建本条目知识库"') >= 0
+    && menuCode.indexOf("重建知识库条目（这一篇）") < 0);
+  check("标重点提示不再写「权重 ×4」（与实现不符）",
+    menuCode.indexOf("权重 ×4") < 0 && menuSrc.indexOf("约 2.4 倍") >= 0);
+
   // ---- ⑦ 可选组件（MinerU + Ollama）的首次安装引导
   //
   // 用户定的规矩：**首次启动 + 没装 → 弹一次；取消也记 pref（不再弹）；

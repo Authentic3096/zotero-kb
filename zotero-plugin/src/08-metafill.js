@@ -131,6 +131,26 @@ Object.assign(ZoteroKB, {
     let line = (idx != null ? (idx + ". ") : "")
       + sug.field + "　→　" + shown
       + "　〔" + src + "·" + conf + "置信〕";
+    // ⚠ 双源标注（2026-10-05 起服务端可能给 sources/agreement）：
+    //   两路一致 = 更可信；两路不一致 = 这条是"按来源优先表取的一路"，
+    //   另一路的值必须给用户看见 —— 否则他会以为工具只找到这一个值。
+    //   老服务端不给这几个键时，这段整块跳过（向后兼容）。
+    if (Array.isArray(sug.sources) && sug.sources.length) {
+      const tag = { both: "两路一致", single: "单路",
+                    conflict: "⚠ 两路不一致", "model-picked": "模型选了这一路" }
+        [sug.agreement] || "";
+      const names = sug.sources.map(function (s) {
+        return s === "pdf" ? "PDF 原文" : (s === "mineru" ? "MinerU" : s);
+      }).join("＋");
+      if (tag) line += "　[" + tag + "：" + names + "]";
+    }
+    if (Array.isArray(sug.alternatives) && sug.alternatives.length) {
+      line += "\n     另一路给出的是："
+        + sug.alternatives.map(function (a) {
+          const n = a.source === "pdf" ? "PDF 原文" : "MinerU";
+          return String(a.value) + "（" + n + "）";
+        }).join(" / ");
+    }
     // ⚠ pages 的低置信建议单独提示：本机实测模型会把"该页页码"（例如 564）
     //   当成页码范围写进来 —— 值本身是合法数字，不提示的话很难发现。
     if (sug.field === "pages" && sug.confidence === "low") {
@@ -281,6 +301,15 @@ Object.assign(ZoteroKB, {
                + (res.item_type ? ("　类型：" + res.item_type) : ""));
     lines.push("正文来源：" + (res.fulltext_source || "没有可用正文")
                + (res.fulltext_pages != null ? ("　读到 " + res.fulltext_pages + " 页") : ""));
+    // 双源（2026-10-05）：这句能一眼看出"这次到底看了几路"，以及另一路为什么没用上
+    // —— 用户报障时最常见的问题就是"为什么没抽到"（老服务端不给 sources 时跳过）。
+    if (res.sources && res.sources.line) {
+      lines.push("看了哪几路：" + res.sources.line
+                 + (res.sources.mineru && res.sources.mineru.ok === false
+                    && res.sources.mineru.why
+                    ? ("　（MinerU："
+                       + String(res.sources.mineru.why).slice(0, 40) + "）") : ""));
+    }
     lines.push("");
     lines.push("这几个字段在 PDF 首页里都没找到可靠依据，"
                + "所以这次没有任何可补的值：");

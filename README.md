@@ -113,6 +113,7 @@ D:\zotero-kb\scripts\1-convert.cmd
 | [INSTALL.md](INSTALL.md) | **从零装到能用**：四步安装、验证、日常使用、常见问题、卸载 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构总览 + **关键功能的实现方式**：正文从哪来、检索怎么算分、经验权重公式、插件机制 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 设计与用法详解：为什么这么做、各功能怎么用、边界与已知限制 |
+| [docs/知识库层级设计.md](docs/知识库层级设计.md) | 知识库的五层结构与重排方案（原始/正文/档案/视图/图片）、迁移步骤、检索分层与经验闭环 2.0 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 给改这个项目的人：目录结构、当前进度、**发版流程**、排错、后续计划 |
 
 ## 边界（明确不做什么）

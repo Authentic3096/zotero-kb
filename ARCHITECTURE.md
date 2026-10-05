@@ -630,6 +630,21 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 
 ---
 
+#### B9.5 能力探测与"菜单不写死"（2026-10-05）
+
+用户要求右键菜单别写死：「dsh 没接到就不显示，本地模型（或者接外部 api）没读取到也不显示
+对应的两条」，随后拍板成**显示但标「未连接」**。实现拆成两块：
+
+- **`zotero-plugin/src/19-caps.js`**（新）：只负责"探测 + 缓存 + 文案"。
+  `caps.dsh` / `caps.localModel` 三态（`true` / `false` / `null` 未知）；
+  DSH 的探测 = 桥目录在不在 + 投一个 `list-sessions` 等 3 秒（超时后**删掉自己写的那个
+  请求文件**、并冷却 5 分钟，避免 DSH 没开时每 30 秒往桥目录里堆垃圾）；
+  本地模型 = 复用 `/health` 报的 `ollama` 状态 + 插件 pref（选了 API 就看 key）。
+  周期刷新用 `setTimeout` 链（沙箱里 `setInterval` 可能不触发）。
+- **`14-menus.js`**：只读缓存。`capLabel(kind)`（纯函数，桩测试覆盖）给出
+  「发送到 DSH（未连接）」/「连接到本地模型（检测中）」这类标题 + 一句"怎么修"的提示。
+  「分类建议」「补全元数据」合并成二级菜单「连接到本地模型」；「重建本条目知识库」改名。
+
 #### B10. （已删除）内容窗格「本地模型」与逐段检查
 
 **这两块在 2026-10-05 被用户要求整条删除**，原因是他自己的结论：
@@ -709,6 +724,24 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 `args.figures/no_figures/embed_model` —— 自己造 Namespace 时字段要抄全；
 ③ 那段"把配置同步进插件 pref"的 JS 不能塞进 f-string（嵌套 dict 花括号会让
 f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --check` 单测。
+
+#### B11.2 元数据补全：两路首页正文 + 模型综合（2026-10-05）
+
+用户要求：「元数据补全能不能同时读首页和 MinerU 首页，然后本地模型综合一下再给出来。」
+
+- **两路**：A = `zreader.fulltext_for()`（PDF 原文字面）；B = `<kb>/mineru/<KEY>/pages.json`
+  （MinerU 逐页正文）。取文本/合并/渲染全在**新模块** `offline/metafill_sources.py`
+  （单一职责，纯函数，`tests/test_metafill_sources.py` 覆盖 36 项）。
+- **合并纪律**：两路归一化后同值 → `agreement="both"`（更可信）；只有一路 → `"single"`；
+  两路不同 → `"conflict"`，**不擅自合并**，按**逐字段**优先表取一路
+  （DOI/卷/期/页/日期信 A 的字面，作者信 B 的版面切分），另一路进 `alternatives`。
+- **模型综合**：模型看到的是"两路正文 + 规则候选清单"（通过同一个 `{text}` 占位符送进去
+  —— 这样用户**已保存的旧提示词覆盖**照样能用）；它给的证据在**任一路**里能找到就算核对通过
+  （`_verify_evidence(pages, ev, pages_extra=…)`）。
+- **输出契约向后兼容**：`suggestions[]` 的六个老键都在，新增
+  `sources / agreement / alternatives / note`；插件弹窗会把"两路一致 / 不一致 + 另一路的值"
+  显示出来（老服务端不给这些键时整块跳过）。
+- 退化路径都写进 `notes`：只有 A、只有 B、两路都没有、模型不可用、某一路首页过短。
 
 #### B12. 提示词注册表：话术只有一份，且用户改得动
 

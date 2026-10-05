@@ -20,6 +20,7 @@
 | **模块化重构**（2026-10-05） | 插件 4951 行单文件 → `zotero-plugin/src/*.js` 源文件 + 生成器（运行时仍是单文件，见下）；面板 2805 行单类 → `tools/panels/` 各页签模块。两处都用"逐字比对"证明了是纯搬迁 |
 | **内容窗格「本地模型」+ 逐段检测**（2026-10-05 加，**同日删**） | 加过：右侧内容窗格一个分区（注入摘要级/全文级、逐段检测、定位、整理讨论）+ 逐段检查按段落指纹落库。用户当天判定"没什么用而且 bug 多"，要求**整条删除**（窗格、七个端点、kbchat/paras、面板复核页、三张表一起）—— 见 [`../ARCHITECTURE.md` 的 B10](../ARCHITECTURE.md) 与 `check_plugin.py` 的反向检查 |
 | **经验层写入收成一份实现 + 提示词注册表**（2026-10-05） | `offline/experience.py`（增删改与权重算术只有一份）+ `offline/prompts.py` 注册表（可改、可试跑；现在 6 条）。见 [`../ARCHITECTURE.md` 的 B12–B13](../ARCHITECTURE.md) |
+| **MinerU 接进建库流程 + 全库重解析 + 层级设计**（2026-10-05） | `--parser` 那套 + 面板「PDF 解析」页 + 批量解析（模型只加载一次）+ 全库 94/94 换成 MinerU；另写 `docs/知识库层级设计.md` 定五层 |
 | **MinerU 可选组件：项目内安装 + 探测 + 图形化引导**（2026-10-05） | 独立 venv（`mineru[torch]` + CUDA 版 torch + llama.cpp 跑 VLM），装在项目内 `.mineru\`、删目录即卸载；`offline/mineru.py::probe()` 探测 + `/mineru-check`；插件首启弹一次引导 + 面板向导（预检磁盘/显卡/网络、实时日志、可取消）。**接进转换管道是下一轮**。见 [`../ARCHITECTURE.md` 的 B11](../ARCHITECTURE.md) |
 
 **进行中**
@@ -196,12 +197,15 @@
                          `test_mineru_guide.py`（安装引导的预检四种坏情况 +
                          窗口装配）、`test_mineru_parse.py`（**逐页渲染 / 指纹 /
                          解压防穿越 / 失败不覆盖旧产物 / 按篇回落**）、
-                         `test_ollama_guide.py`（Ollama 引导预检 + 同步 JS 语法）。
+                         `test_ollama_guide.py`（Ollama 引导预检 + 同步 JS 语法）、
+                         `test_metafill_sources.py`（元数据补全的**双源**：归一化 /
+                         两路合并 / 冲突取哪一路 / 渲染 / 模型裁决）。
                          ⚠ 解析相关的测试一律用**假 runner** 造 zip 产物 ——
                          真解析 15~36 秒/篇且依赖装好的 MinerU，不能进单测。
                          ⚠ `test_paras.py` / `test_chat_endpoints.py` **已删**
                          —— 窗格与逐段检查那条链整体删除（2026-10-05）。)
   .mineru\               MinerU（**可选组件**）的独立 venv + 模型；删目录即卸载
+  docs\知识库层级设计.md  知识库五层（原始/正文/档案/视图/图片）的重排方案与迁移步骤
                          ⚠ 跑全库解析前先退出 Ollama（抢显存，实测差十倍）
                          （由 scripts\install-mineru.ps1 装，见 ARCHITECTURE B11）
   .venv\                 Python 依赖（见 requirements.txt）

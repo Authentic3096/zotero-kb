@@ -283,6 +283,10 @@ def main() -> int:
                 # 少任何一个就是"该弹的不弹"或"点了没反应"，所以名字一起盯着。
                 "mineruKitPath", "ollamaExePath", "scheduleOptionalGuides",
                 "maybeAskOptionalGuides", "askOptionalGuide", "openOptionalGuide",
+                # 能力探测（19-caps.js）：右键菜单按它标「未连接」。
+                # 少任何一个都是"菜单该标的没标"，所以名字一起盯着。
+                "refreshCaps", "probeDsh", "probeLocalModel", "capLabel",
+                "scheduleCapsRefresh",
                 # ⚠ 2026-10-05：这里原来还盯着「内容窗格里的本地模型分区」
                 #   （19-itempane.js / 20-reader.js）那 25 个函数名。
                 #   用户要求把窗格整条链删掉，所以那批名字一起删了。

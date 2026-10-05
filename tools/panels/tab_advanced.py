@@ -138,7 +138,10 @@ class AdvancedTab:
         ttk.Entry(box, textvariable=self.w_note, width=30).pack(side="left",
                                                                 padx=4)
         for text, cmd, tip in (
-            ("标为重点", lambda: self.do_weight(True), "检索时权重提高"),
+            # 说明要跟实现对齐：标重点 = raw 权重 +3.0，最终乘数取 1+ln(raw)
+            # —— 基础权重 1 时约 2.4 倍（不是 ×4，用户 2026-10-05 指出过）。
+            ("标为重点", lambda: self.do_weight(True),
+             "检索时明显靠前：权重乘数约 1.0 → 2.4 倍（1+ln(基础分+3×重点+经验)）"),
             ("取消重点", lambda: self.do_weight(False), ""),
             ("列出权重榜", self.do_weight_list, "看全部被加权过的文献"),
         ):

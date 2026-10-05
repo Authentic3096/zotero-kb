@@ -189,6 +189,26 @@ def _render_file(level_id: str, key: str) -> str:
     return _missing(key, f"「{lv['label']}」还没生成（{path}）")
 
 
+def _ai_summary(s, key: str) -> dict:
+    """读 `meta` 表里的 `ai_summary:<key>`（面板「生成要点」/ `judge.py summarize
+    --write` 写的那份）。读不到就返回 `{}` —— 没生成过是正常状态，不是错误。"""
+    try:
+        row = s.read("SELECT v FROM meta WHERE k = ?", (f"ai_summary:{key}",))
+    except Exception:      # noqa: BLE001
+        return {}
+    if not row:
+        return {}
+    raw = (row[0]["v"] if isinstance(row[0], dict) else row[0][0]) or ""
+    try:
+        import json
+        data = json.loads(raw)
+    except Exception:      # noqa: BLE001
+        return {}
+    if not isinstance(data, dict) or not data.get("ok", True):
+        return {}
+    return data
+
+
 def _render_tldr(key: str, item: dict, s) -> str:
     """摘要级：模型用它判断"要不要深读"，几百 token 就能覆盖一篇。
 
@@ -220,6 +240,24 @@ def _render_tldr(key: str, item: dict, s) -> str:
         lines.append("## 摘要")
         lines.append("")
         lines.append(item["abstract"][:2000])
+        lines.append("")
+    # ---- AI 要点（模型写的 2~4 句）
+    #
+    # ⚠ 2026-10-05 补：`judge.py summarize --write` 一直把结果写进
+    #   `meta` 表的 `ai_summary:<key>`，但**没有任何地方读它** ——
+    #   面板「分类建议」页那个「生成要点」按钮点完之后，用户在明面上看不到任何东西
+    #   （全库重跑 94 篇摘要时才发现这个断层）。这里把它渲染进摘要级视图，
+    #   让它真正出现在「打开知识库 → 摘要与要点」与 MCP 的 tldr 资源里。
+    ai = _ai_summary(s, key)
+    if ai:
+        lines.append("## AI 要点（本地模型，可能出错，请对照原文）")
+        lines.append("")
+        if ai.get("method"):
+            lines.append(f"**方法**：{ai['method']}")
+        for p in ai.get("points") or []:
+            lines.append(f"- {str(p).strip()}")
+        if ai.get("keywords"):
+            lines.append(f"**关键词**：{'、'.join(str(k) for k in ai['keywords'])}")
         lines.append("")
     exp = s.experience_for_item(key, limit=5)
     if exp:

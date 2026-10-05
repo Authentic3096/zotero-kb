@@ -147,19 +147,17 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 
 ### 第 3 步：装 Zotero 插件
 
-**先打包**（如果你拿到的是源码）：
+**装的就是打包好的 xpi，不用自己编译**：
 
-双击 `scripts\0-panel.vbs` 打开管理面板 → 「**高级**」页 → 「插件安装」组 →
-点「**打包插件 xpi**」。生成的 `.xpi` 在 `zotero-plugin\` 目录下。
+1. 打开 [Releases](https://github.com/Authentic3096/zotero-kb/releases)，
+   下载最新版的 **`zotero-kb-<版本>.xpi`**（Release 附件里的那个；不是
+   `Source code (zip)`，那是给要改代码的人用的）；
+2. Zotero → 工具 → 插件 → 右上角齿轮 → **Install Plugin From File…** →
+   选中刚下的 `zotero-kb-<版本>.xpi`；
+3. **装完必须完全退出 Zotero 再打开**（关窗口不算）。
 
-**再安装**：
-
-```
-Zotero → 工具 → 插件 → 右上角齿轮 → Install Plugin From File…
-选中 zotero-plugin\zotero-kb-<版本>.xpi
-```
-
-**装完必须完全退出 Zotero 再打开**（关窗口不算）。
+> 自己改代码时才需要打包：管理面板 → 「高级」页 → 「打包插件 xpi」，
+> 生成的 `.xpi` 在 `zotero-plugin\` 目录下（细节见 `docs/DEVELOPMENT.md`）。
 
 > 为什么：插件代码只在加载时读一次。**运行中更新插件不会重跑 `startup()`** ——
 > 这是"装了没用"最常见的原因。
