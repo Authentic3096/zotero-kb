@@ -29,6 +29,11 @@ kb/
 __pycache__/
 *.pyc
 
+# ---- 可选组件 MinerU（scripts/install-mineru.ps1 装的东西）----
+# 独立 venv（约 2 GB）+ 模型（basic 0.9 GB / 含 VLM 档 2.1 GB）+ uv 缓存。
+# 整个目录删掉 = 干净卸载，所以不进仓库。
+.mineru/
+
 # ---- 构建产物 ----
 zotero-plugin/*.xpi
 zotero-plugin/*.bak-iife
