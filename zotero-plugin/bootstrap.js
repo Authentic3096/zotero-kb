@@ -5611,11 +5611,16 @@ Object.assign(ZoteroKB, {
       sidenav: { l10nID: "zotero-kb-pane-sidenav", icon: iconSidenav },
       onInit: ({ doc, body }) => self.paneOnInit(doc, body),
       onItemChange: ({ item, tabType, setEnabled }) => {
-        // 只有**知识库里**的条目才启用。判据用已有的权重缓存（每几秒刷新），
-        // 这样不需要为每次选中条目发一次网络请求。
-        const inKb = !!(item && item.isRegularItem && item.isRegularItem()
-          && self.weightsCache[item.key]);
-        setEnabled(!!inKb);
+        // 只有**正式条目**才启用（附件/笔记不显示这个分区）。
+        //
+        // ⚠ 2026-10-05 改：原来还要求"权重缓存里有这篇"，本意是"只给知识库
+        //   里的条目看"。但那让**拉不到权重缓存时整篇都没有分区**（缓存是异步
+        //   拉的，服务没起、刚启动的几秒、请求失败都会是空的）—— 用户报的
+        //   "那个和本地模型对话的小窗去哪了、我没找到"里就有这一条。
+        //   现在一律给正式条目显示，在不在知识库里由分区正文自己说
+        //   （见 panePaint 里的空态提示）。
+        const regular = !!(item && item.isRegularItem && item.isRegularItem());
+        setEnabled(regular);
       },
       onRender: ({ doc, body, item }) => self.paneRender(doc, body, item),
       onDestroy: ({ body }) => self.paneOnDestroy(body),
@@ -5840,6 +5845,13 @@ Object.assign(ZoteroKB, {
         + (st.para.plan.total || 0) + " 段");
     }
     if (st.busy) bits.push("正在想…");
+    // 这篇不在知识库里时**明说**：否则用户会以为"这个聊天框坏了/按钮没反应"。
+    // 判据用权重缓存（/weights 以 items 为主表，库里每篇都有一行）。
+    const cached = self.weightsCache || {};
+    const cacheSize = Object.keys(cached).length;
+    if (cacheSize && !cached[ui.key]) {
+      bits.push("⚠ 这篇还没进知识库 —— 在管理面板点「手动更新」");
+    }
     ui.status.textContent = bits.join("　·　");
   },
 
