@@ -6220,11 +6220,13 @@ Object.assign(ZoteroKB, {
         const root = parsed.getElementById("kbroot");
         if (root) {
           el.textContent = "";
-          const frag = doc.createDocumentFragment();
-          while (root.firstChild) {
-            frag.appendChild(doc.importNode(root.firstChild, true));
-          }
-          el.appendChild(frag);
+          // ⚠⚠ 这里**绝不能**写成 `while (root.firstChild) { frag.appendChild(
+          //   doc.importNode(root.firstChild, true)) }` —— `importNode` 返回的是
+          //   **副本**、不会移除原节点，于是 `firstChild` 永远为真 → **死循环**
+          //   疯狂追加节点 → 内存吃爆 → **Zotero 卡死并崩溃**（2026-10-05 实测，
+          //   用户装机后"打开就卡住然后崩了"）。
+          //   一次 import 整棵 wrapper 最简、最不可能出错。
+          el.appendChild(doc.importNode(root, true));
           return true;
         }
       }
