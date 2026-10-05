@@ -34,7 +34,7 @@ Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js`
 | `14-menus.js` | 工具栏按钮与条目右键菜单 |
 | `15-prefpane.js` `16-weightcol.js` | 设置面板；「知识库权重」列 |
 | `17-windowhook.js` `18-taskpoll.js` | 窗口钩子；任务轮询 |
-| `19-itempane.js` | **右侧内容窗格「本地模型」分区**：注入摘要级/全文级、逐段检测（可中断可续跑）、定位、写入确认。对话**只在内存**里，退出即清 |
+| `19-mineruguide.js` | **MinerU（可选组件）的首次安装引导**：首启检测到没装就弹一次（`Services.prompt.confirmEx`），选「打开安装引导」拉面板进向导；无论选哪个都记 `mineruGuideDone`，之后不再打扰 |
 | `20-reader.js` | **阅读器里的选中入口**：官方 `renderTextSelectionPopup` 拿 `params.annotation.text` → 「定位到这一段」（**不去挖** `reader._iframeWindow` 那条私有路） |
 | `99-bootstrap.js` | Zotero 要调用的顶层生命周期函数 |
 

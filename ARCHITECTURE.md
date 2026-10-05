@@ -630,48 +630,59 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 
 ---
 
-#### B10. 内容窗格「本地模型」：把模型放到"读某一篇"的现场
+#### B10. （已删除）内容窗格「本地模型」与逐段检查
 
-用户要的是"**放在每篇文献的内部**、右侧边框一个本地模型聊天框"，
-所以做成了 Zotero **右侧内容窗格**里的一个分区（`src/19-itempane.js`）：
+**这两块在 2026-10-05 被用户要求整条删除**，原因是他自己的结论：
+「之前加到文献内部的本地模型对话没什么用而且 bug 多」、「逐段检测删就都删了」
+—— 而且 MinerU 接入之后，正文提取的段落问题本来就不那么明显了。
 
-| 部件 | 做法 |
+删掉的东西（**别照着旧版本加回来**，`check_plugin.py` 有一条反向检查盯着）：
+
+| 曾经的东西 | 现在 |
 |---|---|
-| 分区注册 | `Zotero.ItemPaneManager.registerSection`；`header`/`sidenav` 的 **`l10nID` 是必填**，文案在 `locale/{zh-CN,en-US}/zotero-kb.ftl`（42 条） |
-| 只在库里的条目上启用 | `onItemChange` 用已有的 `weightsCache[item.key]` 判断，**零额外请求** |
-| 三个按钮 | 注入摘要级 / 注入全文级（超预算按页均匀取样并**如实报数**）/ 全文级段落检测 |
-| 阅读器里的入口 | `Zotero.Reader.registerEventListener('renderTextSelectionPopup', …, pluginID)` —— 选中文字就在 `params.annotation.text`，往弹出框 `append` 一个「定位到这一段」。**不碰** `reader._iframeWindow` 那条私有路 |
-| 对话不落盘 | 消息只在插件内存 `ZoteroKB.chatState`；`shutdown` 清空；退出前用 `quit-application-requested`（**可以取消退出**：`subject.data = true`）提醒一次，复选框走 `Services.prompt.confirmEx` 的第 8/9 个参数（"下次不再提示"） |
-| 结构验证 | `tools/verify_bootstrap.js`：Node vm + 桩 `Zotero` 跑真机 `bootstrap.js`，断言分区字段齐、阅读器事件注册、退出观察挂上、`onRender` 能建界面（接进 `check_plugin.py`） |
+| `src/19-itempane.js`（内容窗格分区 UI）、`src/20-reader.js`（阅读器选中入口） | 文件已删；`00-core.js` 的三个 startup step、`01-lifecycle.js` 的注销/退出提醒、`04-prefs.js`+`prefs.js` 的两个 pref 一起删 |
+| 七个端点 `/chat`、`/chat-context`、`/para-plan`、`/para-check`、`/para-locate`、`/kb-propose`、`/kb-apply` | 已删（服务端自检里反过来钉住它们必须 404）。**只留 `/exp-draft`** |
+| `offline/kbchat.py`、`offline/paras.py` | 已删；`kbchat.draft_experience` 搬进 `offline/experience.py`（面板「经验库 → 修改/增添经验」在用） |
+| 面板「损坏查询 → 逐段进度与正文修正」（`tools/panels/para_review.py`） | 已删（入口和产物都没了，留着按钮只会点空） |
+| 三张表 `para_check` / `para_override` / `fulltext_patch` | 从 `SCHEMA_SQL` 移除；老库要真删跑 `tools/kb_admin.py drop-legacy-tables --yes`（**先自动备份 index.db**，备份失败就不删） |
+| 两条提示词 `chat` / `para` / `propose`（共三条） | 从注册表删掉（9 条 → 6 条） |
+| 那一批界面文案（42 条 ftl） | 两个 ftl 清空（现在**一条文案都没有**）；l10n 挂载机制留着，注释里写清了两条坑（必填 l10nID、有值 message 会抹子节点） |
 
-服务端逻辑全在 `offline/kbchat.py`（`/chat`、`/chat-context`、`/para-plan`、
-`/para-check`、`/para-locate`、`/kb-propose`、`/kb-apply`、`/exp-draft`）。
+`tools/verify_bootstrap.js` 里那几条断言也**反过来**了：不再断言"注册了分区"，
+而是断言"没有注册任何分区 / 没有阅读器入口 / startup 里没有那三步 /
+插件对象上没有那批函数"。桩里故意留着会记账的 `ItemPaneManager` 与 `Reader`，
+谁把调用加回来立刻红灯。
 
-#### B11. 逐段检查：段落是**重建**出来的，进度靠**指纹**对齐
+#### B11. PDF 文本源：默认 Zotero 缓存 + PyMuPDF，可选 MinerU
 
-正文 md 里**没有段落边界**（全库 95 篇 / 1439 页实测：页内基本无空行、行首无缩进；
-PyMuPDF 的 block 也不是段落 —— 88 行 → 90 个 block）。所以 `offline/paras.py`
-负责重建，并且：
+正文抽取那一步的接缝在 `offline/convert.py` 的主循环里：
+`pages, source = reader.fulltext_for(item, **ft_kw)` → `item.fulltext_pages` →
+写 `kb/papers/<key>.md` 与 `kb/fulltext/<key>.md`（页锚点 `## p.N` 由 convert 写）→
+切片/向量/MANIFEST，来源记进 `items.fulltext_src`。所以换文本源**只换这一个调用**。
 
-- **只给候选，不给"正确答案"**：每个段落带 `evidence`（"为什么从这里开始"，
-  可核对），用户/模型可以用 `para_override`（join_prev / split_at）修正 ——
-  用户原话里担心的"本来是同一段被误拆两段"就是这个机制在管。
-- **指纹而不是段号**：`hash = sha1(段首 200 字 + 段长)[:6]`。段号在
-  重建/打补丁/页眉过滤之后会漂，指纹不会 —— `para_check`（进度）与
-  `fulltext_patch`（修正）都挂在它上面；对不上的标 `stale` 并提示"需重查"。
-- **只在有证据的地方切**（宁可少切）：折行形态看"上一行短 + 句末标点"，
-  块形态（一行几百字）先按句群拆开。实测把"多段粘连"从 532 段压到 146 段。
-- **检查单元**：超长段落按句子边界切成 ≤900 字再问模型，别把一句话切断
-  （切断本身就是我们想修的那种损伤）。
-- **预筛**：先用服务端算的**客观信号**（符号/异域码位/私有区/表格残留/矩阵括号/
-  重复度）挑可疑段，只把可疑段交给模型（噪声从 35.7% 压到 10.6%）。
-  结论永远与信号**并排显示** —— `check_chunks.py` 记过一次教训：让模型
-  对切片"读着像不像句子"打分，判错 60%。
+- 默认（`zotero`）：`offline/zreader.py` 的两条路（Zotero 自己的 `.zotero-ft-cache`
+  与 PyMuPDF）+ 字符偏移还原 + 页眉过滤 + 灰区模型仲裁。**没装 MinerU 的用户
+  走的就是这条**，与之前逐字节一致。
+- 可选（MinerU）：`offline/mineru.py` **本轮只做到探测**（`probe()`：装没装、
+  版本、生效的后端与 VLM 引擎、模型档位齐不齐、GPU 可用不可用，结果缓存 60 秒），
+  挂在一个只读端点 `/mineru-check` 上，给三处用：插件首启的安装引导对话框、
+  面板「运行环境」页第 4 行的状态、面板「知识库结构」页那个"只在没装时出现"的按钮。
+  ⚠ **接进转换管道（`convert.py --parser` + `mineru.fulltext_for()`）是下一轮的事**
+  —— 本轮先让"安装 + 探测 + 引导"落地，用户要先验收这一坨。
+- 安装：`scripts/install-mineru.ps1`（可选组件，装在项目内的 `.mineru\`，
+  不写 PATH/注册表，删目录即卸载）+ 图形化引导
+  `tools/panels/mineru_guide.py`（说明 → 档位 → 预检 → 后台装 → 复检并写回配置）。
+
+  ⚠ 三条实测出来的坑（脚本与文档里都写了）：Windows 上 `mineru[full]` 装的是
+  **LMDeploy**（vLLM 只有 Linux），而它在本机起不来
+  （`ValueError: high is out of bounds for int32`）→ 所以装 `mineru[torch]`，
+  VLM 档走 **llama.cpp + Q8 GGUF**；**PyPI 的 Windows torch 是 CPU 版**，得从
+  `download.pytorch.org` 换 CUDA 轮子；模型走 modelscope（hf-mirror 的 API 403）。
 
 #### B12. 提示词注册表：话术只有一份，且用户改得动
 
-`offline/prompts.py`（9 条：tag/summary/extract/metafill/chat/para/propose/
-draft/chunks）+ 覆盖文件 `kb/prompts.json`。要点：
+`offline/prompts.py`（2026-10-05 起 6 条：tag/summary/extract/metafill/
+draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/prompts.json`。要点：
 
 - **渲染用 `{占位符}` 替换，不用 `str.format`**：这些提示词里本来就含 JSON 示例
   （`{"tags": [...]}`），用 format 就得写成 `{{`，用户看到的默认文本是一堆双括号。
@@ -834,10 +845,10 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 | DSH 侧收件箱 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
 | **获取文献（需求 9）** | ✅ **真机多轮验收** | 见链路 5；本地模型分类打标签实测可用 |
 | **打开知识库（分级）** | ✅ 面板与 Zotero 右键两处都能用（2026-10-05） | 见 B7；分级视图 275 份已生成 |
-| **代码模块化** | ✅ 插件 22 个源文件 / 面板 10 个页签 + 2 个对话框模块（2026-10-05） | 两处都用"逐字比对"证明是纯搬迁 |
-| **内容窗格「本地模型」** | ✅ 结构已用桩环境验证（17 项）+ 插件侧就绪；真机待重启 Zotero 确认（2026-10-05） | 见 B10；`tools/verify_bootstrap.js` |
-| **逐段检查（可中断可续跑）** | ✅ 预筛噪声 10.6%；进度与修正四张表落库 | 见 B11；`test_paras.py` 52 项 |
-| **提示词注册表** | ✅ 9 条话术可看可改可还原 + 试跑 | 见 B12；`tab_prompts.py` |
+| **代码模块化** | ✅ 插件 20 个源文件（窗格那两个已删）/ 面板 10 个页签 + 2 个对话框模块 | 两处都用"逐字比对"证明是纯搬迁 |
+| ~~内容窗格「本地模型」~~ | **已按用户要求删除**（2026-10-05）：没用而且 bug 多。见 B10；`check_plugin.py` 有反向检查盯着它别回来 | — |
+| ~~逐段检查（可中断可续跑）~~ | **已删除**（连三张表一起）。见 B10 | — |
+| **提示词注册表** | ✅ 6 条话术可看可改可还原 + 试跑（chat/para/propose 随窗格删了） | 见 B12；`tab_prompts.py` |
 | **经验库可编辑** | ✅ 面板「修改/增添经验」（口述 + 表单两条路）+ 体检 + 手动选会话 | 见 B13；`test_experience_edit.py` 35 项 |
 
 **13 个 MCP 工具**：`kb_search` / `kb_item` / `kb_fulltext` / `kb_figures` /

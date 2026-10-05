@@ -17,8 +17,10 @@
 | **基础权重按发表年份** | 跨度 **15 年**、**动态**（不落库，每次检索实时算，跨年自动更新）、15 年前压到 `0.95`。此前 101 篇里有 **93 篇**权重被硬编码成 `1.0`。见 `offline/schemas.py` 的 `recency_base()`，以及 `raw_weight()` / `weight_multiplier()` 新增的 `base` 参数 |
 | **搜文献 → 列候选表 → 用户挑 → 抓进 Zotero**（v0.24.0） | 见 [`DESIGN.md` 的「获取文献」一节](DESIGN.md#获取文献搜--列候选可点开看--勾选--抓进-zotero)。**抓取交给 Zotero 自己**（`Zotero.Translate.Search` + 自带的附件 resolver），所以**校园网/机构订阅的访问权限天然生效**，而且**不用下载再手工拖** |
 | **打开知识库（分级）**（2026-10-05） | 一篇文献的五个层面（摘要与要点 / 完整档案 / 按页正文 / 图注与表格 / 权重与经验）变成**数据模型**（`offline/kbviews.py` 的 `LEVELS`），面板与 Zotero 右键共用同一份清单（`tools/check_kb_levels.py` 盯两侧一致）。解决的是"目录里是 `22X9PMR6.md`、人认不出是哪篇"。见 [`../ARCHITECTURE.md` 的 B7](../ARCHITECTURE.md) |
-| **模块化重构**（2026-10-05） | 插件 4951 行单文件 → `zotero-plugin/src/*.js` 20 个源文件 + 生成器（运行时仍是单文件，见下）；面板 2805 行单类 → `tools/panels/` 各页签模块。两处都用"逐字比对"证明了是纯搬迁 |
-| **内容窗格「本地模型」+ 逐段检测 + 经验库整治**（2026-10-05） | Zotero 右侧内容窗格多一个分区（注入摘要级/全文级、逐段检测、定位、整理讨论）；逐段检查**可中断可续跑**（进度按段落指纹落库）；经验层写入收成一份实现（`offline/experience.py`）；提示词进注册表（9 条可改可试跑）。见 [`../ARCHITECTURE.md` 的 B10–B13](../ARCHITECTURE.md) |
+| **模块化重构**（2026-10-05） | 插件 4951 行单文件 → `zotero-plugin/src/*.js` 源文件 + 生成器（运行时仍是单文件，见下）；面板 2805 行单类 → `tools/panels/` 各页签模块。两处都用"逐字比对"证明了是纯搬迁 |
+| **内容窗格「本地模型」+ 逐段检测**（2026-10-05 加，**同日删**） | 加过：右侧内容窗格一个分区（注入摘要级/全文级、逐段检测、定位、整理讨论）+ 逐段检查按段落指纹落库。用户当天判定"没什么用而且 bug 多"，要求**整条删除**（窗格、七个端点、kbchat/paras、面板复核页、三张表一起）—— 见 [`../ARCHITECTURE.md` 的 B10](../ARCHITECTURE.md) 与 `check_plugin.py` 的反向检查 |
+| **经验层写入收成一份实现 + 提示词注册表**（2026-10-05） | `offline/experience.py`（增删改与权重算术只有一份）+ `offline/prompts.py` 注册表（可改、可试跑；现在 6 条）。见 [`../ARCHITECTURE.md` 的 B12–B13](../ARCHITECTURE.md) |
+| **MinerU 可选组件：项目内安装 + 探测 + 图形化引导**（2026-10-05） | 独立 venv（`mineru[torch]` + CUDA 版 torch + llama.cpp 跑 VLM），装在项目内 `.mineru\`、删目录即卸载；`offline/mineru.py::probe()` 探测 + `/mineru-check`；插件首启弹一次引导 + 面板向导（预检磁盘/显卡/网络、实时日志、可取消）。**接进转换管道是下一轮**。见 [`../ARCHITECTURE.md` 的 B11](../ARCHITECTURE.md) |
 
 **进行中**
 
@@ -186,12 +188,17 @@
                          ⚠ 断言**条数不是固定值**：`test_matching.py` 抽样真实库，
                          项数在 13~18 间浮动，属正常。所以别把某个总数写进文档，
                          判据是"每个文件退出码 0 / 失败 0"。
-                         2026-10-05 新增四个：`test_paras.py`（段落重建 /
-                         join-split / 指纹对齐）、`test_experience_edit.py`
+                         2026-10-05 新增：`test_experience_edit.py`
                          （经验写入只有一份实现 + 原子性 + 旧库自动补列）、
                          `test_prompts.py`（话术搬家逐字比对 + 改坏必被拒 +
-                         经验口径）、`test_chat_endpoints.py`（注入如实报数、
-                         逐段契约、定位不猜、写入闸门）。)
+                         经验口径）、`test_mineru_probe.py`（假 runner 覆盖
+                         就绪/缺失/超时/崩了/没装五种 `probe()` 结果）、
+                         `test_mineru_guide.py`（安装引导的预检四种坏情况 +
+                         窗口装配）。
+                         ⚠ `test_paras.py` / `test_chat_endpoints.py` **已删**
+                         —— 窗格与逐段检查那条链整体删除（2026-10-05）。)
+  .mineru\               MinerU（**可选组件**）的独立 venv + 模型；删目录即卸载
+                         （由 scripts\install-mineru.ps1 装，见 ARCHITECTURE B11）
   .venv\                 Python 依赖（见 requirements.txt）
 ```
 
