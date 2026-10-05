@@ -180,6 +180,9 @@ Object.assign(ZoteroKB, {
     // 右侧栏「知识库」分区显示哪一级（2026-10-05 新增，见 20-kbview.js）。
     // 默认「分节纲要」—— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
     kbviewLevel: "zotero-kb.kbviewLevel",
+    // 右侧栏「知识库」分区的字号（px）。**只作用于我们这一块**（容器上的内联
+    // font-size），不动 Zotero 的任何默认设置。
+    kbviewFont: "zotero-kb.kbviewFont",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },

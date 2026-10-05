@@ -123,7 +123,8 @@ def render(md_text: str) -> str:
         if m:
             flush_buf(); close_list()
             lvl = len(m.group(1))
-            size = {1: "15px", 2: "13.5px", 3: "12.5px"}.get(lvl, "12px")
+            # ⚠ 用 **em** 而不是 px：窗格里有字号调节，写死 px 就盖住了外层设置。
+            size = {1: "1.35em", 2: "1.18em", 3: "1.06em"}.get(lvl, "1em")
             out.append('<div style="font-weight:600; font-size:%s; margin:6px 0 2px;">%s</div>'
                        % (size, _inline(m.group(2))))
             continue

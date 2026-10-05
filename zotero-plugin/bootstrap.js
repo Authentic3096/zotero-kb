@@ -380,6 +380,9 @@ Object.assign(ZoteroKB, {
     // 右侧栏「知识库」分区显示哪一级（2026-10-05 新增，见 20-kbview.js）。
     // 默认「分节纲要」—— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
     kbviewLevel: "zotero-kb.kbviewLevel",
+    // 右侧栏「知识库」分区的字号（px）。**只作用于我们这一块**（容器上的内联
+    // font-size），不动 Zotero 的任何默认设置。
+    kbviewFont: "zotero-kb.kbviewFont",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },
@@ -6320,6 +6323,26 @@ Object.assign(ZoteroKB, {
     return "outline";
   },
 
+  /** 字号（px，只作用于本分区）。12~18，默认 13。 */
+  kbviewFont: function () {
+    var self = ZoteroKB;
+    try {
+      const v = parseInt(self.getPref(self.PREFS.kbviewFont, 13), 10);
+      if (v >= 10 && v <= 24) return v;
+    } catch (e) { /* ignore */ }
+    return 13;
+  },
+
+  setKbviewFont: function (px) {
+    var self = ZoteroKB;
+    try {
+      const v = parseInt(px, 10);
+      if (v >= 10 && v <= 24) {
+        Zotero.Prefs.set(self.PREFS.kbviewFont, v);
+      }
+    } catch (e) { /* ignore */ }
+  },
+
   setKbviewLevel: function (id) {
     var self = ZoteroKB;
     // ⚠ 写 pref 用 Zotero.Prefs.set：插件里**没有** setPref 这个包装
@@ -6380,7 +6403,12 @@ Object.assign(ZoteroKB, {
 
     const wrap = self.kbviewEl(doc, "div");
     wrap.className = "zotero-kb-kbview";
-    wrap.setAttribute("style", "padding:4px 6px; font-size:12px; line-height:1.5;");
+    // 字号：只在本容器上设（不动 Zotero 的默认设置）。
+    // 限高 + 内部滚动：正文再长也只在我们这一块里滚，不去挤 Zotero 自己的分区
+    //（用户反馈"我的插件窗口总被上面的挤位置"）。
+    wrap.setAttribute("style",
+      "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
+      + " max-height:62vh; overflow:auto;");
 
     // 工具条：**单行不换行**（用户反馈：提示文字换行后"重新读取"被挤到第二行）。
     // 做法：select/按钮 nowrap，提示占剩余宽度并省略号截断（min-width:0 是关键，
@@ -6399,6 +6427,24 @@ Object.assign(ZoteroKB, {
       sel.appendChild(op);
     }
     sel.value = self.kbviewLevel();
+    // 字号下拉（小/标准/较大/大）—— 只改这一块的字号
+    const fontSel = self.kbviewEl(doc, "select");
+    fontSel.setAttribute("style", "flex:0 0 auto; white-space:nowrap;");
+    for (const opt of [[12, "小"], [13, "标准"], [15, "较大"], [17, "大"],
+                       [20, "特大"]]) {
+      const o = self.kbviewEl(doc, "option");
+      o.setAttribute("value", String(opt[0]));
+      o.textContent = opt[1];
+      fontSel.appendChild(o);
+    }
+    fontSel.value = String(self.kbviewFont());
+    fontSel.addEventListener("change", () => {
+      self.setKbviewFont(fontSel.value);
+      wrap.setAttribute("style",
+        "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
+        + " max-height:62vh; overflow:auto;");
+    });
+
     const btn = self.kbviewEl(doc, "button");
     btn.textContent = "重新读取";
     btn.setAttribute("style", "padding:1px 6px; flex:0 0 auto; white-space:nowrap;");
@@ -6406,7 +6452,7 @@ Object.assign(ZoteroKB, {
     hint.setAttribute("style", "opacity:0.65; font-size:11px; flex:1 1 auto;"
       + " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;");
     hint.setAttribute("title", "");
-    bar.append(sel, btn, hint);
+    bar.append(sel, fontSel, btn, hint);
     wrap.append(bar);
 
     const view = self.kbviewEl(doc, "div");
@@ -6537,7 +6583,8 @@ Object.assign(ZoteroKB, {
       if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
         flushBuf(); closeList();
         const lvl = m[1].length;
-        const size = { 1: "15px", 2: "13.5px", 3: "12.5px" }[lvl] || "12px";
+        // em：跟随容器字号（窗格有字号调节，写死 px 会盖住它）
+        const size = { 1: "1.35em", 2: "1.18em", 3: "1.06em" }[lvl] || "1em";
         out.push(`<div style="font-weight:600; font-size:${size}; margin:6px 0 2px;">`
                  + inline(m[2]) + "</div>");
         continue;
