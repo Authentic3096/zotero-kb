@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import glob
+import io
 import json
 import os
 import re
@@ -110,16 +111,60 @@ def rough_balance(src: str) -> list[str]:
 
 
 def _strip_comments(src: str) -> str:
-    """把 JS 注释剥掉，只留代码。
+    """去掉 `//` 与 `/* */` 注释（**逐字符扫描**，不是正则）。
 
-    为什么需要：有一条检查是"某个名字**不该**再出现"（窗格那条链删干净了没有），
-    而源码里恰恰有多处注释在解释"这些东西被删了、别加回来" —— 注释里当然会
-    出现这些名字。不剥注释的话，**写清楚为什么删反而会让检查变红**（本机实测）。
-    只做粗剥（`/* */` 与行首 `//`），够用且不会误伤字符串里的 URL 之类。
+    ⚠ 这里原来是用 re.sub 配一个「斜杠星号 … 星号斜杠」的模式去注释，那种朴素写法，
+      碰到"注释文字里出现 `/*`"就会一路吃到下一个 `*/`，把**大段真实代码**
+      一起删掉 —— 2026-10-05 实测：00-core.js 被砍到 41%，
+      `FTL_FILE` / `startup` 的定义都不见了，新加的"成员引用检查"当场误报。
+      扫描器识别字符串字面量（`"` `'` `` ` ``）与转义，不再靠"成对符号"猜。
     """
-    out = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
-    out = re.sub(r"^\s*//.*$", "", out, flags=re.M)
-    return out
+    out: list[str] = []
+    i, n = 0, len(src)
+    in_line = in_block = False
+    quote = ""
+    while i < n:
+        ch = src[i]
+        nxt = src[i + 1] if i + 1 < n else ""
+        if in_line:
+            if ch == "\n":
+                in_line = False
+                out.append(ch)
+            i += 1
+            continue
+        if in_block:
+            if ch == "*" and nxt == "/":
+                in_block = False
+                i += 2
+                continue
+            i += 1
+            continue
+        if quote:
+            out.append(ch)
+            if ch == "\\":
+                out.append(nxt)
+                i += 2
+                continue
+            if ch == quote:
+                quote = ""
+            i += 1
+            continue
+        if ch in ("\"", "'", "`"):
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "/" and nxt == "/":
+            in_line = True
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block = True
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def main() -> int:
@@ -305,6 +350,55 @@ def main() -> int:
         problems.extend(f"缺 {f}" for f in missing)
     else:
         print(f"  [OK] {len(internal)} 个内部函数齐备")
+
+    # ---- 成员引用检查：`self.X` / `ZoteroKB.X` 引用的成员必须有定义
+    #
+    # 为什么加这一条（2026-10-05 实测教训）：我在新的窗格代码里写了
+    # `self.kbDirPath()` 与 `self.setPref()` —— 这两个函数**本插件里都不存在**
+    # （真名是 `kbDir()` / `Zotero.Prefs.set`）。上面的"内部函数清单"查不到它们
+    # （名字不在清单里），桩测试也测不到（不执行 onRender），真机一渲染就抛。
+    # 写完这条检查顺手扫全插件，还扫出 `19-mineruguide.js` 里同类的一处
+    # （被 try/catch 静默吞掉的那种）。
+    #
+    # 判据：把每个源文件里 `self.<名>` / `ZoteroKB.<名>` / `KB.<名>` 的**引用**收集
+    # 起来，减去"本插件任何地方定义过的成员"与"任何地方赋过值的成员"
+    # （跨文件也算：`weightsCache` 在 16-weightcol 里赋值、在 15-prefpane 里读），
+    # 剩下的就是可疑引用。
+    ref_ok = {"item", "tabType", "doc", "body", "setEnabled"}   # Zotero 回调形参
+    srcs = []
+    for src_name in BB.SRC_ORDER:
+        spath = os.path.join(BB.SRC, src_name + ".js")
+        if os.path.isfile(spath):
+            srcs.append((src_name, _strip_comments(
+                io.open(spath, encoding="utf-8").read())))
+    member_defs, assigned_all = set(), set()
+    for _name, code in srcs:
+        # 对象属性 / 方法：`foo: …`、`async foo: …`、`foo: async function`
+        member_defs |= set(re.findall(r"(?m)^\s*(?:async\s+)?([A-Za-z_]\w*)\s*:", code))
+        # 方法简写：`foo(...) {`
+        member_defs |= set(re.findall(r"(?m)^\s*(?:async\s+)?([A-Za-z_]\w*)\s*\(", code))
+        # 模块级常量：const/let/var foo =
+        member_defs |= set(re.findall(
+            r"(?m)^\s*(?:const|let|var)\s+([A-Za-z_]\w*)\s*=", code))
+        # 动态状态：self.foo = … / this.foo = … / ZoteroKB.foo = …
+        assigned_all |= set(re.findall(
+            r"(?:self|this|ZoteroKB|KB)\.([A-Za-z_]\w*)\s*(?:=[^=]|\+\+|--)",
+            code))
+    known = member_defs | assigned_all | ref_ok
+    bad_refs: dict = {}
+    for name, code in srcs:
+        used: set = set()
+        for alias in ("self", "ZoteroKB", "KB"):
+            used |= set(re.findall(alias + r"\.([A-Za-z_]\w*)", code))
+        miss = sorted(u for u in used if u not in known)
+        if miss:
+            bad_refs[name] = miss
+    if bad_refs:
+        print(f"  [XX] 引用了不存在的成员：{bad_refs}")
+        problems.append(f"成员引用：{bad_refs}")
+    else:
+        print(f"  [OK] 成员引用检查通过（已定义 {len(member_defs)} 个、"
+              f"动态状态 {len(assigned_all)} 个）")
 
     # 反向：窗格那条链的函数名**不该**再出现（删干净了没有）
     #

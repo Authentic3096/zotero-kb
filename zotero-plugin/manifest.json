@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Zotero 文献知识库",
-  "version": "1.6.0",
+  "version": "1.6.1",
   "description": "把新加入的文献自动送进本地知识库（切片 + 索引），用本机模型推荐分类，右键可一键应用或跟模型对话调整；也可以把 DSH 搜到、你挑好的文献直接抓进 Zotero。",
   "homepage_url": "https://github.com/Authentic3096/zotero-kb",
   "author": "DeepSeek and Authentic3096",

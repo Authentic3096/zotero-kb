@@ -453,17 +453,22 @@ if (KB) {
 
   const guideCase = async (opts) => {
     const seen = { pref: [], panel: [], asked: 0, missing: null };
+    // ⚠ 这里原来还存了 `setPref: KB.setPref` 并在下面**伪造**了它 ——
+    //   而真机上 `self.setPref` 根本不存在（写 pref 用 Zotero.Prefs.set）。
+    //   桩凭想象提供了一个函数，于是 19-mineruguide.js 里那处
+    //   `self.setPref(...)` 静默失败一直没被发现（2026-10-05 修的）。
+    //   现在监听真的 `Zotero.Prefs.set`，桩与真机口径一致。
     const saved = {
-      _exists: KB._exists, request: KB.request, setPref: KB.setPref,
+      _exists: KB._exists, request: KB.request,
       getPref: KB.getPref, askOptionalGuide: KB.askOptionalGuide,
-      panelProcess: KB.panelProcess,
+      panelProcess: KB.panelProcess, prefsSet: Zotero.Prefs.set,
     };
     KB.getPref = (k, d) => {
       if (k === KB.PREFS.optionalGuideDone) return !!opts.done;
       if (k === KB.PREFS.mineruGuideDone) return !!opts.legacyDone;
       return d;
     };
-    KB.setPref = (k, v) => { seen.pref.push([k, v]); };
+    Zotero.Prefs.set = (k, v) => { seen.pref.push([k, v]); calls.prefs[k] = v; };
     KB._exists = () => !!opts.localExe;
     KB.request = async (m, path) => (path === "/mineru-check"
       ? { ok: !!opts.mineruOk } : { ollama: opts.ollamaOk ? "C:\\x\\ollama.exe" : "" });
@@ -476,7 +481,7 @@ if (KB) {
     } finally {
       KB._exists = saved._exists;
       KB.request = saved.request;
-      KB.setPref = saved.setPref;
+      Zotero.Prefs.set = saved.prefsSet;
       KB.getPref = saved.getPref;
       KB.askOptionalGuide = saved.askOptionalGuide;
       KB.panelProcess = saved.panelProcess;

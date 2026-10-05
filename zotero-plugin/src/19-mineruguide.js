@@ -112,7 +112,12 @@ Object.assign(ZoteroKB, {
     if (!missing.length) return;
 
     // ③ 只弹一次：选什么都要记，免得每次启动都烦人
-    try { self.setPref(self.PREFS.optionalGuideDone, true); } catch (e) { /* ignore */ }
+    // ⚠ 这里原来写 `self.setPref(...)` —— 插件里**没有**这个包装函数（写 pref 用
+  //   `Zotero.Prefs.set`），而它又在 try/catch 里，于是静默失败：
+  //   后果是「引导只弹一次」的 pref 从来没写进去，缺 MinerU/Ollama 的用户
+  //   **每次启动都会被弹一次**。2026-10-05 由新的成员引用检查扫出来。
+  try { Zotero.Prefs.set(self.PREFS.optionalGuideDone, true); }
+  catch (e) { /* ignore */ }
     if (self.askOptionalGuide(missing) === 0) self.openOptionalGuide(missing[0]);
     return missing;
   },

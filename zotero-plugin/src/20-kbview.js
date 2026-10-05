@@ -97,20 +97,22 @@ Object.assign(ZoteroKB, {
 
   setKbviewLevel: function (id) {
     var self = ZoteroKB;
+    // ⚠ 写 pref 用 Zotero.Prefs.set：插件里**没有** setPref 这个包装
+    //   （第一版我照着读的那半边想当然写了，真机一渲染就"不是函数"）。
     try {
-      self.setPref(self.PREFS.kbviewLevel, String(id || ""));
+      Zotero.Prefs.set(self.PREFS.kbviewLevel, String(id || ""));
     } catch (e) { /* ignore */ }
   },
 
 
   /** 某个级别的 md 在磁盘上的绝对路径（与 Python 侧 kbviews.level_path 同一套拼接）。 */
   kbviewPath: function (levelId, key) {
-    var self = ZoteroKB;
-    const kb = self.kbDirPath();
-    const lv = (self.kbLevels() || []).find((x) => x.id === levelId);
-    if (!kb || !lv || !key) return "";
-    return kb.replace(/[\\/]+$/, "") + "\\"
-      + String(lv.rel).replace("{key}", key).replace(/\//g, "\\");
+    // ⚠ 别自己拼路径：`kbLevels(key)` 已经按同一套规则算好 `path`（并且带 exists）。
+    //   第一版我写了 `self.kbDirPath()` —— 插件里根本没有这个名字（是 `kbDir()`），
+    //   真机一渲染就会抛。
+    const lv = (ZoteroKB.kbLevels(key) || [])
+      .find((x) => x.id === levelId);
+    return lv ? lv.path : "";
   },
 
 
@@ -182,17 +184,13 @@ Object.assign(ZoteroKB, {
 
     const paint = async (prefer) => {
       hint.textContent = "读取中…";
-      // 存在性：**逐个 await**（真机上 IOUtils.exists 是异步的），再交给纯函数决策。
-      // ⚠ 别在这里做同步假判（第一版我图省事返回 true，"级别回退"当场失效）。
-      const existMap = {};
-      for (const id of self.kbviewOrder(prefer)) {
-        try {
-          existMap[id] = await IOUtils.exists(self.kbviewPath(id, item.key));
-        } catch (e) {
-          existMap[id] = false;
-        }
-      }
-      const picked = self.kbviewPickLevel(prefer, (id) => !!existMap[id]);
+      // 存在性直接问 `kbLevels(key)`（它内部用同步 `_exists`，且路径已经算好），
+      // 再交给纯函数 `kbviewPickLevel` 决策 —— 真机与测试走同一条规则。
+      const levels = self.kbLevels(item.key);
+      const byId = {};
+      for (const lv of levels) byId[lv.id] = lv;
+      const picked = self.kbviewPickLevel(
+        prefer, (id) => !!(byId[id] && byId[id].exists));
       if (!picked.levelId) {
         view.textContent = "";
         const p = doc.createElement("div");
@@ -204,15 +202,15 @@ Object.assign(ZoteroKB, {
         hint.textContent = "";
         return;
       }
-      const path = self.kbviewPath(picked.levelId, item.key);
+      const path = (byId[picked.levelId] || {}).path
+        || self.kbviewPath(picked.levelId, item.key);
       let text = "";
       try {
         text = await IOUtils.readUTF8(path);
       } catch (e) {
         text = "";
       }
-      const lvLabel = ((self.kbLevels() || [])
-        .find((x) => x.id === picked.levelId) || {}).label || picked.levelId;
+      const lvLabel = (byId[picked.levelId] || {}).label || picked.levelId;
       hint.textContent = lvLabel + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
         + "　" + text.length + " 字";
       view.innerHTML = self.md2html(text) ||
