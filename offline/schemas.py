@@ -666,6 +666,16 @@ VIEWS_DIR = os.path.join(KB_DIR, "views")
 INBOX_DIR = os.path.join(KB_DIR, "inbox")
 CACHE_DIR = os.path.join(KB_DIR, ".cache")
 INDEX_DB = os.path.join(KB_DIR, "index.db")
+
+
+def kb_dir() -> str:
+    """知识库目录（= index.db 所在的那个目录）。
+
+    这是"知识库在哪"的**唯一事实定义**：convert 的正文/切片产物、mineru 的
+    解析产物、面板的探测都调它，别在别处再写一遍 `dirname(INDEX_DB)`
+    （散着写迟早有人写错，本项目吃过"ROOT + \\kb 这种假设"的亏）。
+    """
+    return os.path.dirname(INDEX_DB)
 MANIFEST = os.path.join(KB_DIR, "MANIFEST.json")
 
 # Zotero 侧

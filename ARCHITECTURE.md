@@ -663,12 +663,12 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 - 默认（`zotero`）：`offline/zreader.py` 的两条路（Zotero 自己的 `.zotero-ft-cache`
   与 PyMuPDF）+ 字符偏移还原 + 页眉过滤 + 灰区模型仲裁。**没装 MinerU 的用户
   走的就是这条**，与之前逐字节一致。
-- 可选（MinerU）：`offline/mineru.py` **本轮只做到探测**（`probe()`：装没装、
-  版本、生效的后端与 VLM 引擎、模型档位齐不齐、GPU 可用不可用，结果缓存 60 秒），
-  挂在一个只读端点 `/mineru-check` 上，给三处用：插件首启的安装引导对话框、
-  面板「运行环境」页第 4 行的状态、面板「知识库结构」页那个"只在没装时出现"的按钮。
-  ⚠ **接进转换管道（`convert.py --parser` + `mineru.fulltext_for()`）是下一轮的事**
-  —— 本轮先让"安装 + 探测 + 引导"落地，用户要先验收这一坨。
+- 可选（MinerU）：`offline/mineru.py` 两件事 —— **探测**（`probe()`：装没装、
+  版本、生效的后端与 VLM 引擎、模型档位齐不齐、GPU 可用不可用，结果缓存 60 秒；
+  挂在只读端点 `/mineru-check` 上，给插件首启对话框、面板「运行环境」第 4 行、
+  「知识库结构」页那个"只在没装时出现"的按钮）与**解析**
+  （`parse_item()` / `fulltext_for()`，见下面 B11.1）。
+  默认仍是 `zotero`，所以**没装 MinerU 的用户行为逐字节不变**。
 - 安装：`scripts/install-mineru.ps1`（可选组件，装在项目内的 `.mineru\`，
   不写 PATH/注册表，删目录即卸载）+ 图形化引导
   `tools/panels/mineru_guide.py`（说明 → 档位 → 预检 → 后台装 → 复检并写回配置）。
@@ -678,6 +678,36 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   （`ValueError: high is out of bounds for int32`）→ 所以装 `mineru[torch]`，
   VLM 档走 **llama.cpp + Q8 GGUF**；**PyPI 的 Windows torch 是 CPU 版**，得从
   `download.pytorch.org` 换 CUDA 轮子；模型走 modelscope（hf-mirror 的 API 403）。
+
+#### B11.1 MinerU 怎么接进建库流程（2026-10-05 第二轮）
+
+接缝只有一处：`convert.py` 主循环里那个 `pages, source = reader.fulltext_for(...)`。
+改成"按 `--parser` 选源"：
+
+    --parser {zotero,basic,standard,flash,advanced}     默认 zotero
+    --force-parse                                        忽略指纹全重解析
+    --parse-timeout N                                    单篇超时（默认 3600 秒）
+
+| 环节 | 做法 | 为什么 |
+|---|---|---|
+| 产物格式 | `mineru-kit parse … --format zip` | 默认的 markdown 输出**图片 base64 内联**（实测一篇 5 页论文 621 KB，14 张图最长 88228 字符）且**没有页码信息**；zip 里是 md（图片相对路径，同篇 20 KB）+ `structured_content.json`（按页）+ images/ |
+| 逐页正文 | 从 `structured_content.json` 的 `pages[].page_idx` + `blocks[]` 渲染 | KB 的页锚点 `## p.N`、`kb_fulltext(page_from=…)`、检索结果带页码全靠它。**页眉/页脚/页码块直接丢掉** —— MinerU 自己标了类型，比自己写正则可靠 |
+| 公式 | `equation` 块渲染成 `$$…$$` | 能被检索命中（这是装 MinerU 最大的收益） |
+| 图注 | `img_caption`（**是列表**）压成一行、留在正文里 | 图注是能搜到的信息；直接 str() 会渲染出 `['图 2 …']` 那种带方括号的怪样子 |
+| 落点 | `<kb>/mineru/<KEY>/`：markdown.md / structured_content.json / middle_json.json / images/ / pages.json / meta.json | 不进 index.db（不为它加表）：状态从 `items.fulltext_src` + meta.json + 目录在不在读 |
+| 要不要重跑 | 指纹 = 绝对路径 + 大小 + mtime_ns + 档位 + exe + **工具版本** | 少一项就会出现"换了 PDF 还用旧产物"或"永远重跑"。带上工具版本是因为升级 MinerU 后同一份 PDF 的产物也会变 |
+| 增量判据 | `items.fulltext_src` 不以 `mineru-<档位>` 开头 → 也要重跑 | 不判这条的话"把解析器换成 basic"会**什么都不做**（version/分类都没变，增量逻辑认为没变化）—— 用户会以为命令没生效 |
+| 失败 | **按篇回落**到 Zotero 缓存 / PyMuPDF，`source` 加 `+fallback` 后缀、MANIFEST 里列出来 | 95 篇里混着扫描件/加密/损坏文件，任何一篇失败都不该把整轮降级 |
+| 面板 | 新页「PDF 解析」：档位下拉 + 只补缺失 / 全库重解析 / 解析选中这篇 / 删产物 / 打开产物目录 + 状态表（来源 / 档位 / 页数 / 图 / 耗时 / 产物状态）+ 汇总（多少篇已是 MinerU、产物占多少 MB） | "重解析全库"是几十分钟的操作，看不见状态没人敢点 |
+| CLI | `tools/kb_admin.py mineru {status,parse,clear,missing,reparse}` | 面板按钮调的就是它；`missing`/`reparse` 内部**包一层 `convert.build(ns)`**，不写第二份正文抽取 |
+
+⚠ 三个实测出来的坑（都写进代码注释了）：
+① 全库解析前**先退出 Ollama** —— 抢同一块显存，同一篇 5 页论文模型阶段
+104.8 秒 → 8.9 秒（0.048 → 0.223 page/s）；
+② `convert.build(args)` **只吃一个参数**、且内部要读
+`args.figures/no_figures/embed_model` —— 自己造 Namespace 时字段要抄全；
+③ 那段"把配置同步进插件 pref"的 JS 不能塞进 f-string（嵌套 dict 花括号会让
+f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --check` 单测。
 
 #### B12. 提示词注册表：话术只有一份，且用户改得动
 

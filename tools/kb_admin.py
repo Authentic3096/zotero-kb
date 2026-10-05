@@ -423,6 +423,146 @@ def _backup_index_db() -> str:
         return ""
 
 
+def _mineru_keys(only_missing: bool, tier: str) -> list[str]:
+    """挑出要解析的 key：`only_missing` 时只挑"还没有该档产物"的。"""
+    import sqlite3
+    import schemas as S
+    import mineru as M
+    conn = sqlite3.connect(S.INDEX_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT key, fulltext_src FROM items ORDER BY key").fetchall()
+    conn.close()
+    out = []
+    for r in rows:
+        if not only_missing:
+            out.append(r["key"])
+            continue
+        st = M.status_for(r["key"])
+        if not st["parsed"] or st["tier"] != tier:
+            out.append(r["key"])
+    return out
+
+
+def cmd_mineru(args: argparse.Namespace) -> int:
+    """MinerU 的四个动作（面板「PDF 解析」页就是调它）。"""
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "..", "offline"))
+    import mineru as M
+
+    if args.sub == "status":
+        return _mineru_status(args)
+    if args.sub == "clear":
+        n = M.clear_artifacts("" if args.all else args.key)
+        print(f"删掉 {n} 篇的解析产物"
+              + ("" if args.all else f"（{args.key}）"))
+        return 0
+    if args.sub == "parse":
+        if not args.key:
+            print("[XX] parse 需要 --key")
+            return 2
+        res = M.parse_item(args.key, _pdf_of(args.key), tier=args.tier,
+                           force=args.force,
+                           log=lambda m: print(m, flush=True))
+        print(f"{args.key}：{'成功' if res['ok'] else '失败'}　"
+              f"{res.get('n_pages', 0)} 页 / {res.get('n_images', 0)} 图　"
+              f"{res.get('seconds', 0)}s　{res.get('why', '')}")
+        if res["ok"] and getattr(args, "rebuild", False):
+            print("—— 顺手重建这一篇（切片与向量）——")
+            return _convert_keys([args.key], args.tier, force=False)
+        return 0 if res["ok"] else 1
+    # missing / reparse
+    keys = _mineru_keys(args.sub == "missing", args.tier)
+    if args.limit:
+        keys = keys[: args.limit]
+    if not keys:
+        print("没有需要解析的条目（都已经是这个档位了）。")
+        return 0
+    print(f"{'补缺失' if args.sub == 'missing' else '全库重解析'}："
+          f"{len(keys)} 篇，档位 {args.tier}")
+    print("（PDF 没变、档位没变的那批会按指纹跳过，几秒一篇）")
+    return _convert_keys(keys, args.tier, force=bool(getattr(args, "force", False)))
+
+
+def _pdf_of(key: str) -> str:
+    """从 Zotero 库里取这一篇的 PDF 路径。"""
+    import zreader
+    r = zreader.ZoteroReader()
+    try:
+        for it in r.load_items(r.top_level_items()):
+            if it.key == key:
+                return next((p.path for p in it.pdfs if os.path.isfile(p.path)), "")
+        return ""
+    finally:
+        r.close()
+
+
+def _convert_keys(keys: list[str], tier: str, force: bool = False) -> int:
+    """包一层 convert.py：只重建这些 key，且用指定档位。
+
+    ⚠ 三件事都与"别再写第二份实现"有关：
+      · 直接调 `convert.build(ns)`（与 `repair_chunks.py` 同一个用法），
+        不拼命令行 —— 免得两个入口的默认值漂移；
+      · 造 Namespace 时**字段照 repair_chunks 那份抄全**：convert.build 里
+        `args.figures` / `args.no_figures` / `args.embed_model` 都要读，
+        少一个就 AttributeError（第一版就漏了 embed_model）；
+      · `cache_check="off"`：走 MinerU 时"Zotero 缓存 vs PyMuPDF"那套用不上，
+        开着只是白跑两条路。
+    """
+    import argparse as ap
+    import convert as CV
+    ns = ap.Namespace(
+        full=False, no_vectors=False, limit=0,
+        embed_model=CV.DEFAULT_EMBED_MODEL,
+        item=list(keys), figures=False, no_figures=False,
+        parser=tier, force_parse=force, parse_timeout=0.0,
+        cache_check="off",
+    )
+    rc, _manifest = CV.build(ns)
+    return rc
+
+
+def _mineru_status(args: argparse.Namespace) -> int:
+    import sqlite3
+    import schemas as S
+    import mineru as M
+    conn = sqlite3.connect(S.INDEX_DB)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT key, title, fulltext_src FROM items "
+                        "ORDER BY title").fetchall()
+    conn.close()
+    n_mineru = n_parsed = n_stale = 0
+    total = 0
+    for r in rows:
+        st = M.status_for(r["key"])
+        if str(r["fulltext_src"] or "").startswith("mineru-"):
+            n_mineru += 1
+        if st["parsed"]:
+            n_parsed += 1
+        if st["stale"]:
+            n_stale += 1
+        for dp, _dn, fn in os.walk(st["dir"]):
+            for n in fn:
+                try:
+                    total += os.path.getsize(os.path.join(dp, n))
+                except OSError:
+                    pass
+    info = M.probe()
+    print(f"MinerU：{M.summary_line(info)}")
+    print(f"共 {len(rows)} 篇：正文来源是 MinerU 的 {n_mineru} 篇，"
+          f"有解析产物的 {n_parsed} 篇，指纹过期 {n_stale} 篇；"
+          f"产物占用 {round(total / 1048576, 1)} MB")
+    if args.verbose:
+        for r in rows:
+            st = M.status_for(r["key"])
+            mark = "✓" if st["parsed"] else "·"
+            print(f"  {mark} {r['key']}  {str(r['title'])[:52]:52s} "
+                  f"{r['fulltext_src'] or '(无全文)':16s} "
+                  f"{st['tier'] or '-':8s} {st['pages']}页 {st['seconds']}s"
+                  + ("  ⚠指纹过期" if st["stale"] else "")
+                  + (f"  错误：{st['last_error'][:40]}" if st["last_error"] else ""))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="经验层管理")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -473,7 +613,31 @@ def main() -> int:
     p_drop.add_argument("--no-backup", action="store_true",
                         help="跳过删除前的 index.db 备份（不推荐）")
 
+    p_min = sub.add_parser("mineru", help="MinerU 解析：状态 / 单篇 / 补缺失 / 全库重解析")
+    msub = p_min.add_subparsers(dest="sub", required=True)
+    m_st = msub.add_parser("status", help="看全库解析状态")
+    m_st.add_argument("-v", "--verbose", action="store_true",
+                      help="逐篇列出来")
+    m_parse = msub.add_parser("parse", help="解析一篇")
+    m_parse.add_argument("--key", required=True)
+    m_parse.add_argument("--tier", default="basic")
+    m_parse.add_argument("--force", action="store_true", help="忽略指纹，强制重解析")
+    m_parse.add_argument("--rebuild", action="store_true",
+                         help="解析完顺手重建这一篇的切片与向量")
+    m_clear = msub.add_parser("clear", help="删解析产物")
+    m_clear.add_argument("--key", default="")
+    m_clear.add_argument("--all", action="store_true")
+    for name, helptext in (("missing", "只补还没有产物的"),
+                           ("reparse", "全库换成这个档位")):
+        p = msub.add_parser(name, help=helptext)
+        p.add_argument("--tier", default="basic")
+        p.add_argument("--limit", type=int, default=0)
+        p.add_argument("--force", action="store_true",
+                       help="忽略指纹，全部重解析（几十分钟）")
+
     args = parser.parse_args()
+    if args.cmd == "mineru":
+        return cmd_mineru(args)
     if args.cmd == "list":
         return cmd_list(args)
     if args.cmd == "clean":

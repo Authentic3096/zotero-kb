@@ -78,10 +78,25 @@ titles = [app.notebook.tab(t, "text").strip() for t in tabs]
 #   本轮加了「元数据」页 → 7 个）。
 #   所以断言写成"至少"这些页都在，而不是卡死总数 ——
 #   否则每加一页都要改测试，久了就没人认真看这个测试了。
-check("标签页 ≥ 8", len(tabs) >= 8, str(titles))
-for want in ("知识库结构", "经验库", "分类建议", "运行环境", "损坏查询",
-             "元数据", "高级", "提示词"):
+check("标签页 ≥ 9", len(tabs) >= 9, str(titles))
+for want in ("知识库结构", "经验库", "分类建议", "运行环境", "PDF 解析",
+             "损坏查询", "元数据", "高级", "提示词"):
     check(f"有「{want}」页", want in titles, str(titles))
+
+# ---- 「PDF 解析」页（2026-10-05 第二轮：MinerU 接进转换管道后加的）
+#     查的是"控件与回调在不在"：方法在但控件没画出来 = 用户点了没反应。
+check("PDF 解析页有状态表与解析器下拉",
+      getattr(app, "parse_tree", None) is not None
+      and getattr(app, "parse_tier", None) is not None
+      and app.parse_tier.get() == "basic")
+for name in ("refresh_parse", "do_parse_missing", "do_parse_all",
+             "do_parse_selected", "do_clear_selected", "do_open_artifacts"):
+    check(f"PDF 解析页有 {name} 回调", callable(getattr(app, name, None)), "")
+try:
+    from panels.tab_parse import ParseTab  # noqa: F401
+    check("PDF 解析页模块能 import", True)
+except Exception as exc:      # noqa: BLE001
+    check("PDF 解析页模块能 import", False, str(exc))
 
 # ---- 布局（用户 2026-10-05：「很多东西要拉长面板才看得到，应该能滚轮滑看」
 #      「运行日志只能显示几行，应该能拉长」）

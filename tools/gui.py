@@ -59,12 +59,13 @@ from panels.tab_ai import AiTab
 from panels.tab_quality import QualityTab
 from panels.tab_meta import MetaTab
 from panels.tab_env import EnvTab
+from panels.tab_parse import ParseTab
 from panels.tab_advanced import AdvancedTab
 from panels.tab_prompts import PromptsTab
 
 
 class App(AppBase, StructTab, ExperienceTab, AiTab, QualityTab,
-          MetaTab, EnvTab, AdvancedTab, PromptsTab):
+          MetaTab, EnvTab, ParseTab, AdvancedTab, PromptsTab):
     """管理面板主窗口。
 
     方法按页签分在 panels/ 下的各个 mixin 里；这里只把它们拼起来 ——
@@ -214,7 +215,8 @@ def main() -> int:
     want = _arg_value("--tab")
     if want:
         alias = {"struct": "知识库结构", "exp": "经验库", "ai": "分类建议",
-                 "env": "运行环境", "quality": "损坏查询", "meta": "元数据",
+                 "env": "运行环境", "parse": "PDF 解析",
+                 "quality": "损坏查询", "meta": "元数据",
                  "adv": "高级", "prompts": "提示词"}
         title = alias.get(want, want)
         titles = [app.notebook.tab(t, "text").strip()

@@ -29,6 +29,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import schemas as S  # noqa: E402
 import converter as C  # noqa: E402
 import extrafill as XF  # noqa: E402
+# MinerU 是**可选组件**：`import mineru` 只是导入这个探测/解析包装模块
+# （纯标准库），没装 MinerU 也能 import —— 真正的可用性由 probe() 判。
+import mineru as M  # noqa: E402
 from zreader import ZoteroReader  # noqa: E402
 
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-zh-v1.5"
@@ -100,15 +103,20 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
         #   · version     —— 标题/作者等元数据变了会动它
         #   · collections_sig —— 分类归属或标签变了才会动它
         #     （Zotero 改分类/标签**不更新 items.version**，只比 version 会漏掉）
-        known: dict[str, tuple[int, str]] = {}
+        # 解析器（定义在这里：下面增量判断与逐条处理都要用）
+        want_parser = str(getattr(args, "parser", "") or "zotero").strip().lower()
+
+        known: dict[str, tuple[int, str, str]] = {}
         for row in conn.execute(
-                "SELECT key, version, built_at, collections_sig FROM items"):
-            known[row["key"]] = (row["version"], row["collections_sig"] or "")
+                "SELECT key, version, built_at, collections_sig, fulltext_src "
+                "FROM items"):
+            known[row["key"]] = (row["version"], row["collections_sig"] or "",
+                                 row["fulltext_src"] or "")
 
         ids = all_ids
         if not args.full:
             fresh: list[int] = []
-            reasons = {"new": 0, "version": 0, "collections": 0}
+            reasons = {"new": 0, "version": 0, "collections": 0, "parser": 0}
             for item in reader.load_items(all_ids):
                 prev = known.get(item.key)
                 if prev is None:
@@ -123,11 +131,26 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 if prev[1] != sig:
                     fresh.append(item.item_id)
                     reasons["collections"] += 1
+                    continue
+                # ---- 解析器换了也要重跑
+                #
+                # ⚠ 不判这一条的话，"把解析器从 zotero 换成 basic"会**什么都不做**：
+                #   条目的 version / 分类都没变，增量逻辑认为它没变化 —— 用户会以为
+                #   命令没生效（本机在别的地方吃过同样的亏：改了设置却没有任何反应）。
+                #   判据用 items.fulltext_src 的前缀（`mineru-basic` / `mineru-standard`…），
+                #   所以**换档位**（basic → standard）也会触发重跑。
+                want_src = f"mineru-{want_parser}"
+                if want_parser != "zotero":
+                    if not (prev[2] or "").startswith(f"mineru-{want_parser}"):
+                        fresh.append(item.item_id)
+                        reasons["parser"] += 1
+                        continue
             skipped = len(all_ids) - len(fresh)
             log(f"增量模式：{len(fresh)} 条需要处理，{skipped} 条未变化（跳过）")
             if fresh:
                 log(f"  其中 新条目 {reasons['new']}｜元数据变动 {reasons['version']}"
-                    f"｜分类/标签变动 {reasons['collections']}")
+                    f"｜分类/标签变动 {reasons['collections']}"
+                    f"｜解析器/档位待切换 {reasons['parser']}")
             ids = fresh
 
         # 指定条目（逐篇重建用）：**跳过增量判断**，无论变没变都重建。
@@ -161,6 +184,9 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
             "missing_pdf_files": [],
             "no_pdf": [],
             "deshifted": [],          # 字符偏移被自动还原的（见 zreader._deshift_fix）
+            "fulltext_from_mineru": 0,
+            "mineru_cached": 0,       # 命中文档指纹、没重跑的
+            "mineru_failed": [],      # MinerU 没出结果、回落成 Zotero/PyMuPDF 的
             "cache_bad": [],          # 缓存被判坏、换了源的
             "skipped_no_pdf": [],     # 没有 PDF 附件、跳过正文解析的
             # ---- 结构化字段（extra → item_extra 表）
@@ -201,7 +227,32 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                     conn.commit()
                     continue
 
-                pages, source = reader.fulltext_for(item, **ft_kw)
+                # ---- 正文来源：MinerU（可选）→ 失败按篇回落
+                #
+                # ⚠ 回落必须**按篇**做，不能"一次失败就整轮降级"：95 篇里混着
+                #   扫描件、加密 PDF、损坏文件，任何一篇都可能失败，而其余篇
+                #   仍然应该拿到 MinerU 的好结果。回落了在 stats 里留痕，
+                #   报告会列出来（用户才知道哪几篇没走上新解析器）。
+                mineru_used = False
+                if want_parser != "zotero":
+                    pages, source = M.fulltext_for(
+                        item, tier=want_parser, kb_dir=S.kb_dir(),
+                        force=bool(getattr(args, "force_parse", False)),
+                        timeout=float(getattr(args, "parse_timeout", 0) or 0)
+                        or M.PARSE_TIMEOUT, log=log)
+                    if pages:
+                        mineru_used = True
+                        stats["fulltext_from_mineru"] += 1
+                        if "+cached" in source:
+                            stats["mineru_cached"] += 1
+                    else:
+                        stats["mineru_failed"].append(
+                            {"key": item.key, "title": item.title[:80],
+                             "why": "MinerU 没出结果，已回落"})
+                        pages, source = reader.fulltext_for(item, **ft_kw)
+                        source = source + "+fallback"
+                else:
+                    pages, source = reader.fulltext_for(item, **ft_kw)
                 # ⚠ 必须把正文回填到 item 上。`Item.fulltext_chars` 是
                 # `sum(len(p) for p in fulltext_pages)`，而 fulltext_pages 默认是空列表 ——
                 # 只把正文留在局部变量 `pages` 里的话，`_upsert_item` 写进库的
@@ -210,7 +261,9 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 item.fulltext_pages = pages
                 # ⚠ 来源标记可能带后缀（`zotero-cache+fix+29` = 缓存文本经过
                 #   字符偏移还原），所以只能用 startswith 判断，不能 ==。
-                if source.startswith("zotero-cache"):
+                if source.startswith("mineru-"):
+                    pass          # 上面已经计数（fulltext_from_mineru）
+                elif source.startswith("zotero-cache"):
                     stats["fulltext_from_cache"] += 1
                     if reader._last_cache_verdict in ("bad", "unsure"):
                         stats["cache_bad"].append(
@@ -218,7 +271,7 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                              "why": reader._last_cache_note})
                 elif source.startswith("pymupdf"):
                     stats["fulltext_from_pymupdf"] += 1
-                else:
+                elif not source.startswith("mineru-"):
                     stats["fulltext_missing"].append(
                         {"key": item.key, "title": item.title[:80]}
                     )
@@ -499,7 +552,14 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 ).fetchone()[0],
             },
             # 本批次的来源分布（增量跑完时这里多数是 0，属正常）
+            # 本次用的解析器（写进 MANIFEST：否则"库里这批正文到底是哪来的"
+            # 只能靠 items.fulltext_src 猜）
+            "parser": want_parser,
             "fulltext": {
+                "parser": want_parser,
+                "from_mineru": stats["fulltext_from_mineru"],
+                "mineru_cached": stats["mineru_cached"],
+                "mineru_fell_back": stats["mineru_failed"],
                 "from_zotero_cache": stats["fulltext_from_cache"],
                 "from_pymupdf": stats["fulltext_from_pymupdf"],
                 "missing": stats["fulltext_missing"],
@@ -565,9 +625,22 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
     log(f"  知识库条目：{manifest['counts']['items_in_kb']}"
         f"（本次处理 {manifest['counts']['items_this_run']}）")
     log(f"  切片：{manifest['counts']['chunks']}　向量：{manifest['counts']['vectors']}")
-    log(f"  全文来源：Zotero 缓存 {manifest['fulltext']['from_zotero_cache']} 篇，"
-        f"PyMuPDF {manifest['fulltext']['from_pymupdf']} 篇，"
-        f"缺失 {len(manifest['fulltext']['missing'])} 篇")
+    # 解析器与来源分布：**必须报 MinerU**，否则跑了半天看不出这次到底用了谁
+    # （用户的原话是"MinerU 的效果好的出人预料"，报告里得能看出它有没有生效）
+    ft = manifest["fulltext"]
+    parser = manifest.get("parser") or "zotero"
+    log(f"  解析器：{parser}"
+        + ("（MinerU 可选组件；失败会按篇回落）" if parser != "zotero" else
+           "（Zotero 缓存 + PyMuPDF，默认）"))
+    if parser != "zotero" or ft.get("from_mineru"):
+        log(f"  MinerU：本次 {ft.get('from_mineru', 0)} 篇"
+            f"（其中命中文档指纹、没重跑的 {ft.get('mineru_cached', 0)} 篇）"
+            f"，回落 {len(ft.get('mineru_fell_back') or [])} 篇")
+        for x in (ft.get("mineru_fell_back") or [])[:5]:
+            log(f"      {x['key']}  {x['why']}  {x['title'][:40]}")
+    log(f"  全文来源：Zotero 缓存 {ft['from_zotero_cache']} 篇，"
+        f"PyMuPDF {ft['from_pymupdf']} 篇，"
+        f"缺失 {len(ft['missing'])} 篇")
     se = manifest.get("structured_extra") or {}
     if se:
         total = se.get("rows_total")
@@ -808,6 +881,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--figures", action="store_true",
                         help="强制提取图注与表格（覆盖配置里的关闭）")
     # 入库解析校验：缓存文本 vs PyMuPDF 的取舍策略（见 zreader.cache_model_mode）
+    parser.add_argument(
+        "--parser", choices=["zotero", "flash", "basic", "standard", "advanced"],
+        default="zotero",
+        help="正文来源：zotero（默认，Zotero 缓存 + PyMuPDF）或 MinerU 档位"
+             "（flash/basic/standard/advanced，需先装 MinerU）")
+    parser.add_argument(
+        "--force-parse", action="store_true",
+        help="MinerU 重解析时忽略已有产物（默认按 PDF+档位指纹跳过）")
+    parser.add_argument(
+        "--parse-timeout", type=float, default=0.0,
+        help="单篇 MinerU 解析的超时秒数（0 = 用默认 3600）")
     parser.add_argument("--cache-check", choices=["off", "auto", "deep"], default="",
                         help="正文来源校验：off 只用规则；auto 灰区调本地模型仲裁"
                              "（默认）；deep 每篇都跑两条路再让模型选（最慢，最准）")

@@ -194,10 +194,15 @@
                          经验口径）、`test_mineru_probe.py`（假 runner 覆盖
                          就绪/缺失/超时/崩了/没装五种 `probe()` 结果）、
                          `test_mineru_guide.py`（安装引导的预检四种坏情况 +
-                         窗口装配）。
+                         窗口装配）、`test_mineru_parse.py`（**逐页渲染 / 指纹 /
+                         解压防穿越 / 失败不覆盖旧产物 / 按篇回落**）、
+                         `test_ollama_guide.py`（Ollama 引导预检 + 同步 JS 语法）。
+                         ⚠ 解析相关的测试一律用**假 runner** 造 zip 产物 ——
+                         真解析 15~36 秒/篇且依赖装好的 MinerU，不能进单测。
                          ⚠ `test_paras.py` / `test_chat_endpoints.py` **已删**
                          —— 窗格与逐段检查那条链整体删除（2026-10-05）。)
   .mineru\               MinerU（**可选组件**）的独立 venv + 模型；删目录即卸载
+                         ⚠ 跑全库解析前先退出 Ollama（抢显存，实测差十倍）
                          （由 scripts\install-mineru.ps1 装，见 ARCHITECTURE B11）
   .venv\                 Python 依赖（见 requirements.txt）
 ```
@@ -208,6 +213,7 @@
 
 ```
 <Zotero 数据目录>\zotero-kb\        ← 本机实测：<知识库>
+  mineru\<key>\                        MinerU 解析产物（可选组件；面板「PDF 解析」页看状态）
   index.db             索引：条目 / 切片 / FTS / 向量 / 经验 / 权重
   INDEX.md             **给人看的**文献清单（Markdown 表格，带作者年份标题）
   papers\*.md          每篇一份档案（元数据+摘要+笔记+标注+正文首段），按 KEY 命名

@@ -306,7 +306,7 @@ class AppBase:
 
 
     def _build_tabs(self):
-        """建 Notebook 与 8 个页签，并把「内容 / 日志」两格 add 进去。
+        """建 Notebook 与页签，并把「内容 / 日志」两格 add 进去。
 
         布局（用户 2026-10-05 的三条反馈都落在这里）：
           · 上面一格 = 各页签。每个页签套一层**可滚动画布** —— 内容比窗口高
@@ -326,6 +326,8 @@ class AppBase:
         self.tab_ai, self.ai_out = self._tab_panes(
             nb, "  分类建议  ", split=" 输出（拖分隔线调） ")
         self.tab_env, _ = self._tab_panes(nb, "  运行环境  ")
+        # 「PDF 解析」紧跟「运行环境」：它俩是同一类东西（环境/解析器配置）
+        self.tab_parse, _ = self._tab_panes(nb, "  PDF 解析  ")
         self.tab_quality, _ = self._tab_panes(nb, "  损坏查询  ")
         self.tab_meta, _ = self._tab_panes(nb, "  元数据  ")
         self.tab_adv, self.adv_out = self._tab_panes(
@@ -346,6 +348,7 @@ class AppBase:
         self._build_meta_tab()
 
         self._build_env_tab()
+        self._build_parse_tab()
         self._build_advanced_tab()
         self._build_prompts_tab()
 
