@@ -40,6 +40,13 @@ class AppBase:
         # 字体要在建控件**之前**定好 —— 否则先建的控件用旧字体，后建的用新字体，
         # 同一页里两种字体混着，又回到"字距看着奇怪"那个问题上。
         self.ui_font, self.mono_font = apply_ui_fonts(root)
+        # 分隔线（PanedWindow 的 sash）要**看得见、抓得住** —— vista 主题默认是
+        # 5px 的浅灰细条，用户根本不知道那里能拖（原话："内部窗口没办法独立
+        # 调节吗？"）。加粗到 8px 之后，它自己就是一道看得见的分界。
+        try:
+            ttk.Style(root).configure("Sash", sashthickness=8)
+        except tk.TclError:
+            pass
         # 初始尺寸按屏幕来，别用固定值 —— 屏幕小的时候要能装下，
         # 屏幕大的时候默认就给足空间（实测 2560x1440 下 1000x720 显得局促）。
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
@@ -281,16 +288,16 @@ class AppBase:
         #   需要钉底的文本框（详情/输出）就放那里；不需要的页签给 None。
         self.tab_struct, _ = self._tab_panes(nb, "  知识库结构  ")
         self.tab_exp, self.exp_out = self._tab_panes(
-            nb, "  经验库  ", split=" 选中那条的详情 ")
+            nb, "  经验库  ", split=" 选中那条的详情（拖分隔线调） ")
         self.tab_ai, self.ai_out = self._tab_panes(
-            nb, "  分类建议  ", split=" 输出 ")
+            nb, "  分类建议  ", split=" 输出（拖分隔线调） ")
         self.tab_env, _ = self._tab_panes(nb, "  运行环境  ")
         self.tab_quality, _ = self._tab_panes(nb, "  损坏查询  ")
         self.tab_meta, _ = self._tab_panes(nb, "  元数据  ")
         self.tab_adv, self.adv_out = self._tab_panes(
-            nb, "  高级  ", split=" 输出 ")
+            nb, "  高级  ", split=" 输出（拖分隔线调） ")
         self.tab_prompts, self.prompt_out = self._tab_panes(
-            nb, "  提示词  ", split=" 试跑输出 ")
+            nb, "  提示词  ", split=" 试跑输出（拖分隔线调） ")
 
         # 顺序即上下顺序：先内容，后日志（日志在最下面）
         # ⚠ 权重 3:2：日志初始就能看见十来行（用户嫌 5 行太少），
@@ -346,6 +353,12 @@ class AppBase:
         inner = ttk.Frame(canvas)
         win = canvas.create_window((0, 0), window=inner, anchor="nw")
         state = {"busy": False, "bar": None, "h": None}
+        # ⚠ 请求高度的上限：有"下面那一格"的页签要小一些 —— 否则
+        #   画布(460) + 输出格(~180) 会让这个页签向 Notebook 请求 ~640px，
+        #   而 Notebook 取的是**所有页签里最大的那个请求**，于是底部「运行日志」
+        #   被挤到只剩 5 行（实测：日志只拿到 79px，用户报的"只能显示几行"
+        #   有一半是这么来的）。实测数字见会话目录里的 probe_tabs_req.py。
+        cap = 300 if split else 460
 
         def sync(_e=None):
             if state["busy"]:
@@ -356,10 +369,10 @@ class AppBase:
                 h = max(canvas.winfo_height(), inner.winfo_reqheight())
                 canvas.itemconfigure(win, width=w, height=h)
                 canvas.configure(scrollregion=(0, 0, w, h))
-                # 画布的**请求高度跟随内容**（140~460）：内容少的页签不留一大块空白、
+                # 画布的**请求高度跟随内容**（140~cap）：内容少的页签不留一大块空白、
                 # 把下面那格挤小；内容多的才出现滚动条。
                 # ⚠ 只在值真的变了才 configure —— 否则会自己触发自己的 <Configure>。
-                want = max(140, min(inner.winfo_reqheight(), 460))
+                want = max(140, min(inner.winfo_reqheight(), cap))
                 if state["h"] != want:
                     state["h"] = want
                     canvas.configure(height=want)
@@ -510,8 +523,9 @@ class AppBase:
         """
         self._paned = ttk.PanedWindow(self.root, orient="vertical")
         self._paned.pack(fill="both", expand=True, padx=12, pady=(6, 10))
-        self.log_frame = ttk.LabelFrame(self._paned, text=" 运行日志 ",
-                                        padding=4)
+        # 标题里写明"能拖"：分隔线虽然加粗了，但不说一句用户还是不会去试。
+        self.log_frame = ttk.LabelFrame(
+            self._paned, text=" 运行日志（拖上面的分隔线调高度） ", padding=4)
         self.log = scrolledtext.ScrolledText(self.log_frame, height=8,
                                              wrap="none",
                                              font=(self.mono_font, 9),
