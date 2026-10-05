@@ -249,16 +249,20 @@ Object.assign(ZoteroKB, {
     // 字号：只在本容器上设（不动 Zotero 的默认设置）。
     // 限高 + 内部滚动：正文再长也只在我们这一块里滚，不去挤 Zotero 自己的分区
     //（用户反馈"我的插件窗口总被上面的挤位置"）。
+    // ⚠ 滚动条要加在**正文容器**上，不能加在 wrap 上 ——
+    //   加在 wrap 上会把工具条（级别/字号/重新读取/提示）一起滚上去
+    //   （用户反馈：「滚动会把完整档案、字号都滚上去，这个应该保持在顶部」）。
+    //   结构：wrap 是竖向 flex + 限高，bar 固定，view 自己滚。
     wrap.setAttribute("style",
       "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
-      + " max-height:62vh; overflow:auto;");
+      + " max-height:62vh; display:flex; flex-direction:column; overflow:hidden;");
 
     // 工具条：**单行不换行**（用户反馈：提示文字换行后"重新读取"被挤到第二行）。
     // 做法：select/按钮 nowrap，提示占剩余宽度并省略号截断（min-width:0 是关键，
     // flex 子项默认 min-width:auto 不会收缩）。
     const bar = self.kbviewEl(doc, "div");
     bar.setAttribute("style", "display:flex; gap:6px; align-items:center;"
-      + " flex-wrap:nowrap; margin-bottom:4px;");
+      + " flex-wrap:nowrap; margin-bottom:4px; flex:0 0 auto;");
     const sel = self.kbviewEl(doc, "select");
     // ⚠ 原来写了 `max-width:7.5em` —— 窗格里 select 的字号继承自 Zotero（比 12px 大），
     //   加上下拉箭头就截断成「摘要与要」（用户截图反馈）。改成按内容自适应。
@@ -285,7 +289,7 @@ Object.assign(ZoteroKB, {
       self.setKbviewFont(fontSel.value);
       wrap.setAttribute("style",
         "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
-        + " max-height:62vh; overflow:auto;");
+        + " max-height:62vh; display:flex; flex-direction:column; overflow:hidden;");
     });
 
     const btn = self.kbviewEl(doc, "button");
@@ -300,6 +304,8 @@ Object.assign(ZoteroKB, {
 
     const view = self.kbviewEl(doc, "div");
     view.className = "zotero-kb-kbview-body";
+    // 只有正文滚动（min-height:0 是 flex 子项能收缩的关键）
+    view.setAttribute("style", "flex:1 1 auto; min-height:0; overflow:auto;");
     wrap.append(view);
     body.append(wrap);
 
