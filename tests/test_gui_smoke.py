@@ -167,6 +167,50 @@ except Exception as exc:      # noqa: BLE001
     check("按钮显隐两个方向都对（没装出现 / 装了收起）", False,
           f"{type(exc).__name__}: {exc}")
 
+# Ollama（可选组件）的安装引导入口：与 MinerU 同一套规矩（装了就不显示）。
+check("知识库结构页有 Ollama 安装引导按钮控件",
+      getattr(app, "ollama_btn", None) is not None)
+check("有 open_ollama_guide / _check_ollama_button 回调",
+      callable(getattr(app, "open_ollama_guide", None))
+      and callable(getattr(app, "_check_ollama_button", None)))
+check("Ollama 按钮默认不显示",
+      getattr(app, "_ollama_btn_shown", None) is False)
+try:
+    from panels.ollama_guide import OllamaGuide, preflight, ollama_paths  # noqa
+    check("Ollama 安装引导窗口能 import", True)
+except Exception as exc:      # noqa: BLE001
+    check("Ollama 安装引导窗口能 import", False, str(exc))
+try:
+    app._apply_ollama_button(False)
+    o_shown = getattr(app, "_ollama_btn_shown", None)
+    app._apply_ollama_button(True)
+    o_hidden = getattr(app, "_ollama_btn_shown", None)
+    check("Ollama 按钮显隐两个方向都对",
+          o_shown is True and o_hidden is False,
+          f"shown={o_shown} hidden={o_hidden}")
+except Exception as exc:      # noqa: BLE001
+    check("Ollama 按钮显隐两个方向都对", False,
+          f"{type(exc).__name__}: {exc}")
+
+# 「启动 Ollama」与「重启本地服务」这两个按钮背后的方法必须在
+# （用户报的正是"Ollama 没启动时点启动本地服务拉不起来" → 现在有这两条路）
+check("有启动 Ollama / 重启本地服务 / 启动本地服务三个回调",
+      callable(getattr(app, "do_ollama_start", None))
+      and callable(getattr(app, "do_service_restart", None))
+      and callable(getattr(app, "do_service_start", None)))
+check("本地服务起停有轮询确认与自诊断（不是「已请求」就完事）",
+      callable(getattr(app, "_service_start_and_wait", None))
+      and callable(getattr(app, "_service_up", None))
+      and callable(getattr(app, "_localserver_pids", None)))
+# 模型接入区（面板里也能配模型）
+check("运行环境有模型接入四个字段 + 保存/测试/同步",
+      all(hasattr(app, k) for k in
+          ("llm_provider", "llm_model", "llm_base_url", "llm_api_key",
+           "llm_ollama_host", "llm_note"))
+      and callable(getattr(app, "do_save_llm", None))
+      and callable(getattr(app, "do_test_llm", None))
+      and callable(getattr(app, "do_sync_llm_to_plugin", None)))
+
 
 # 「打开知识库」的两个入口必须在**看得见的地方**（用户 2026-10-05 提的需求：
 # 知识库目录里是 22X9PMR6.md 这种编号，靠人自己去翻等于没解决）。

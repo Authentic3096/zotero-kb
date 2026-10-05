@@ -157,6 +157,9 @@ const Services = {
   },
   locale: { availableLocales: ["zh-CN", "en-US"] },
   dirsvc: { get: () => ({ path: "D:\\" }) },
+  // ⚠ 为了能测「Ollama 装在本机默认位置」那条分支：`ollamaExePath()` 读
+  //   %LOCALAPPDATA%，桩里给它一个中性值（别写真实用户名，发布审计会拦）。
+  env: { get: (k) => (k === "LOCALAPPDATA" ? "C:\\lad" : "") },
 };
 const Components = { classes: {}, interfaces: {}, utils: { import: () => ({}) } };
 const ChromeUtils = { import: () => ({}) };
@@ -259,21 +262,22 @@ if (KB) {
     !calls.observers.some((o) => o.t === "quit-application-requested"),
     JSON.stringify(calls.observers.map((o) => o.t)));
 
-  // ---- ⑦ MinerU（可选组件）的首次安装引导
+  // ---- ⑦ 可选组件（MinerU + Ollama）的首次安装引导
   //
   // 用户定的规矩：**首次启动 + 没装 → 弹一次；取消也记 pref（不再弹）；
   //   装了 / 服务说装了 → 一次都不弹。** 这几条都是"用户会不会被烦到"的
-  //   行为，所以桩里逐种情况跑一遍（`maybeAskMineruGuide` 是 async，所以
+  //   行为，所以桩里逐种情况跑一遍（`maybeAskOptionalGuides` 是 async，
   //   下面整段放在 async IIFE 里，最后在那边结算总数）。
-  check("有 MinerU 引导那批函数",
+  check("有可选组件引导那批函数",
     typeof KB.mineruKitPath === "function"
-    && typeof KB.scheduleMineruGuide === "function"
-    && typeof KB.maybeAskMineruGuide === "function"
-    && typeof KB.askMineruGuide === "function"
-    && typeof KB.openMineruGuide === "function"
+    && typeof KB.ollamaExePath === "function"
+    && typeof KB.scheduleOptionalGuides === "function"
+    && typeof KB.maybeAskOptionalGuides === "function"
+    && typeof KB.askOptionalGuide === "function"
+    && typeof KB.openOptionalGuide === "function"
     && typeof KB.panelProcess === "function");
-  check("startup 里有 scheduleMineruGuide 这一步（失败也能在状态文件里看到）",
-    steps.indexOf("scheduleMineruGuide=ok") >= 0, steps);
+  check("startup 里有 scheduleOptionalGuides 这一步（失败也能在状态文件里看到）",
+    steps.indexOf("scheduleOptionalGuides=ok") >= 0, steps);
   // ⚠ 桩里 `projectRoot()` 是空的（pref 没填、也没有真文件系统），
   //   所以这里临时钉一个假项目根 —— 否则 `mineruKitPath()` 返回空串，
   //   "本地就看到了 exe" 那条分支根本走不到，等于没测。
@@ -282,31 +286,43 @@ if (KB) {
   check("mineruKitPath 指向项目里的 .mineru\\.venv\\Scripts\\mineru-kit.exe",
     /\.mineru[\\/]\.venv[\\/]Scripts[\\/]mineru-kit\.exe$/.test(KB.mineruKitPath()),
     KB.mineruKitPath());
-  check("askMineruGuide 走 Services.prompt.confirmEx 并返回按钮号",
-    KB.askMineruGuide() === 0, String(KB.askMineruGuide()));
+  check("ollamaExePath 拿 %LOCALAPPDATA% 拼（拿不到就空串，不猜用户名）",
+    (function () {
+      const p = KB.ollamaExePath();
+      return p === "" || /Ollama[\\/]ollama\.exe$/.test(p);
+    })(), KB.ollamaExePath());
+  check("askOptionalGuide 走 Services.prompt.confirmEx 并返回按钮号",
+    KB.askOptionalGuide(["mineru", "ollama"]) === 0,
+    String(KB.askOptionalGuide(["mineru"])));
 
   const guideCase = async (opts) => {
-    const seen = { pref: [], panel: [], asked: 0 };
+    const seen = { pref: [], panel: [], asked: 0, missing: null };
     const saved = {
       _exists: KB._exists, request: KB.request, setPref: KB.setPref,
-      getPref: KB.getPref, askMineruGuide: KB.askMineruGuide,
+      getPref: KB.getPref, askOptionalGuide: KB.askOptionalGuide,
       panelProcess: KB.panelProcess,
     };
-    KB.getPref = (k, d) => (k === KB.PREFS.mineruGuideDone
-      ? !!opts.done : d);
+    KB.getPref = (k, d) => {
+      if (k === KB.PREFS.optionalGuideDone) return !!opts.done;
+      if (k === KB.PREFS.mineruGuideDone) return !!opts.legacyDone;
+      return d;
+    };
     KB.setPref = (k, v) => { seen.pref.push([k, v]); };
-    KB._exists = () => !!opts.localKit;
-    KB.request = async () => ({ ok: !!opts.serviceOk });
-    KB.askMineruGuide = () => { seen.asked++; return opts.choice; };
+    KB._exists = () => !!opts.localExe;
+    KB.request = async (m, path) => (path === "/mineru-check"
+      ? { ok: !!opts.mineruOk } : { ollama: opts.ollamaOk ? "C:\\x\\ollama.exe" : "" });
+    KB.askOptionalGuide = (missing) => {
+      seen.asked++; seen.missing = missing; return opts.choice;
+    };
     KB.panelProcess = (args) => { seen.panel.push(args); return true; };
     try {
-      await KB.maybeAskMineruGuide();
+      await KB.maybeAskOptionalGuides();
     } finally {
       KB._exists = saved._exists;
       KB.request = saved.request;
       KB.setPref = saved.setPref;
       KB.getPref = saved.getPref;
-      KB.askMineruGuide = saved.askMineruGuide;
+      KB.askOptionalGuide = saved.askOptionalGuide;
       KB.panelProcess = saved.panelProcess;
     }
     return seen;
@@ -314,31 +330,42 @@ if (KB) {
 
   (async () => {
     let s = await guideCase({ done: true });
-    check("已经问过（pref=true）→ 不弹、不写 pref",
+    check("已经问过（optionalGuideDone=true）→ 不弹、不写 pref",
       s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
 
-    s = await guideCase({ localKit: true });
-    check("本地就看到了 mineru-kit.exe → 不弹",
+    s = await guideCase({ legacyDone: true });
+    check("老 pref mineruGuideDone=true 也认（升级用户不再被烦）",
       s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
 
-    s = await guideCase({ serviceOk: true });
-    check("本地没有但服务说装了 → 不弹",
+    s = await guideCase({ localExe: true });
+    check("本地就看到了两个 exe → 不弹",
+      s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
+
+    s = await guideCase({ mineruOk: true, ollamaOk: true });
+    check("本地没有但服务说两个都在 → 不弹",
       s.asked === 0 && s.pref.length === 0, JSON.stringify(s));
 
     s = await guideCase({ choice: 1 });
-    check("没装 + 选「以后再说」→ 弹一次、记 pref、不开面板",
+    check("两个都没装 + 选「以后再说」→ 弹一次、记 pref、不开面板",
       s.asked === 1
-      && s.pref.length === 1 && s.pref[0][0] === KB.PREFS.mineruGuideDone
+      && s.pref.length === 1 && s.pref[0][0] === KB.PREFS.optionalGuideDone
       && s.pref[0][1] === true && s.panel.length === 0,
       JSON.stringify(s));
 
     s = await guideCase({ choice: 0 });
-    check("没装 + 选「打开安装引导」→ 弹一次、记 pref、拉面板进向导",
-      s.asked === 1
-      && s.pref.length === 1 && s.pref[0][1] === true
+    check("两个都没装 + 选「打开安装引导」→ 拉面板开 MinerU 那个窗口（先缺谁开谁）",
+      s.asked === 1 && s.pref.length === 1 && s.pref[0][1] === true
       && s.panel.length === 1
       && s.panel[0].indexOf("--mineru-guide") >= 0
-      && s.panel[0].indexOf("--tab") >= 0,
+      && s.panel[0].indexOf("--tab") >= 0
+      && JSON.stringify(s.missing) === JSON.stringify(["mineru", "ollama"]),
+      JSON.stringify(s));
+
+    s = await guideCase({ mineruOk: true, choice: 0 });
+    check("只有 Ollama 缺 → 只列 Ollama，并且开的是 --ollama-guide",
+      JSON.stringify(s.missing) === JSON.stringify(["ollama"])
+      && s.panel.length === 1
+      && s.panel[0].indexOf("--ollama-guide") >= 0,
       JSON.stringify(s));
 
     KB.projectRoot = savedRootFn;

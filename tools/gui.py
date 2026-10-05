@@ -241,6 +241,15 @@ def main() -> int:
         except Exception as exc:      # noqa: BLE001
             print(f"[XX] 打不开 MinerU 安装引导：{type(exc).__name__}: {exc}")
 
+    # --ollama-guide ：同上，打开 Ollama 安装引导（可选组件，2026-10-05 加）
+    if "--ollama-guide" in sys.argv:
+        try:
+            from panels.ollama_guide import OllamaGuide
+            OllamaGuide(root, app, on_done=getattr(app, "_check_ollama_button",
+                                                   None))
+        except Exception as exc:      # noqa: BLE001
+            print(f"[XX] 打不开 Ollama 安装引导：{type(exc).__name__}: {exc}")
+
     app.say(f"[{ts()}] 面板就绪。")
     app.say(f"[{ts()}] 项目目录：{ROOT}")
     app.say(f"[{ts()}] 知识库：  {App.kb_dir()}")

@@ -695,6 +695,12 @@ class AppBase:
         # （版本/GPU/档位），否则用户没法判断该不该动它。
         if info.get("_mineru"):
             hint.append(f"MinerU：{info['_mineru']}")
+        # 模型接入区那行小字要跟着环境一起刷新（它的「程序位置」用的是探测
+        # 出来的 Ollama 路径，而那个探测是异步的 —— 不刷新就会显示成空的）。
+        try:
+            self.refresh_llm()
+        except Exception:      # noqa: BLE001
+            pass
         # ⚠ 这里**不重复**"要改就去上面那三个框"那一段 —— 页面上方已经写了一遍，
         #   同一句话说两遍反而像没写完（第一版就是，用户看界面很挑这种）。
         self.env_note.set("\n".join(hint))

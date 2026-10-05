@@ -47,16 +47,20 @@ class StructTab:
                    command=self.open_folder).pack(side="right")
         ttk.Button(head, text="刷新", command=self.refresh_struct).pack(
             side="right", padx=6)
-        # MinerU 安装引导：**只在没检测到 MinerU 时才出现**（用户定的规矩：
-        # "如果检测到 minerU 就没这个按键"）。检测放在后台线程，结果回主线程
-        # 决定按钮要不要 pack —— 所以先建好、默认不显示。
+        # 可选组件的安装引导：**只在没检测到那个组件时才出现**（用户定的规矩：
+        # "如果检测到 minerU 就没这个按键"；Ollama 同理）。检测放后台线程，
+        # 结果回主线程决定按钮要不要 pack —— 所以先建好、默认不显示。
         self.mineru_btn = ttk.Button(
             head, text="MinerU 安装引导", command=self.open_mineru_guide)
         self._mineru_btn_shown = False
+        self.ollama_btn = ttk.Button(
+            head, text="Ollama 安装引导", command=self.open_ollama_guide)
+        self._ollama_btn_shown = False
         # ⚠ 用 `self.root.after` 而不是 `self.after`：App 是"混入类的组合"，
         #   本身不是 Tk 控件（面板冒烟测试里就是在没有真 root 的情况下装配的，
         #   写 self.after 会 AttributeError —— 本机测试逮到）。
         self.root.after(300, self._check_mineru_button)
+        self.root.after(500, self._check_ollama_button)
 
         # 用 Treeview 做表：能对齐、能排序、能选中
         cols = ("name", "what", "count", "size", "safe")
@@ -134,6 +138,46 @@ class StructTab:
         from .mineru_guide import MineruGuide
         win = MineruGuide(self.root, self,
                           on_done=self._check_mineru_button)
+        win.focus_set()
+
+    # ---------------------------------------------------------- Ollama 引导
+
+    def _check_ollama_button(self):
+        """后台探一次 Ollama，决定「Ollama 安装引导」按钮显不显示。
+
+        与 MinerU 同一套规矩：**检测到就不显示**。判据用
+        `panels.ollama_guide.ollama_paths()`（找 exe + 问 API），它内部走
+        `schemas.resolve_ollama()` 与 `judge.ollama_models()`，都是已有的判据。
+        """
+        def work():
+            installed = False
+            try:
+                from .ollama_guide import ollama_paths
+                st = ollama_paths()
+                installed = bool(st.get("exe"))
+            except Exception:      # noqa: BLE001
+                installed = False
+            self.after(0, lambda: self._apply_ollama_button(installed))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _apply_ollama_button(self, installed: bool):
+        want = not installed
+        if want == self._ollama_btn_shown:
+            return
+        try:
+            if want:
+                self.ollama_btn.pack(side="right", padx=6)
+            else:
+                self.ollama_btn.pack_forget()
+        except tk.TclError:
+            return
+        self._ollama_btn_shown = want
+
+    def open_ollama_guide(self):
+        """打开 Ollama 安装引导（下载 → 静默装 → 启动 → 拉模型）。"""
+        from .ollama_guide import OllamaGuide
+        win = OllamaGuide(self.root, self, on_done=self._check_ollama_button)
         win.focus_set()
 
 

@@ -281,8 +281,8 @@ def main() -> int:
                 "openKbLevel", "openKbFolder", "panelProcess",
                 # MinerU（可选组件）的首次安装引导（19-mineruguide.js）：
                 # 少任何一个就是"该弹的不弹"或"点了没反应"，所以名字一起盯着。
-                "mineruKitPath", "scheduleMineruGuide", "maybeAskMineruGuide",
-                "askMineruGuide", "openMineruGuide",
+                "mineruKitPath", "ollamaExePath", "scheduleOptionalGuides",
+                "maybeAskOptionalGuides", "askOptionalGuide", "openOptionalGuide",
                 # ⚠ 2026-10-05：这里原来还盯着「内容窗格里的本地模型分区」
                 #   （19-itempane.js / 20-reader.js）那 25 个函数名。
                 #   用户要求把窗格整条链删掉，所以那批名字一起删了。

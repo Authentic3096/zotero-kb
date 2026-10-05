@@ -172,6 +172,10 @@ Object.assign(ZoteroKB, {
     // 装了 MinerU 的用户一次都不弹（这个 pref 也不会被写）。
     // 面板那侧还有入口：「知识库结构」页那个只在未安装时出现的按钮。
     mineruGuideDone: "zotero-kb.mineruGuideDone",
+    // 可选组件（MinerU + Ollama）的安装引导是否已经问过。
+    // ⚠ 旧版本只有 mineruGuideDone；升级上来的用户那条 pref 还是 true，
+    //   所以 19-mineruguide.js 里**两个都认**，不会二次打扰。
+    optionalGuideDone: "zotero-kb.optionalGuideDone",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },
