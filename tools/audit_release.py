@@ -306,8 +306,15 @@ def audit_paths():
     if user and user.lower() != "public":
         ctx = re.compile(r"(?:\\\\Users\\\\|/home/|/Users/)" + re.escape(user),
                          re.I)
+        # ⚠ 跳过审计器自身：这条规则的**说明注释**里必须写出"什么形态算泄漏"
+        #   （例如 目录/用户名 长什么样），不跳过就会自指误报
+        #   （本机实测：注释里那行 `/home/runner` 被自己判成了泄漏）。
+        #   同文件里"开发机目录名"那条用的是同一套做法。
+        SELF = {"tools/audit_release.py", "tools/check_xpi_paths.py"}
         for p in iter_files():
             rel = os.path.relpath(p, ROOT)
+            if rel.replace("\\", "/") in SELF:
+                continue
             for i, ln in enumerate(read(p).split("\n"), 1):
                 hit = bool(ctx.search(ln)) if loose else (user in ln)
                 if hit:
