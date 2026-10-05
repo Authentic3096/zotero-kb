@@ -15,8 +15,17 @@
 #   document.l10n.setAttributes(el, 'zotero-kb-status-inject', { chars: 1234 });
 
 # ---- 内容窗格分区
-zotero-kb-pane-header = 本地模型
-zotero-kb-pane-sidenav = 本地模型（读这篇文献）
+# ⚠ 分区标题定义成**只有属性、没有值**（.label）—— 与 Zotero 自己的 section-* 一致。
+#   有值的 message 会让 Fluent 执行 textContent = 文案，把分区模板里的 <div data-type="body"> 抹掉，
+#   正文就永远是空白（2026-10-05 实测，见 src/19-itempane.js 的 setupSectionHeader）。
+zotero-kb-pane-header =
+    .label = 本地模型
+# 上面那条的价值只有 .label，程序化取不到；我们自己要用的文案单列一条：
+zotero-kb-pane-title = 本地模型
+zotero-kb-pane-sidenav =
+    .tooltiptext = 本地模型（读这篇文献）
+# ↑ 只有属性、没有值：这条 id 会被 Zotero 设在**图标控件**上，有值的 message
+#   会被 Fluent 写成控件的 textContent —— 图标栏里就会竖着排一列字（2026-10-05 实测）。
 
 # ---- 按钮：三种上下文注入
 zotero-kb-btn-inject-tldr = 摘要级
@@ -40,7 +49,10 @@ zotero-kb-para-stale = 正文重建过，{ $n } 段需重查
 zotero-kb-btn-send = 发送
 zotero-kb-btn-locate = 定位
 zotero-kb-btn-propose = 整理讨论
-zotero-kb-btn-clear = 清空对话
+zotero-kb-btn-clear =
+    .tooltiptext = 清空对话
+# ↑ 只有属性、没有值：这条 id 会被 Zotero 设在**图标控件**上，有值的 message
+#   会被 Fluent 写成控件的 textContent —— 图标栏里就会竖着排一列字（2026-10-05 实测）。
 zotero-kb-placeholder-ask = 就这篇文献提问…
 zotero-kb-placeholder-locate = 把 PDF 里选中的文字粘在这里，定位到对应段落
 zotero-kb-status-inject = 已注入 { $chars } / { $full } 字符

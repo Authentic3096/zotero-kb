@@ -66,7 +66,11 @@ const makeEl = () => {
     append(...c) { this.children.push(...c); },
     replaceChildren(...c) { this.children = c; },
     querySelector() { return null; },
-    querySelectorAll() { return []; },
+    querySelectorAll(sel) {
+      // paneState() 靠这条查询找"我们的分区元素"；桩里由测试注入 fakeSections
+      if (sel === "collapsible-section") return calls.fakeSections || [];
+      return [];
+    },
     set textContent(v) { this._text = v; },
     get textContent() { return this._text; },
   };
@@ -79,7 +83,9 @@ const doc = {
   // initLocale 会往 doc.head / linkset 里插 <link rel="localization">
   head: makeEl(),
   querySelector: () => null,
-  querySelectorAll: () => [],
+  // paneState() 靠这条查询找"我们的分区元素"；桩里由测试注入 fakeSections
+  querySelectorAll: (sel) => (sel === "collapsible-section"
+    ? (calls.fakeSections || []) : []),
   // ⚠ 这个桩**故意不翻译**（只把 data-l10n-id 记下来）—— 真机当时就是
   //   "文档没挂 ftl" 的状态，见文件头的 ⑤。
   l10n: { setAttributes(el, id) { el.setAttribute("data-l10n-id", id); } },
@@ -229,6 +235,23 @@ if (KB) {
 
   const sec = calls.sections[0];
   check("注册了内容窗格分区", !!sec, "registerSection 没被调用");
+
+  // ---- 内容窗格自检（2026-10-05：注册太早会让 Zotero 建出"半成品"元素 ——
+  //      模板里的 <div data-type="body"> 不在，正文永远空白；自愈就是把这条
+  //      检出来并注销重注册）。这里只验"判定逻辑"，定时器在桩里不跑。
+  check("有 paneState / schedulePaneSelfCheck（自检入口）",
+    typeof KB.paneState === "function" && typeof KB.schedulePaneSelfCheck === "function");
+  const fakeSec = makeEl();
+  fakeSec.dataset = { pane: "zotero-kb\\@x-zotero-kb-chat" };
+  calls.fakeSections = [fakeSec];
+  check("没有 body div 时判为 broken（就是坏元素那条路）",
+    KB.paneState() === "broken", KB.paneState());
+  fakeSec.querySelector = () => ({ tagName: "html:div" });
+  check("有 body div 时判为 ok（不会误修）", KB.paneState() === "ok", KB.paneState());
+  calls.fakeSections = [];
+  check("条目窗格还没建出来时判为 wait（不误修）",
+    KB.paneState() === "wait", KB.paneState());
+
   if (sec) {
     check("paneID 与 PANE_ID 一致", sec.paneID === KB.PANE_ID, sec.paneID);
     check("pluginID 是插件 id", sec.pluginID === "zotero-kb@authentic3096.github.io",

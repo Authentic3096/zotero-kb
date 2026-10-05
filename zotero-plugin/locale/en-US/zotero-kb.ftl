@@ -11,8 +11,18 @@
 #   is not defined here.
 
 # ---- Item pane section
-zotero-kb-pane-header = Local model
-zotero-kb-pane-sidenav = Local model (this paper)
+# ⚠ 分区标题定义成**只有属性、没有值**（.label）—— 与 Zotero 自己的 section-* 一致。
+#   有值的 message 会让 Fluent 执行 textContent = 文案，把分区模板里的 <div data-type="body"> 抹掉，
+#   正文就永远是空白（2026-10-05 实测，见 src/19-itempane.js 的 setupSectionHeader）。
+zotero-kb-pane-header =
+    .label = Local model
+# 上面那条的价值只有 .label，程序化取不到；我们自己要用的文案单列一条：
+zotero-kb-pane-title = Local model
+zotero-kb-pane-sidenav =
+    .tooltiptext = Local model (this paper)
+# Attribute-only on purpose: this id lands on an icon control, and a
+# message with a value would be written into its textContent.
+
 
 # ---- Context injection
 zotero-kb-btn-inject-tldr = Summary
@@ -34,7 +44,10 @@ zotero-kb-para-stale = Full text was rebuilt; { $n } paragraph(s) need re-checki
 zotero-kb-btn-send = Send
 zotero-kb-btn-locate = Locate
 zotero-kb-btn-propose = Propose
-zotero-kb-btn-clear = Clear chat
+zotero-kb-btn-clear =
+    .tooltiptext = Clear chat
+# ↑ 只有属性、没有值：这条 id 会被 Zotero 设在**图标控件**上，有值的 message
+#   会被 Fluent 写成控件的 textContent —— 图标栏里就会竖着排一列字（2026-10-05 实测）。
 zotero-kb-placeholder-ask = Ask about this paper…
 zotero-kb-placeholder-locate = Paste text selected in the PDF to locate its paragraph
 zotero-kb-status-inject = Injected { $chars } / { $full } characters

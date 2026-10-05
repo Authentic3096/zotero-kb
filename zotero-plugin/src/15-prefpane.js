@@ -73,7 +73,15 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /** 把运行状态写到文件，方便从 Python 侧和排障时查看。 */
+  /** 把运行状态写到文件，方便从 Python 侧和排障时查看。
+   *
+   * ⚠ 每次写都把调用方给的 `extra` **累积**在 `_statusExtra` 里再一起写。
+   *   原因是这条链上有很多调用方：startup 写完 `startupSteps`，几秒后
+   *   任务轮询每隔 2 秒再写一次（不带 extra）—— 而本函数是**整文件覆盖**，
+   *   于是那些诊断字段（startupSteps / itemPane / locale / readerEvents…）
+   *   只存在了几秒钟就没了。用户报"分区正文空白"时要查的恰恰是那几个字段，
+   *   结果一个都看不到（2026-10-05 亲历）。
+   */
   writeStatusFile: function (extra) {
     var self = ZoteroKB;
     try {
@@ -109,7 +117,10 @@ Object.assign(ZoteroKB, {
         lastRequests: self.lastRequests || [],
         wroteAt: new Date().toISOString(),
       };
-      if (extra) Object.assign(data, extra);
+      if (extra) {
+        self._statusExtra = Object.assign(self._statusExtra || {}, extra);
+      }
+      Object.assign(data, self._statusExtra || {});
       const file = Zotero.File.pathToFile(path);
       Zotero.File.putContents(file, JSON.stringify(data, null, 2));
     } catch (e) {

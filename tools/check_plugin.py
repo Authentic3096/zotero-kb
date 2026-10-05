@@ -383,6 +383,10 @@ def main() -> int:
         used |= set(re.findall(
             r"""paneButton\(\s*[^,\n]+,\s*['"]([^'"]+)['"]""", bsrc))
         used |= set(re.findall(r"""l10nText\(\s*['"]([^'"]+)['"]""", bsrc))
+        # 还有"程序化取字符串"那条路：`formatValueSync("id")` —— 忘了在 ftl 里定义时
+        # 界面上同样是空白（`zotero-kb-pane-title` 就是这么加的，见 19-itempane.js）。
+        used |= set(re.findall(
+            r"""formatValueSync?\(\s*['"]([^'"]+)['"]""", bsrc))
         for key in sorted(used):
             if key in defined:
                 print(f"  [OK] l10nID {key} 有定义"

@@ -112,6 +112,102 @@ Object.assign(ZoteroKB, {
 
   // ================================================================ 注册与生命周期
 
+  /**
+   * 把分区标题改成"只写 label 属性"的那条路。**这是"正文空白"的根因修复。**
+   *
+   * ⚠ 2026-10-05，三组对照实验（在运行中的 Zotero 10.0.5 上做的）：
+   *   Zotero 把 `header.l10nID` 设成
+   *   `<collapsible-section data-l10n-id="zotero-kb-pane-header">`，随后它会对
+   *   条目窗格调 `document.l10n.translateFragment(...)`。Fluent 翻一条**有值**的
+   *   message 时执行 `element.textContent = 文案` —— 模板自带的
+   *   `<div data-type="body">` **连里面所有东西一起被抹掉**：
+   *
+   *     · 有值的 message（我们原来的写法）        → kids 1 → **0**，文字变"本地模型"
+   *     · 只有属性的 message（Zotero 的 section-info）→ kids 1 → 1  ✅
+   *     · 只有属性 + 元素上 data-l10n-attrs="label"  → kids 1，且 label="信息" ✅
+   *
+   *   被抹之后是个死局：`onInit/onRender` 拿到的 body 是 null，而 Zotero 认为
+   *   这个分区"已经渲染过"，`render()` 直接返回 false —— 正文永远补不回来
+   *   （实测 h=24px、`render()` 返回 false；用户看到的就是"标题在、正文空白，
+   *   右边其它分区看着也没了"）。
+   *
+   *   所以两件事一起做：
+   *     ① ftl 里 `zotero-kb-pane-header` 写成**只有 `.label`**（见 locale/*.ftl）；
+   *     ② 这里给分区元素加 `data-l10n-attrs="label"`，让 Fluent 把文案写进
+   *        **label 属性**而不是 textContent。`collapsible-section` 的
+   *        `observedAttributes` 里有 'label'，它会自己把 label 渲染成标题。
+   *   再顺手用单列的 `zotero-kb-pane-title` 先把 label 填上（Fluent 翻完覆盖成
+   *   同一份文案），这样即使翻译没赶上，标题也不会空着。
+   */
+  setupSectionHeader: function (body) {
+    var self = ZoteroKB;
+    try {
+      if (!body) return false;
+      let sec = body.closest ? body.closest("collapsible-section") : null;
+      if (!sec && body.parentElement && body.parentElement.closest) {
+        sec = body.parentElement.closest("collapsible-section");
+      }
+      if (!sec) return false;
+      // ① Fluent 只许写 label，别碰 textContent
+      if (sec.getAttribute("data-l10n-attrs") !== "label") {
+        sec.setAttribute("data-l10n-attrs", "label");
+      }
+      // ② 先把 label 填上（幂等；Fluent 翻完会覆盖成同一份文案）
+      if (!sec.getAttribute("label")) {
+        let msg = "";
+        try {
+          msg = Zotero.ftl && Zotero.ftl.formatValueSync
+            && Zotero.ftl.formatValueSync("zotero-kb-pane-title");
+        } catch (e) { /* ignore */ }
+        if (msg) sec.setAttribute("label", msg);
+      }
+      self.paneDiag = self.paneDiag || {};
+      self.paneDiag.headerSetups = (self.paneDiag.headerSetups || 0) + 1;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
+
+  /**
+   * 我们给 Zotero 的两个 **l10nID 落在图标控件上**，得让 Fluent 只写 tooltiptext。
+   *
+   *   · `sidenav.l10nID`  → 右侧图标栏那个按钮
+   *   · `sectionButtons[].l10nID` → 分区标题右边那个图标按钮
+   *
+   * ⚠ 不这么做的话，有值的 message 会被 Fluent 写成控件的 **textContent** ——
+   *   图标栏里就竖着排了一列字（用户 2026-10-05 截图："本地模型（读这篇文献）"
+   *   竖排挤在图标旁边），分区标题右边也会挤出"清空对话"几个字。
+   *   Zotero 自己的写法是 `sidenav-info =` + `.tooltiptext = …`（只有属性、没有值）。
+   *
+   * 做法：给这两个元素加 `data-l10n-attrs="tooltiptext"`（Zotero 只负责设
+   * `data-l10n-id`，不会动这个属性，所以设一次就稳），配合 locale/*.ftl 里
+   * 对应的属性型 message。找不到元素（还没建出来）就下次再说 —— 渲染时还会再调。
+   */
+  setupIconL10n: function (doc) {
+    var self = ZoteroKB;
+    let n = 0;
+    try {
+      const ids = ["zotero-kb-pane-sidenav", "zotero-kb-btn-clear"];
+      for (const id of ids) {
+        const els = doc.querySelectorAll('[data-l10n-id="' + id + '"]');
+        for (const el of els) {
+          if (el.getAttribute("data-l10n-attrs") !== "tooltiptext") {
+            el.setAttribute("data-l10n-attrs", "tooltiptext");
+            n += 1;
+          }
+        }
+      }
+    } catch (e) { /* ignore */ }
+    if (n) {
+      self.paneDiag = self.paneDiag || {};
+      self.paneDiag.iconL10n = (self.paneDiag.iconL10n || 0) + n;
+    }
+    return n;
+  },
+
+
   registerItemPane: function () {
     var self = ZoteroKB;
     if (!Zotero.ItemPaneManager || !Zotero.ItemPaneManager.registerSection) {
@@ -158,6 +254,99 @@ Object.assign(ZoteroKB, {
         itemPane: self.paneID ? ("ok: " + self.paneID) : "registerSection 返回 false",
       });
     } catch (e) { /* ignore */ }
+    // 图标控件可能这时候还没建出来 —— 试一次，剩下的交给 paneRender 再试
+    try {
+      const win = Zotero.getMainWindow && Zotero.getMainWindow();
+      if (win && win.document) self.setupIconL10n(win.document);
+    } catch (e) { /* ignore */ }
+    // ⚠ 注册成功后**必须复查一次**（见 schedulePaneSelfCheck 的说明）
+    try { self.schedulePaneSelfCheck(); } catch (e) { /* ignore */ }
+  },
+
+
+  /** 我们的分区元素现在建好没有？返回 "ok" / "broken" / "wait"。 */
+  paneState: function () {
+    var self = ZoteroKB;
+    try {
+      const win = Zotero.getMainWindow && Zotero.getMainWindow();
+      const doc = win && win.document;
+      if (!doc || !doc.querySelectorAll) return "wait";
+      const secs = Array.prototype.slice.call(
+        doc.querySelectorAll("collapsible-section"));
+      const mine = secs.filter((s) => {
+        const p = (s.dataset && s.dataset.pane) || "";
+        return p.indexOf(self.PANE_ID) >= 0;
+      });
+      if (!mine.length) return "wait";       // 条目窗格还没建出来
+      // 正常的分区里一定有模板自带的 `<div data-type="body">`。
+      // 没有它 = Zotero 那边建到一半（实测：正文永远空白，且 render() 直接
+      // 返回 false —— 它认为"已经渲染过"，不会再来一次）。
+      return mine.every((s) => !s.querySelector('[data-type="body"]'))
+        ? "broken" : "ok";
+    } catch (e) {
+      return "wait";
+    }
+  },
+
+
+  /**
+   * 延迟复查分区元素；**半成品就注销重注册一次**。
+   *
+   * 为什么需要它（2026-10-05 用户截图："分区标题在、正文空白，右边图表也没了"）：
+   * 在 startup 里立刻注册时，Zotero 建出来的 `<collapsible-section>` 偶尔是
+   * **半成品**（模板里的 `<div data-type="body">` 不在，`onInit` 也拿不到 body），
+   * 而它内部又把"已渲染过"标记上了 —— 于是正文**永远**补不回来。
+   * 运行中注销再重新注册一次，同一个分区当场就好了（实测 h: 24 → 249px，
+   * 六个按钮文字齐全）。所以这里做一次自动复查+自愈，最多重试 2 次，
+   * 之后把结果写进状态文件的 `itemPane` 字段，便于下次排查。
+   */
+  schedulePaneSelfCheck: function () {
+    var self = ZoteroKB;
+    // 已经有一轮在跑就不再开一轮（重注册会再次调到这里 —— 不挡住会来回抖）
+    if (self._paneCheckRunning) return;
+    self._paneCheckRunning = true;
+    self.paneCheck = { tries: 0, state: "start", repairs: 0 };
+
+    const attempt = () => {
+      if (!self.alive) { self._paneCheckRunning = false; return; }
+      self.paneCheck.tries += 1;
+      const st = self.paneState();
+      self.paneCheck.state = st;
+      const done = (extra) => {
+        self.writeStatusFile(Object.assign({
+          itemPane: (self.paneID || "") + " " + st
+            + "（tries=" + self.paneCheck.tries
+            + "，repairs=" + self.paneCheck.repairs + "）",
+          paneCheck: self.paneCheck,
+        }, extra || {}));
+        self._paneCheckRunning = false;
+      };
+      if (st === "ok") { done(); return; }
+      if (st === "wait" || self.paneCheck.tries >= 3) {
+        // "wait" = 条目窗格还没建出来（用户可能还没点开那一列）——
+        // 那不算坏，别去注销重注册，过一会儿再看；到第 3 次就收工记录状态。
+        if (st === "wait" && self.paneCheck.tries < 3) {
+          setTimeout(attempt, 3000);
+          return;
+        }
+        done();
+        return;
+      }
+      // broken：注销后重新注册（实测能把 h=24 的坏元素修成能渲染的 249px）
+      try {
+        if (self.paneID && Zotero.ItemPaneManager
+            && Zotero.ItemPaneManager.unregisterSection) {
+          Zotero.ItemPaneManager.unregisterSection(self.paneID);
+          self.paneID = null;
+          self.paneCheck.repairs += 1;
+        }
+      } catch (e) { /* ignore */ }
+      setTimeout(() => {
+        try { self.registerItemPane(); } catch (e) { /* ignore */ }
+        setTimeout(attempt, 1200);
+      }, 400);
+    };
+    setTimeout(attempt, 2500);
   },
 
 
@@ -257,7 +446,17 @@ Object.assign(ZoteroKB, {
 
   paneOnInit: function (doc, body) {
     // 初始化时先不建 UI（onItemChange 才知道是哪一篇；onRender 才给 item）
-    body.classList.add("zotero-kb-pane");
+    // ⚠ 第一件事：把分区标题改成"只写 label 属性"的那条路 —— 否则 Zotero 随后的
+    //   translateFragment 会把模板里的 `<div data-type="body">` 连同正文一起抹掉
+    //   （见 setupSectionHeader；这是"分区标题在、正文空白"的根因）。
+    try { ZoteroKB.setupSectionHeader(body); } catch (e) { /* ignore */ }
+    // 图标控件（侧栏按钮 / 分区里的图标按钮）只要 tooltiptext，不要文字
+    try { ZoteroKB.setupIconL10n(doc || (body && body.ownerDocument)); } catch (e) { /* ignore */ }
+    // ⚠ body 也可能是 null（已经被抹过的坏元素）—— 不能在这里抛，
+    //   否则后面连自愈都跑不到（见 schedulePaneSelfCheck）。
+    try {
+      if (body && body.classList) body.classList.add("zotero-kb-pane");
+    } catch (e) { /* ignore */ }
   },
 
 
@@ -275,7 +474,23 @@ Object.assign(ZoteroKB, {
 
   paneRender: function (doc, body, item) {
     var self = ZoteroKB;
+    // 渲染诊断：Zotero 会把这里的异常吞掉，界面上的表现只有"正文空白"，
+    // 所以把"有没有拿到 body、画了几次"记下来写进状态文件（见 writeStatusFile）。
+    self.paneDiag = self.paneDiag || { renders: 0, noBody: 0, lastKey: "" };
+    self.paneDiag.renders += 1;
+    self.paneDiag.lastKey = (item && item.key) || "";
+    if (!body) {
+      // ⚠ 这条路径就是用户 2026-10-05 遇到的"分区标题在、正文空白"：
+      //   Zotero 建出来的元素是半成品（没有 `[data-type="body"]`），
+      //   onInit/onRender 拿到的 body 是 null。自愈见 schedulePaneSelfCheck。
+      self.paneDiag.noBody += 1;
+      try { self.writeStatusFile({ paneDiag: self.paneDiag }); } catch (e) {}
+      return;
+    }
     if (!item) return;
+    // 双保险：每次渲染都确保标题走 label 属性（幂等，见 setupSectionHeader）
+    try { self.setupSectionHeader(body); } catch (e) { /* ignore */ }
+    try { self.setupIconL10n(doc); } catch (e) { /* ignore */ }
     const st = self.chatOf(item.key);
     body.textContent = "";
     const ui = { doc: doc, body: body, item: item, key: item.key };

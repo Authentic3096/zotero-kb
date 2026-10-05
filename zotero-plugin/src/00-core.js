@@ -48,6 +48,8 @@ var ZoteroKB = {
   weightsCache: {},     // item.key -> {weight, pinned, attempts, ...}（权重列用）
   weightColumnKey: null,// ItemTreeManager 返回的列 dataKey（注销时要）
   taskTimer: null,      // 任务轮询的 setTimeout 句柄
+  _statusExtra: {},     // 状态文件的"累积字段"（见 writeStatusFile 的说明）
+  _paneCheckRunning: false,  // 内容窗格分区的自检是否在跑（防抖）
   taskPolling: false,   // 轮询开关（比 taskTimer 更能表达"是否在轮询"）
   taskBusy: false,      // 防止上一轮还没跑完就再来一轮
   tickCount: 0,         // 轮询心跳：触发次数（排查"定时器没跑"用）
