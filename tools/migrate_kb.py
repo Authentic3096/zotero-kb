@@ -283,7 +283,7 @@ def main() -> int:
     print("  接下来：")
     print("   1) 重启知识库服务（scripts\\4-service.vbs）")
     print("   2) 跑 tools\\gui.py --check 看它认不认新位置")
-    print("   3) 跑一次检索确认可用（tests\\try_search.py）")
+    print("   3) 跑一次检索确认可用（面板里试搜一下）")
     print("   4) 都正常了，再自己决定要不要删旧目录和备份")
     print()
     print("  想切回旧位置：删掉 kb-location.json（如果有），或设环境变量 KB_DIR")
