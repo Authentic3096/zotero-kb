@@ -202,6 +202,37 @@ def test_build_with_fake_model():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_sync_card():
+    print("\n[7] sync_card：把纲要概览写进完整档案（幂等替换）")
+    import digest as D
+    import schemas as S
+    from unittest import mock
+
+    tmp = tempfile.mkdtemp(prefix="kbcard-")
+    papers = os.path.join(tmp, "papers")
+    os.makedirs(papers, exist_ok=True)
+    card = os.path.join(papers, "K1.md")
+    with io.open(card, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# 标题\n\n元数据…\n")
+    data = {"sections": [
+        {"title": "1 引言", "page_from": 1, "page_to": 2, "summary": "讲了背景。"},
+        {"title": "2 方法", "page_from": 3, "page_to": 5, "summary": ""}]}
+    try:
+        with mock.patch.object(S, "PAPERS_DIR", papers):
+            check("写成功", D.sync_card("K1", data) is True)
+            t1 = io.open(card, encoding="utf-8").read()
+            check("档案里出现纲要块与页码范围",
+                  D.OUTLINE_BEGIN in t1 and "1 引言（p.1–2）" in t1, t1[-160:])
+            check("原有内容没被破坏", t1.startswith("# 标题"))
+            D.sync_card("K1", data)
+            t2 = io.open(card, encoding="utf-8").read()
+            check("第二次是幂等替换（不重复追加）", t2 == t1,
+                  f"{len(t1)} vs {len(t2)}")
+            check("档案不存在时返回 False", D.sync_card("NOPE", data) is False)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_levels():
     print("\n[6] 级别清单与渲染入口")
     import kbviews as KV
@@ -242,6 +273,7 @@ def main() -> int:
     test_split_and_merge()
     test_fp_stable()
     test_build_with_fake_model()
+    test_sync_card()
     test_levels()
     print(f"\n{'=' * 60}\n通过 {PASS}　失败 {FAIL}\n{'=' * 60}")
     return 1 if FAIL else 0

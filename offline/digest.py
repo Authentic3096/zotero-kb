@@ -415,6 +415,11 @@ def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
                 fh.write(render(key, data))
         except Exception as exc:      # noqa: BLE001
             note(f"    [!!] 写 views/{key}.outline.md 失败：{exc}")
+        # 顺手把"节标题 + 一句话"写进 papers/<KEY>.md（没笔记时档案才不笼统）
+        try:
+            sync_card(key, data)
+        except Exception as exc:      # noqa: BLE001
+            note(f"    [!!] 同步 papers/{key}.md 的纲要概览失败：{exc}")
     out.update({"ok": True, "n_sections": len(kept),
                 "seconds": round(time.time() - t0, 1), "outline": data,
                 "why": f"{len(kept)} 节（新跑 {out['asked']}、复用 {out['cached']}）"})
@@ -449,6 +454,61 @@ def render(key: str, data: dict | None = None) -> str:
     return "\n".join(lines)
 
 
+OUTLINE_BEGIN = "<!-- OUTLINE:BEGIN -->"
+OUTLINE_END = "<!-- OUTLINE:END -->"
+
+
+def _one_liner(text: str, limit: int = 90) -> str:
+    """把一句话压成一行（去掉换行、超长截断）—— 给档案里的概览用。"""
+    s = " ".join(str(text or "").split())
+    return (s[:limit] + "…") if len(s) > limit else s
+
+
+def sync_card(key: str, data: dict | None = None) -> bool:
+    """把纲要概览写进 `papers/<KEY>.md`（幂等：只替换两个标记之间的内容）。
+
+    为什么要这一步：有笔记的文献，档案本身就能"浏览大致做了什么"；没有笔记的
+    只有元数据 + 每页首段，太笼统。把每节标题 + 一句话放进档案，档案这一级才
+    真的能当中间层用（用户 2026-10-05 指出的问题）。
+    """
+    data = data if data is not None else load_outline(key)
+    secs = (data or {}).get("sections") or []
+    path = os.path.join(S.PAPERS_DIR, f"{key}.md")
+    if not os.path.isfile(path):
+        return False
+    try:
+        with io.open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return False
+    if not secs:
+        block = ""
+    else:
+        lines = ["## 分节纲要（节标题 + 页码范围；详细要点见「打开知识库 → 分节纲要」）", ""]
+        for i, s in enumerate(secs, 1):
+            head = s.get("title") or f"第 {i} 段"
+            rng = f"p.{s.get('page_from')}–{s.get('page_to')}"
+            one = _one_liner(s.get("summary") or "")
+            lines.append(f"- {i}. {head}（{rng}）" + (f"：{one}" if one else ""))
+        lines.append("")
+        block = OUTLINE_BEGIN + "\n" + "\n".join(lines) + OUTLINE_END + "\n"
+    # 幂等：已有标记就只换标记之间；没有就追加到文件末尾
+    i = text.find(OUTLINE_BEGIN)
+    j = text.find(OUTLINE_END)
+    if i >= 0 and j > i:
+        new_text = text[:i] + block + text[j + len(OUTLINE_END) + 1:]
+    elif block:
+        new_text = text.rstrip("\n") + "\n\n" + block
+    else:
+        return False
+    try:
+        with io.open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(new_text)
+        return True
+    except OSError:
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python offline/digest.py <KEY> [--force] [--limit N] [--missing] [--dry]`"""
     import argparse
@@ -459,7 +519,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--model", default="")
     ap.add_argument("--missing", action="store_true", help="给还没有纲要的文献补")
     ap.add_argument("--dry", action="store_true", help="只打印会做哪些，不调模型")
+    ap.add_argument("--sync", action="store_true",
+                    help="不调模型：把**已有**纲要的概览回填进 papers/*.md（补历史用）")
     args = ap.parse_args(argv)
+
+    if args.sync:
+        # 补历史：纲要已经在库里，只是当时还没写"档案里的概览"这一步
+        conn = S.connect(S.INDEX_DB)
+        ks = [r["k"][len(META_PREFIX):] for r in conn.execute(
+            "SELECT k FROM meta WHERE k LIKE ?", (META_PREFIX + "%",))]
+        n = sum(1 for k in ks if sync_card(k))
+        print(f"  已把纲要概览写进 {n} / {len(ks)} 篇的 papers/*.md")
+        return 0
 
     keys = []
     if args.missing:
