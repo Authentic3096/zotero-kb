@@ -104,7 +104,7 @@ git tag -a v0.25.2 -m "统一作者署名为 DeepSeek and Authentic3096" && git 
 工作流只覆盖附件、不动正文。所以正文要单独改一次：
 
 ```powershell
-python tools\set_release_body.py --tag v0.25.2 --body 说明.md   # 改正文
+（该脚本不进仓库，放在本地工作档案的 tools\release\ 下）   # 改正文
 python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前正文开头
 ```
 
