@@ -196,6 +196,34 @@ pages（起止页码）{creator_hint}。
   "reason": "", "evidence": "", "tags": [], "item_keys": [],
   "similar_hint": "一句话：这条大概是在讲什么，便于用户确认"}}""",
     },
+    "digest": {
+        "title": "给一节写纲要（全文与摘要之间的中间层）",
+        "where": "offline/digest.py 的分节纲要（每节一次调用）",
+        "placeholders": ["title", "section", "text"],
+        "keys": ["summary", "points"],
+        "system": (
+            "你是文献精读助手。按给定的一节正文，写清「这一节在做什么、"
+            "用了什么方法、得到什么结论/参数」，供读者决定要不要细读原文。"
+            "只写正文里有的内容，不要推测、不要补充外部知识。输出 JSON。"
+        ),
+        "user": """下面是文献《{title}》里的一节（标题：{section}）。
+
+请写这一节的纲要，供读者决定"要不要细读原文这一节"：
+
+【本节正文】
+{text}
+
+【要求】
+1. summary：2~4 句，说清这一节**在做什么、怎么做、结论是什么**；
+   不要写"本节介绍了…"这种空话，要写具体方法/对象/结论。
+2. points：3~6 条关键点，每条一行，优先抄**具体的东西**：公式名/变量含义、
+   参数与取值、数据规模、结论数字、限制条件。没有就少写，**不要凑数**。
+3. 只写正文里出现过的内容；看不到的就不写。数字要照抄，不要换算、不要四舍五入。
+4. 不要评价（"写得很好"）、不要复述目录、不要提"这一节"以外的东西。
+
+只输出 JSON：
+{"summary": "", "points": ["", ""]}""",
+    },
     "chunks": {
         "title": "判「整篇提取是否失败」（解析健康灰区）",
         "where": "offline/check_chunks.py 的灰区判定（一次只看一篇）",
@@ -248,7 +276,8 @@ SAMPLES: dict[str, dict] = {
 }
 
 # 哪些提示词要求模型回 JSON（试跑时用 json_mode，并展示解析结果）
-JSON_PROMPTS = ("tag", "summary", "extract", "metafill", "draft", "chunks")
+JSON_PROMPTS = ("tag", "summary", "extract", "metafill", "draft",
+                 "digest", "chunks")
 
 
 def probe(pid: str, model: str = "") -> dict:

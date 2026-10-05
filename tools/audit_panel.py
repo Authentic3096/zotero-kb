@@ -164,6 +164,7 @@ def main() -> int:
         ("检查模型服务", r"do_ai_status"),
         ("打标签", r"do_ai_tag"),
         ("生成要点", r"do_ai_summary"),
+        ("生成纲要", r"do_ai_outline"),
         ("生成分类建议", r"do_taxonomy"),
         ("单篇分类建议", r"do_taxonomy_one"),
         ("列出分类", r"do_coll_list"),

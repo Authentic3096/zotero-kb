@@ -413,42 +413,61 @@ def render_pages(structured: dict) -> list[str]:
     for pg in (structured.get("pages") or []):
         if not isinstance(pg, dict):
             continue
-        lines: list[str] = []
-        for b in (pg.get("blocks") or []):
-            if not isinstance(b, dict):
-                continue
-            typ = str(b.get("type") or "").lower()
-            if typ in DROP_BLOCK_TYPES:
-                continue
-            content = str(b.get("content") or "").strip()
-            if typ in ("doc_title", "title"):
-                lines.append("# " + content)
-            elif typ in ("paragraph_title", "section_title", "heading"):
-                lvl = b.get("level")
-                try:
-                    lvl = max(2, min(6, int(lvl) + 1))
-                except Exception:      # noqa: BLE001
-                    lvl = 2
-                lines.append("#" * lvl + " " + content)
-            elif typ in ("equation", "interline_equation", "inline_equation"):
-                lines.append("$$" + content + "$$" if content else "")
-            elif typ in ("image", "chart", "figure"):
-                img = _as_text(b.get("img_path") or b.get("image_path") or "")
-                cap = " ".join(
-                    _as_text(b.get(k)) for k in
-                    ("img_caption", "caption", "img_footnote")
-                    if _as_text(b.get(k))).strip()
-                if img:
-                    lines.append(f"![{cap or typ}]({img})")
-                if cap:
-                    lines.append(cap)
-                elif content and content != img:
-                    lines.append(content)
-            elif content:
-                lines.append(content)
+        lines: list[str] = [render_block(b) for b in (pg.get("blocks") or [])]
         # 空行分隔：KB 的切片按行/段来，粘连会把两段并成一块
         out.append("\n\n".join(x for x in lines if x))
     return out
+
+
+def block_type(b) -> str:
+    """块的类型（小写）；不是 dict 就给空串。给外层按类型切节用。"""
+    if not isinstance(b, dict):
+        return ""
+    return str(b.get("type") or "").lower()
+
+
+def render_block(b) -> str:
+    """渲染**一个块**成 markdown 片段（空串 = 这一块不产出文本）。
+
+    规则（与 render_pages 完全共用，避免两处漂移）：
+      · 页眉/页脚/页码 → 丢掉；
+      · 标题 → `#`/`##`（按 level）；
+      · 公式 → `$$…$$`；
+      · 图片 → 一行 `![图注](images/xxx.jpg)` +（图注另起一行）；
+      · 其它有 content 的原样保留。
+    """
+    if not isinstance(b, dict):
+        return ""
+    typ = block_type(b)
+    if typ in DROP_BLOCK_TYPES:
+        return ""
+    content = str(b.get("content") or "").strip()
+    if typ in ("doc_title", "title"):
+        return "# " + content
+    if typ in ("paragraph_title", "section_title", "heading"):
+        lvl = b.get("level")
+        try:
+            lvl = max(2, min(6, int(lvl) + 1))
+        except Exception:      # noqa: BLE001
+            lvl = 2
+        return "#" * lvl + " " + content
+    if typ in ("equation", "interline_equation", "inline_equation"):
+        return "$$" + content + "$$" if content else ""
+    if typ in ("image", "chart", "figure"):
+        img = _as_text(b.get("img_path") or b.get("image_path") or "")
+        cap = " ".join(
+            _as_text(b.get(k)) for k in
+            ("img_caption", "caption", "img_footnote")
+            if _as_text(b.get(k))).strip()
+        parts = []
+        if img:
+            parts.append(f"![{cap or typ}]({img})")
+        if cap:
+            parts.append(cap)
+        elif content and content != img:
+            parts.append(content)
+        return "\n".join(parts)
+    return content
 
 
 def parse_item(key: str, pdf: str, tier: str = "basic", kb_dir: str = "",

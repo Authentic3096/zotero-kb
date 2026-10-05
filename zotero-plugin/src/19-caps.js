@@ -179,35 +179,45 @@ Object.assign(ZoteroKB, {
   capLabel: function (kind) {
     var self = ZoteroKB;
     const st = (kind === "dsh") ? self.caps.dsh : self.caps.localModel;
-    const why = (kind === "dsh") ? self.caps.dshWhy : self.caps.localWhy;
     if (kind === "dsh") {
-      const base = "发送到 DSH";
-      if (st === true) {
-        return { label: base,
-                 tooltip: "把这篇的路径发到 DSH 里（新建对话或选已有对话）" };
-      }
-      if (st === false) {
-        return { label: base + "（未连接）",
-                 tooltip: "DSH 没接上：" + (why || "未知原因")
-                   + "\n\n要接上：确认 DSH 桌面端在运行、且装了 zotero-bridge 插件；"
-                   + "装完重启 DSH。" };
-      }
-      return { label: base + "（检测中）",
-               tooltip: "正在检查 DSH 连接……" };
+      // ⚠ 顶层标题**不带后缀**（用户 2026-10-05：「现在动态的加（未连接）
+      //   导致太宽了，去掉吧」）。连接状态改用 `capStateLine()` 放进**下级菜单**。
+      return { label: "发送到 DSH",
+               tooltip: "把这篇的路径发到 DSH 里（新建对话或选已有对话）"
+                 + (st === false ? ("\n\n⚠ 现在没连上：" + (self.caps.dshWhy || "")) : "") };
     }
-    const base2 = "连接到本地模型";
+    return { label: "连接到本地模型",
+             tooltip: "用本地模型做「分类建议」和「补全元数据」"
+               + (st === false
+                  ? ("\n\n⚠ 现在不可用：" + (self.caps.localWhy || "")) : "") };
+  },
+
+
+  /**
+   * 下级菜单里的**状态行**文案（纯函数，可桩测）。
+   *
+   * 为什么放这里而不是标题上：用户 2026-10-05 反馈"标题加（未连接）太宽"，
+   * 要求"在悬浮的下级菜单显示链接没链接"。顺带解决另一个问题：菜单是同步构建的，
+   * 缓存里可能是 `null`（还没探到）—— 那时**不写"检测中"**，而是据实说
+   * "还没检查"（点了就是检查），免得出现"对话都列出来了却写检测中"的矛盾。
+   *
+   * `extra` 用来塞"这次真的看到的"信息（例如对话条数 / 模型名）。
+   */
+  capStateLine: function (kind, extra) {
+    var self = ZoteroKB;
+    const st = (kind === "dsh") ? self.caps.dsh : self.caps.localModel;
+    const why = (kind === "dsh") ? self.caps.dshWhy : self.caps.localWhy;
+    const tail = extra ? ("　" + extra) : "";
     if (st === true) {
-      return { label: base2,
-               tooltip: "用本地模型做「分类建议」和「补全元数据」" };
+      return { text: (kind === "dsh" ? "● 已连接 DSH" : "● 本地模型可用") + tail,
+               ok: true };
     }
     if (st === false) {
-      return { label: base2 + "（未连接）",
-               tooltip: "本地模型用不了：" + (why || "未知原因")
-                 + "\n\n两个办法：① 面板「运行环境」→「启动 Ollama」；"
-                 + "② 在「模型接入」里改用 API 模型（填地址与 Key）。" };
+      return { text: (kind === "dsh" ? "○ 未连接：" : "○ 不可用：")
+                     + (why || "原因未知"), ok: false };
     }
-    return { label: base2 + "（检测中）",
-             tooltip: "正在检查本地模型……" };
+    return { text: (kind === "dsh" ? "○ 还没检查过连接" : "○ 还没检查过本地模型")
+                   + "（点这一行重新检查）", ok: false };
   },
 
 

@@ -444,6 +444,22 @@ Object.assign(ZoteroKB, {
             mp.appendChild(s);
           };
 
+          // ---- 子菜单第一行：连接状态（用户要求"在悬浮的下级菜单显示链接没链接"）
+          //
+          // 为什么这一行要能点：`caps` 可能还没探过（菜单是同步构建的），
+          // 点它就是"现在探一次"。点了之后不重建菜单（下次打开自然更新）。
+          const dshState = self.capStateLine
+            ? self.capStateLine("dsh", "") : { text: "", ok: false };
+          mk(dshState.text, () => {
+            self.refreshCaps(true).then(() => {
+              self.notify("DSH 连接检查",
+                (self.capLabel ? self.capLabel("dsh").tooltip : "")
+                + "\n\n当前：" + (self.capStateLine
+                    ? self.capStateLine("dsh").text : ""), null, true);
+            }).catch(() => {});
+          }, { iconic: false, ready: "",
+               tooltip: "点这一行立刻重新检查 DSH 连接" });
+
           mk("新建对话…", () => { self.sendToDSH(real, { create: true }); },
              { iconic: false, tooltip: "在 DSH 里开一个新对话，把文献路径发过去" });
           // ⚠ 这一行只是分组标题，**不能用 disabled 的 menuitem** ——
@@ -456,6 +472,17 @@ Object.assign(ZoteroKB, {
           choose.setAttribute("style", "font-weight:600; opacity:0.75;");
 
           self.listDSHSessions().then((rows) => {
+            // ⚠ 用**这次真拿到的结果**回填能力缓存：原来只靠"周期探测"，
+            //   于是出现"对话列表都列出来了、标题却写（检测中）"的矛盾
+            //   （用户 2026-10-05 截图反馈）。列表能拿到 = DSH 连上了。
+            if (rows && rows.length) {
+              self.caps.dsh = true;
+              self.caps.dshWhy = "";
+              self.caps.dshTimeoutAt = 0;
+            } else if (self.caps.dsh === null) {
+              self.caps.dsh = false;
+              self.caps.dshWhy = "能投递但没拿到对话列表（DSH 侧插件没响应？）";
+            }
             if (!rows || !rows.length) {
               mkSep();
               mk("（读不到对话列表，DSH 在运行吗？）", () => {}, { iconic: false });
@@ -495,16 +522,19 @@ Object.assign(ZoteroKB, {
           // ⚠ 子菜单里**不能**放 disabled 的 menuitem（会让整个子菜单点不开，
           //   见本文件下面「选择已有对话」那段的教训）。所以"未连接"用一条
           //   普通 menuitem 说明，点了只提示、不做动作。
-          if (self.caps && self.caps.localModel !== true) {
-            const hintText = (self.caps.localModel === null)
-              ? "（正在检查本地模型…）"
-              : ("（未连接：" + (self.caps.localWhy || "未知原因") + "）");
-            mkIn(lmPopup, hintText, () => {
-              self.notify("本地模型未连接",
-                (self.caps.localWhy || "原因未知")
-                + "\n\n① 面板「运行环境」→「启动 Ollama」；"
-                + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
-                null, true);
+          {
+            // 本地模型子菜单的第一行同样是状态行（与 DSH 一致）；
+            // 点击会给"怎么办"的两条路，而不是只报错。
+            const lmState = self.capStateLine
+              ? self.capStateLine("localModel", "") : { text: "", ok: false };
+            mkIn(lmPopup, lmState.text, () => {
+              self.refreshCaps(true).then(() => {
+                self.notify("本地模型检查",
+                  (self.caps.localWhy || "可用的")
+                  + "\n\n① 面板「运行环境」→「启动 Ollama」；"
+                  + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
+                  null, true);
+              }).catch(() => {});
             }, { ready: "", tooltip: lmCap.tooltip || "" });
           }
 

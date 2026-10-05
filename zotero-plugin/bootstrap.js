@@ -3963,7 +3963,10 @@ Object.assign(ZoteroKB, {
   KB_LEVELS: [
     { id: "tldr", label: "摘要与要点", rel: "views/{key}.tldr.md",
       what: "元数据 + 结构化字段 + 摘要 + 笔记要点 + 使用经验，几百 token" },
-    { id: "card", label: "完整档案", rel: "papers/{key}.md",
+    // 中间层：比摘要详细、比全文短（由 offline/digest.py 生成）
+  { id: "outline", label: "分节纲要", rel: "views/{key}.outline.md",
+    what: "按章节给「这一节在做什么 + 关键点/参数/结论」，每节带页码范围" },
+  { id: "card", label: "完整档案", rel: "papers/{key}.md",
       what: "元数据 + 摘要 + 每页首段 + 笔记与高亮标注" },
     { id: "fulltext", label: "按页正文", rel: "fulltext/{key}.md",
       what: "带 ## p.N 页码锚点的正文" },
@@ -4620,6 +4623,22 @@ Object.assign(ZoteroKB, {
             mp.appendChild(s);
           };
 
+          // ---- 子菜单第一行：连接状态（用户要求"在悬浮的下级菜单显示链接没链接"）
+          //
+          // 为什么这一行要能点：`caps` 可能还没探过（菜单是同步构建的），
+          // 点它就是"现在探一次"。点了之后不重建菜单（下次打开自然更新）。
+          const dshState = self.capStateLine
+            ? self.capStateLine("dsh", "") : { text: "", ok: false };
+          mk(dshState.text, () => {
+            self.refreshCaps(true).then(() => {
+              self.notify("DSH 连接检查",
+                (self.capLabel ? self.capLabel("dsh").tooltip : "")
+                + "\n\n当前：" + (self.capStateLine
+                    ? self.capStateLine("dsh").text : ""), null, true);
+            }).catch(() => {});
+          }, { iconic: false, ready: "",
+               tooltip: "点这一行立刻重新检查 DSH 连接" });
+
           mk("新建对话…", () => { self.sendToDSH(real, { create: true }); },
              { iconic: false, tooltip: "在 DSH 里开一个新对话，把文献路径发过去" });
           // ⚠ 这一行只是分组标题，**不能用 disabled 的 menuitem** ——
@@ -4632,6 +4651,17 @@ Object.assign(ZoteroKB, {
           choose.setAttribute("style", "font-weight:600; opacity:0.75;");
 
           self.listDSHSessions().then((rows) => {
+            // ⚠ 用**这次真拿到的结果**回填能力缓存：原来只靠"周期探测"，
+            //   于是出现"对话列表都列出来了、标题却写（检测中）"的矛盾
+            //   （用户 2026-10-05 截图反馈）。列表能拿到 = DSH 连上了。
+            if (rows && rows.length) {
+              self.caps.dsh = true;
+              self.caps.dshWhy = "";
+              self.caps.dshTimeoutAt = 0;
+            } else if (self.caps.dsh === null) {
+              self.caps.dsh = false;
+              self.caps.dshWhy = "能投递但没拿到对话列表（DSH 侧插件没响应？）";
+            }
             if (!rows || !rows.length) {
               mkSep();
               mk("（读不到对话列表，DSH 在运行吗？）", () => {}, { iconic: false });
@@ -4671,16 +4701,19 @@ Object.assign(ZoteroKB, {
           // ⚠ 子菜单里**不能**放 disabled 的 menuitem（会让整个子菜单点不开，
           //   见本文件下面「选择已有对话」那段的教训）。所以"未连接"用一条
           //   普通 menuitem 说明，点了只提示、不做动作。
-          if (self.caps && self.caps.localModel !== true) {
-            const hintText = (self.caps.localModel === null)
-              ? "（正在检查本地模型…）"
-              : ("（未连接：" + (self.caps.localWhy || "未知原因") + "）");
-            mkIn(lmPopup, hintText, () => {
-              self.notify("本地模型未连接",
-                (self.caps.localWhy || "原因未知")
-                + "\n\n① 面板「运行环境」→「启动 Ollama」；"
-                + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
-                null, true);
+          {
+            // 本地模型子菜单的第一行同样是状态行（与 DSH 一致）；
+            // 点击会给"怎么办"的两条路，而不是只报错。
+            const lmState = self.capStateLine
+              ? self.capStateLine("localModel", "") : { text: "", ok: false };
+            mkIn(lmPopup, lmState.text, () => {
+              self.refreshCaps(true).then(() => {
+                self.notify("本地模型检查",
+                  (self.caps.localWhy || "可用的")
+                  + "\n\n① 面板「运行环境」→「启动 Ollama」；"
+                  + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
+                  null, true);
+              }).catch(() => {});
             }, { ready: "", tooltip: lmCap.tooltip || "" });
           }
 
@@ -5881,35 +5914,45 @@ Object.assign(ZoteroKB, {
   capLabel: function (kind) {
     var self = ZoteroKB;
     const st = (kind === "dsh") ? self.caps.dsh : self.caps.localModel;
-    const why = (kind === "dsh") ? self.caps.dshWhy : self.caps.localWhy;
     if (kind === "dsh") {
-      const base = "发送到 DSH";
-      if (st === true) {
-        return { label: base,
-                 tooltip: "把这篇的路径发到 DSH 里（新建对话或选已有对话）" };
-      }
-      if (st === false) {
-        return { label: base + "（未连接）",
-                 tooltip: "DSH 没接上：" + (why || "未知原因")
-                   + "\n\n要接上：确认 DSH 桌面端在运行、且装了 zotero-bridge 插件；"
-                   + "装完重启 DSH。" };
-      }
-      return { label: base + "（检测中）",
-               tooltip: "正在检查 DSH 连接……" };
+      // ⚠ 顶层标题**不带后缀**（用户 2026-10-05：「现在动态的加（未连接）
+      //   导致太宽了，去掉吧」）。连接状态改用 `capStateLine()` 放进**下级菜单**。
+      return { label: "发送到 DSH",
+               tooltip: "把这篇的路径发到 DSH 里（新建对话或选已有对话）"
+                 + (st === false ? ("\n\n⚠ 现在没连上：" + (self.caps.dshWhy || "")) : "") };
     }
-    const base2 = "连接到本地模型";
+    return { label: "连接到本地模型",
+             tooltip: "用本地模型做「分类建议」和「补全元数据」"
+               + (st === false
+                  ? ("\n\n⚠ 现在不可用：" + (self.caps.localWhy || "")) : "") };
+  },
+
+
+  /**
+   * 下级菜单里的**状态行**文案（纯函数，可桩测）。
+   *
+   * 为什么放这里而不是标题上：用户 2026-10-05 反馈"标题加（未连接）太宽"，
+   * 要求"在悬浮的下级菜单显示链接没链接"。顺带解决另一个问题：菜单是同步构建的，
+   * 缓存里可能是 `null`（还没探到）—— 那时**不写"检测中"**，而是据实说
+   * "还没检查"（点了就是检查），免得出现"对话都列出来了却写检测中"的矛盾。
+   *
+   * `extra` 用来塞"这次真的看到的"信息（例如对话条数 / 模型名）。
+   */
+  capStateLine: function (kind, extra) {
+    var self = ZoteroKB;
+    const st = (kind === "dsh") ? self.caps.dsh : self.caps.localModel;
+    const why = (kind === "dsh") ? self.caps.dshWhy : self.caps.localWhy;
+    const tail = extra ? ("　" + extra) : "";
     if (st === true) {
-      return { label: base2,
-               tooltip: "用本地模型做「分类建议」和「补全元数据」" };
+      return { text: (kind === "dsh" ? "● 已连接 DSH" : "● 本地模型可用") + tail,
+               ok: true };
     }
     if (st === false) {
-      return { label: base2 + "（未连接）",
-               tooltip: "本地模型用不了：" + (why || "未知原因")
-                 + "\n\n两个办法：① 面板「运行环境」→「启动 Ollama」；"
-                 + "② 在「模型接入」里改用 API 模型（填地址与 Key）。" };
+      return { text: (kind === "dsh" ? "○ 未连接：" : "○ 不可用：")
+                     + (why || "原因未知"), ok: false };
     }
-    return { label: base2 + "（检测中）",
-             tooltip: "正在检查本地模型……" };
+    return { text: (kind === "dsh" ? "○ 还没检查过连接" : "○ 还没检查过本地模型")
+                   + "（点这一行重新检查）", ok: false };
   },
 
 

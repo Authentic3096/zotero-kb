@@ -52,11 +52,11 @@ except Exception as exc:  # noqa: BLE001
 
 print("\n[1] 级别定义")
 ids = [lv["id"] for lv in KV.LEVELS]
-check("5 个级别", len(ids) == 5, str(ids))
+check("6 个级别（加了中间层 outline）", len(ids) == 6, str(ids))
 for want in ("tldr", "card", "fulltext", "figures", "weight"):
     check(f"有「{want}」", want in ids, str(ids))
-check("生成型级别是 tldr/figures/weight",
-      set(KV.GENERATED_IDS) == {"tldr", "figures", "weight"},
+check("生成型级别是 tldr/outline/figures/weight",
+      set(KV.GENERATED_IDS) == {"tldr", "outline", "figures", "weight"},
       str(KV.GENERATED_IDS))
 # 每个 rel 都要能拼出知识库目录下的绝对路径
 for lv in KV.LEVELS:

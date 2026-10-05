@@ -55,6 +55,13 @@ LEVELS = [
                 "就能判断这篇要不要深读",
     },
     {
+        "id": "outline",
+        "label": "分节纲要",
+        "rel": "views/{key}.outline.md",
+        "what": "全文与摘要之间的**中间层**：按章节给「这一节在做什么 + 关键点/参数/结论」，"
+                "每节带页码范围，想细看就按页取原文（由 offline/digest.py 生成）",
+    },
+    {
         "id": "card",
         "label": "完整档案",
         "rel": "papers/{key}.md",
@@ -81,7 +88,7 @@ LEVELS = [
 ]
 
 # 需要本模块写文件的级别（card / fulltext 是构建时已写好的现成文件）
-GENERATED_IDS = ("tldr", "figures", "weight")
+GENERATED_IDS = ("tldr", "outline", "figures", "weight")
 
 _LEVEL_BY_ID = {lv["id"]: lv for lv in LEVELS}
 
@@ -163,6 +170,8 @@ def render(level_id: str, key: str, s=None) -> str:
             return _missing(key, "知识库里没有这个条目")
         if level_id == "tldr":
             return _render_tldr(key, item, s)
+        if level_id == "outline":
+            return _render_outline(key)
         if level_id == "figures":
             return _render_figures(key, item, s)
         return _render_weight(key, item, s)
@@ -187,6 +196,23 @@ def _render_file(level_id: str, key: str) -> str:
         with open(path, "r", encoding="utf-8") as fh:
             return fh.read()
     return _missing(key, f"「{lv['label']}」还没生成（{path}）")
+
+
+def _render_outline(key: str) -> str:
+    """分节纲要（中间层）：读 `meta.ai_outline:<key>` 并渲染。
+
+    ⚠ **刻意不在这里现生成**：纲要要按节调几十次模型（一篇学位论文 1~2 分钟）。
+      MCP 资源/菜单"打开知识库"是随手点的动作，不能挂在模型调用上。
+      生成入口是面板的「生成纲要」按钮与 `python offline/digest.py <KEY>`。
+    """
+    import digest as D
+    data = D.load_outline(key)
+    if not data or not data.get("sections"):
+        return (f"# {key} 还没有分节纲要\n\n"
+                f"纲要 = 全文与摘要之间的中间层（按章节给要点 + 页码范围）。\n"
+                f"生成一次：面板「分类建议」页点「生成纲要（分节）」，"
+                f"或命令行 `python offline/digest.py {key}`。\n")
+    return D.render(key, data)
 
 
 def _ai_summary(s, key: str) -> dict:
@@ -400,6 +426,12 @@ def write_levels(key: str, s=None) -> list[str]:
             # 文案就失效，而且失效时是静默的）。
             if level_id == "figures" and not (_figure_rows(s, key) or []):
                 continue
+            # 纲要同理：**没生成过就不写占位文件**（否则每篇都会多一份
+            # "还没有分节纲要"，界面按"文件在不在"判断时就会误以为已生成）。
+            if level_id == "outline":
+                import digest as _D
+                if not (_D.load_outline(key, s).get("sections") or []):
+                    continue
             text = render(level_id, key, s)
             path = level_path(level_id, key)
             with open(path, "w", encoding="utf-8", newline="\n") as fh:

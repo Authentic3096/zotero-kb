@@ -199,13 +199,16 @@
                          解压防穿越 / 失败不覆盖旧产物 / 按篇回落**）、
                          `test_ollama_guide.py`（Ollama 引导预检 + 同步 JS 语法）、
                          `test_metafill_sources.py`（元数据补全的**双源**：归一化 /
-                         两路合并 / 冲突取哪一路 / 渲染 / 模型裁决）。
+                         两路合并 / 冲突取哪一路 / 渲染 / 模型裁决）、
+                         `test_digest.py`（中间层：按标题切节 / 丢页眉 /
+                         跳参考文献 / 超长节再切 / 节指纹增量 / 渲染 / 级别清单）。
                          ⚠ 解析相关的测试一律用**假 runner** 造 zip 产物 ——
                          真解析 15~36 秒/篇且依赖装好的 MinerU，不能进单测。
                          ⚠ `test_paras.py` / `test_chat_endpoints.py` **已删**
                          —— 窗格与逐段检查那条链整体删除（2026-10-05）。)
   .mineru\               MinerU（**可选组件**）的独立 venv + 模型；删目录即卸载
   docs\知识库层级设计.md  知识库五层（原始/正文/档案/视图/图片）的重排方案与迁移步骤
+                         ⚠ 第七点五节是**中间层（分节纲要）**：全文与摘要之间的那一级
                          ⚠ 跑全库解析前先退出 Ollama（抢显存，实测差十倍）
                          （由 scripts\install-mineru.ps1 装，见 ARCHITECTURE B11）
   .venv\                 Python 依赖（见 requirements.txt）

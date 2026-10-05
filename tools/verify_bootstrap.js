@@ -276,26 +276,45 @@ if (KB) {
   KB.caps.dsh = true;
   check("DSH 可用时标题就是「发送到 DSH」",
     KB.capLabel("dsh").label === "发送到 DSH", KB.capLabel("dsh").label);
+  // ⚠ 用户 2026-10-05 反馈：「（未连接）」挂在顶层标题上把菜单撑太宽了 → 去掉；
+  //   连接状态改放**下级菜单的第一行**（capStateLine），并且不再出现「检测中」
+  //   （菜单是同步构建的，缓存可能还没探到 —— 那时据实说"还没检查过"）。
   KB.caps.dsh = false;
   KB.caps.dshWhy = "桥目录不存在（DSH 侧插件未装载）";
-  check("DSH 未连接时标题带（未连接）且提示说清怎么接上",
-    KB.capLabel("dsh").label.indexOf("（未连接）") >= 0
-    && KB.capLabel("dsh").tooltip.indexOf("DSH") >= 0,
-    JSON.stringify(KB.capLabel("dsh")));
-  KB.caps.dsh = null;
-  check("还没探到时标题写「（检测中）」",
-    KB.capLabel("dsh").label.indexOf("（检测中）") >= 0,
+  check("标题不带任何后缀（不再撑宽）",
+    KB.capLabel("dsh").label === "发送到 DSH"
+    && KB.capLabel("dsh").label.indexOf("（") < 0,
     KB.capLabel("dsh").label);
+  check("未连接时 tooltip 说清原因",
+    KB.capLabel("dsh").tooltip.indexOf("没连上") >= 0,
+    KB.capLabel("dsh").tooltip);
+  check("未连接的状态行写「○ 未连接：原因」",
+    KB.capStateLine("dsh").text.indexOf("○ 未连接") >= 0
+    && KB.capStateLine("dsh").text.indexOf("桥目录不存在") >= 0,
+    KB.capStateLine("dsh").text);
+  KB.caps.dsh = true;
+  check("已连接的状态行写「● 已连接 DSH」且可带补充信息",
+    KB.capStateLine("dsh", "12 个对话").text
+      === "● 已连接 DSH　12 个对话",
+    KB.capStateLine("dsh", "12 个对话").text);
+  KB.caps.dsh = null;
+  check("还没探过时不说「检测中」，而是「还没检查过（点这一行重新检查）」",
+    KB.capStateLine("dsh").text.indexOf("还没检查过") >= 0
+    && KB.capStateLine("dsh").text.indexOf("检测中") < 0,
+    KB.capStateLine("dsh").text);
 
   KB.caps.localModel = true;
   check("本地模型可用时标题是「连接到本地模型」",
     KB.capLabel("localModel").label === "连接到本地模型");
+  check("本地模型可用的状态行写「● 本地模型可用」",
+    KB.capStateLine("localModel").text.indexOf("● 本地模型可用") >= 0,
+    KB.capStateLine("localModel").text);
   KB.caps.localModel = false;
   KB.caps.localWhy = "Ollama 没在运行";
-  check("本地模型未连接时带（未连接）且给出两条办法",
-    KB.capLabel("localModel").label.indexOf("（未连接）") >= 0
-    && KB.capLabel("localModel").tooltip.indexOf("启动 Ollama") >= 0,
-    JSON.stringify(KB.capLabel("localModel")));
+  check("本地模型不可用时状态行写「○ 不可用：原因」",
+    KB.capStateLine("localModel").text.indexOf("○ 不可用") >= 0
+    && KB.capStateLine("localModel").text.indexOf("Ollama 没在运行") >= 0,
+    KB.capStateLine("localModel").text);
 
   // probeLocalModel 的判据（不发新请求，用已有信息）
   const savedPrefs = {};
@@ -330,6 +349,11 @@ if (KB) {
     .replace(/^[ \t]*\/\/.*$/gm, "");
   check("菜单清理名单里有 zotero-kb-localmenu（否则每弹一次多留一份）",
     menuSrc.indexOf('"zotero-kb-localmenu"') >= 0);
+  check("DSH 子菜单第一行是状态行（可点重检）",
+    menuSrc.indexOf("capStateLine(\"dsh\"") >= 0
+    && menuSrc.indexOf("点这一行立刻重新检查 DSH 连接") >= 0);
+  check("对话列表拿到就回填 caps.dsh（不再出现列出对话却写检测中）",
+    menuCode.indexOf("self.caps.dsh = true") >= 0);
   check("「分类建议」「补全元数据」挂在二级菜单容器里",
     menuSrc.indexOf("lmPopup.appendChild(classify)") >= 0
     && menuSrc.indexOf("mkIn(lmPopup,") >= 0);

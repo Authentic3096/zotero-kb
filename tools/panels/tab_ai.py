@@ -61,7 +61,9 @@ class AiTab:
         bar3 = ttk.Frame(f, padding=(10, 0, 10, 4))
         bar3.pack(fill="x")
         for text, cmd, tip in (
-            ("生成要点", self.do_ai_summary, "给选中的这篇写摘要要点"),
+            ("生成要点", self.do_ai_summary, "给选中的这篇写摘要要点（几百字）"),
+            ("生成纲要", self.do_ai_outline,
+             "中间层：按章节给要点 + 页码范围（比摘要详细、比全文短）"),
             ("分类建议", self.do_taxonomy_one, "让模型判断该归哪类，可一键应用"),
             ("调整建议", self.do_taxonomy_talk,
              "跟模型对话：说一句哪里不对，让它重新判断"),
@@ -246,6 +248,22 @@ class AiTab:
         self.run(f"生成要点 {key}",
                  [os.path.join(ROOT, "offline", "judge.py"), "summarize",
                   "--key", key])
+
+
+    def do_ai_outline(self):
+        """给选中的这篇生成**分节纲要**（中间层）。
+
+        为什么值得单列一个按钮：摘要太短、全文太长（用户 2026-10-05 的原话），
+        纲要是"先看这一层、再决定读哪几节"的入口。它按节调模型，一篇学位论文
+        要 1~2 分钟，所以走 `self.run`（子进程 + 实时日志），界面不卡。
+        """
+        key = self.selected_key()
+        if not key:
+            messagebox.showinfo("先选一篇", "请在上面的列表里选一篇文献"
+                                          "（也可以直接把 key 粘进去）。")
+            return
+        self.run(f"生成分节纲要 {key}",
+                 [os.path.join(ROOT, "offline", "digest.py"), key])
 
 
     def do_taxonomy_one(self):

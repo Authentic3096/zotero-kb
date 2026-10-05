@@ -28,7 +28,10 @@ Object.assign(ZoteroKB, {
   KB_LEVELS: [
     { id: "tldr", label: "摘要与要点", rel: "views/{key}.tldr.md",
       what: "元数据 + 结构化字段 + 摘要 + 笔记要点 + 使用经验，几百 token" },
-    { id: "card", label: "完整档案", rel: "papers/{key}.md",
+    // 中间层：比摘要详细、比全文短（由 offline/digest.py 生成）
+  { id: "outline", label: "分节纲要", rel: "views/{key}.outline.md",
+    what: "按章节给「这一节在做什么 + 关键点/参数/结论」，每节带页码范围" },
+  { id: "card", label: "完整档案", rel: "papers/{key}.md",
       what: "元数据 + 摘要 + 每页首段 + 笔记与高亮标注" },
     { id: "fulltext", label: "按页正文", rel: "fulltext/{key}.md",
       what: "带 ## p.N 页码锚点的正文" },
