@@ -140,6 +140,40 @@ Object.assign(ZoteroKB, {
   },
 
 
+  /**
+   * 把分区的**可见标题**设成「知识库预览」。
+   *
+   * 为什么要手动做这一步：`header.l10nID` 指向的 FTL 条目是**属性形态**
+   * （只有 `.label`、值为空）—— Fluent 只会把文案写进元素的 `label` 属性，
+   * 所以必须给分区元素加 `data-l10n-attrs="label"`；在 Fluent 翻完之前，
+   * 再用普通条目 `zotero-kb-kbview-title` 兜一次，免得标题短暂空白
+   * （旧窗格代码里验证过的写法，见 git 历史 19-itempane.js 的 setupSectionHeader）。
+   */
+  setupKbViewHeader: function (body) {
+    var self = ZoteroKB;
+    try {
+      let sec = body && body.closest ? body.closest("collapsible-section") : null;
+      if (!sec && body && body.parentElement && body.parentElement.closest) {
+        sec = body.parentElement.closest("collapsible-section");
+      }
+      if (!sec) return false;
+      if (sec.getAttribute("data-l10n-attrs") !== "label") {
+        sec.setAttribute("data-l10n-attrs", "label");
+      }
+      if (!sec.getAttribute("label")) {
+        let msg = "";
+        try {
+          msg = Zotero.ftl && Zotero.ftl.formatValueSync
+            && Zotero.ftl.formatValueSync("zotero-kb-kbview-title");
+        } catch (e) { /* ignore */ }
+        sec.setAttribute("label", msg || "知识库预览");
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  },
+
   /** 只有普通条目（有 pdf/元数据的那些）才显示这个分区。 */
   kbviewEnabled: function (item, tabType) {
     if (!item) return false;
@@ -238,6 +272,7 @@ Object.assign(ZoteroKB, {
   kbviewRender: async function (doc, body, item) {
     var self = ZoteroKB;
     if (!doc || !body) return;
+    self.setupKbViewHeader(body);      // 可见标题「知识库预览」
     // 清掉上一次的内容（Zotero 会复用 body）
     try {
       const old = body.querySelector(".zotero-kb-kbview");
@@ -255,7 +290,7 @@ Object.assign(ZoteroKB, {
     //   结构：wrap 是竖向 flex + 限高，bar 固定，view 自己滚。
     wrap.setAttribute("style",
       "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
-      + " max-height:62vh; display:flex; flex-direction:column; overflow:hidden;");
+      + " max-height:85vh; display:flex; flex-direction:column; overflow:hidden;");
 
     // 工具条：**单行不换行**（用户反馈：提示文字换行后"重新读取"被挤到第二行）。
     // 做法：select/按钮 nowrap，提示占剩余宽度并省略号截断（min-width:0 是关键，
@@ -289,7 +324,7 @@ Object.assign(ZoteroKB, {
       self.setKbviewFont(fontSel.value);
       wrap.setAttribute("style",
         "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
-        + " max-height:62vh; display:flex; flex-direction:column; overflow:hidden;");
+        + " max-height:85vh; display:flex; flex-direction:column; overflow:hidden;");
     });
 
     const btn = self.kbviewEl(doc, "button");

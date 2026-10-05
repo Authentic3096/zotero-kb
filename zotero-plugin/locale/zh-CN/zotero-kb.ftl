@@ -24,5 +24,11 @@
 #   ⚠ 这两条必须写成「只有名字、值留空」：registerSection 的 header/sidenav
 #     l10nID 是必填，而 Zotero 会对分区调 translateFragment —— 给了值反而
 #     会把节点内容抹掉（结果是标题空白 + body 拿不到，且不报错）。
+# ⚠ 这两条是**属性形态**（只有 .label / .tooltiptext，值为空）：
+#   Fluent 会把文案写进元素的 label / tooltiptext 属性，
+#   而 collapsible-section 用 label 渲染成可见标题（值为空时标题也空）。
 zotero-kb-kbview-header =
+    .label = 知识库预览
+zotero-kb-kbview-title = 知识库预览
 zotero-kb-kbview-sidenav =
+    .tooltiptext = 知识库预览（知识库的 md，公式已渲染）
