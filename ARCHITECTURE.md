@@ -883,7 +883,6 @@ draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/promp
 │   │   ├── paper_picker.py          选文献的弹窗（列宽可拖、可排序）
 │   │   ├── build_bootstrap.py       ★ 把 src\*.js 拼成 bootstrap.js
 │   │   ├── check_kb_levels.py       ★ 盯分级清单在 Python 与 JS 两侧一致
-│   │   └── audit_panel.py           面板体检（按钮背后真的有东西吗）
 │   ├── zotero-plugin\               ★ Zotero 插件源码 + 诊断脚本
 │   │   ├── src\*.js                 ★ 按功能拆的源码（20 个文件）
 │   │   └── bootstrap.js             ★ 生成物（xpi 里装的是它，别直接改）

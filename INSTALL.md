@@ -177,7 +177,7 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 | **没有任何提示**（多数国内网络就是这样） | 去 [Releases](https://github.com/Authentic3096/zotero-kb/releases) 下最新的 `zotero-kb-<版本>.xpi`，按上面「再安装」那两步装一遍 —— 覆盖安装、配置和知识库都不动 |
 
 > 想确认自己现在装的是哪一版：Zotero → 工具 → 插件 → 看「Zotero 文献知识库」
-> 后面的版本号；或跑 `python tools\check_acquire.py`，它会打印插件自报的版本。
+> 后面的版本号；插件自己在「服务状态」里也会报当前版本。
 
 ### 第 4 步：跑起来看看
 

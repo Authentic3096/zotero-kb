@@ -217,8 +217,6 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
     zotero_upgrade.py    Zotero 升级前检查 / 备份 / 升级后核对
     zotero_sync.py       通过 Zotero 10 本地 API 写回分类（分类重整用）
     zotero_js.py         在 Zotero 里自动执行 JS（经插件任务队列，免手工粘贴）
-    check_acquire.py     **获取文献链路自检**：逐段验"知识库/服务/插件/DOI/
-                         参数/干跑"，先失败的那一环就是问题所在（--live 才联网）
     check_plugin.py      插件静态检查 + 打包 xpi（**发版前跑这个**，
                          最后两步会自动调 check_xpi_paths、check_prefpane）
     check_xpi_paths.py   查 xpi 里有没有写死的开发机路径（发布前必查）。
@@ -236,34 +234,15 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
     check_prefpane.py    查 settings.xhtml 能不能被 Zotero 正常加载
                          （XML 声明会让面板点进去一片空白，见下）
     pack_plugin.py       打包器（ZIP 条目属性对齐可用插件）
-    bump_version.py      改版本号（只改 manifest，其余地方自动读）
     check_js_syntax.py   插件脚本语法检查（按 AsyncFunction 函数体校验）
-    audit_plugin_api.py  审计插件用到的 Zotero API 是否存在
-    audit_panel.py       面板体检（每个按钮背后的命令/文件/参数是否真的可用）
-    check_abs_paths.py   复核索引里没存绝对路径（迁移安全性）
     migrate_kb.py        迁移知识库位置（复制 + 备份 + 校验）
-    check_plugin_prefs.py   对照插件 prefs 与服务 token
     test_task_bridge.py  任务桥接自检（模拟插件跑完整链路）
-    asar_read.py         按需读 DSH 的 app.asar（查官方 API 用）
     add_path_bootstrap.py 给脚本批量插入自包含路径设置
-    preview_icon.py      **图标验收**：用 Edge 无头模式把插件的 SVG 图标渲染成
-                         16/32/48/96 四档 PNG（浅色/深色主题各一版），肉眼确认
-                         "小尺寸下还认不认得出"。出图是临时产物，**不进 xpi**
-    make_icon_pptx.py    **图标设计源**：把设计画成 PowerPoint 原生形状
-                         （`icon-design.pptx`，用户可直接拖）。顶部那一段常量
-                         就是全部几何；书的接缝由参数算出，保证精确相接
-    make_icon_svg.py     由**同一份常量**生成 `zotero-plugin/icon.svg` 与
-                         `toolbar-icon.svg`（两种格式不会漂移）
-    make_panel_icon.py   把同一个图标渲染成**面板用的位图**（Tk 读不了 SVG）：
-                         `assets/icon.png` 给 `iconphoto`、`assets/icon.ico`
-                         给 `iconbitmap`（任务栏/Alt-Tab）。**面板图标与插件
-                         图标是同一个设计**，改一处两边一起变
     scrub_domain_words.py **发布前脱敏检查**：扫真实研究领域词/个人路径残留，
                          `--check` 有残留则返回非零，可挂进发布流程
-    measure_final.py     量"椭圆弧端到节点圆心"的实际距离（调断口时用）
     assets\              面板用的图片资源
       avatar.png         面板顶部的头像（160×160，圆角方形）
-      icon.png / .ico    面板窗口图标（由插件图标渲染而来，见 make_panel_icon.py）
+      icon.png / .ico    面板窗口图标（由插件图标渲染而来）
   其余                    调试与一次性排障脚本（**不进 xpi**，路径写死无妨）
   bundle\                接入 DSH 用的 bundle 包（package.json + cordis.patch.yml）
   zotero-plugin\         插件（源码 + 生成物 + README、settings 面板、诊断脚本）

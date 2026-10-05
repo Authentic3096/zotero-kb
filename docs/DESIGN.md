@@ -143,8 +143,8 @@ kb_acquire(dois="10.xxxx/yyyy", dry_run=True)
 链路每一环在不同进程里，断了都只显示一句"抓取失败"。所以有个分段自检：
 
 ```powershell
-& "<项目目录>\.venv\Scripts\python.exe" -X utf8 "<项目目录>\tools\check_acquire.py"
-& "...\python.exe" -X utf8 "...\tools\check_acquire.py" --live   # 加一段真抓（dry_run，仍不写库）
+# 自检脚本不随仓库发布；按 INSTALL.md 的「验证装好了」逐段确认
+# 需要真抓一段验证时，用面板「分类建议」页旁边的干跑入口
 ```
 
 它会逐段报"知识库位置 / 本地服务 / 插件版本与轮询 / DOI 归一化 / 参数校验 / 干跑"，
@@ -177,7 +177,7 @@ kb_acquire(dois="10.xxxx/yyyy", dry_run=True)
 > **每次验证前先确认跑的是哪一版**（能省掉一整轮白测）：
 >
 > ```powershell
-> & "<项目目录>\.venv\Scripts\python.exe" -X utf8 "<项目目录>\tools\check_acquire.py"
+> # 自检脚本不随仓库发布；按 INSTALL.md 的「验证装好了」逐段确认
 > # 第 3 段会报「插件版本 X.Y.Z」以及状态文件多久没更新
 > ```
 > 没重启时 `kb_acquire` 会明确报"插件是 0.23.0，要 0.24.0 以上" ——
@@ -211,7 +211,7 @@ prefs.js 读出来的（extensions.zotero.dataDir），所以你改过也没关�
 `powershell
 python tools\migrate_kb.py            # 干跑，只说会做什么
 python tools\migrate_kb.py --apply    # 真迁移
-python tools\check_abs_paths.py       # 迁移前检查索引里有没有绝对路径
+# 迁移前确认索引里没有绝对路径（面板「环境自检」会检查）
 `
 
 ### 为什么迁移是安全的
@@ -219,7 +219,7 @@ python tools\check_abs_paths.py       # 迁移前检查索引里有没有绝对�
 实测确认：**索引里不存文件路径**（papers/、
 ulltext/ 都按 Zotero key 命名，
 路径由 KB_DIR 推算）。所以搬目录不会破坏索引。
-	ools\check_abs_paths.py 可随时复核。
+	面板「环境自检」可随时复核。
 
 > ⚠ 迁移前**必须先停服务**：index.db 是 WAL 模式，服务在跑时复制会漏掉
 > -wal 里的新数据（本机在读 Zotero 库时踩过同样的坑）。
@@ -529,7 +529,7 @@ Zotero 设置面板（唯一配置源）
 常用命令：
 
 ```powershell
-.venv\Scripts\python.exe tools\audit_plugin_api.py    # 审计用到的 Zotero API
+# 插件用到的 Zotero API 由 tools/audit_release.py 之外的本地脚本审计
 .venv\Scripts\python.exe tools\check_js_syntax.py     # 脚本语法（AsyncFunction 方式）
 .venv\Scripts\python.exe tools\check_plugin.py        # 静态检查 + 打包
 .venv\Scripts\python.exe tools\zotero_js.py verify    # 自动在 Zotero 里跑验证
