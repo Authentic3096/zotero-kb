@@ -204,9 +204,6 @@ DSH 里试了某篇文献的方法
 **为什么派发与执行要拆开**：MCP 工具是"一次调用阻塞到返回"的，抓一篇要十几秒、
 三篇要一分钟 —— 不拆的话那段时间对话里**一片空白**，用户分不清是在跑还是卡死了。
 
-> ⚠ **一个会静默写库的坑（已修）**：派发方超时放弃时，那条任务**仍留在队列里 pending** ——
-> 用户几小时后开 Zotero，插件会领走并**真的建条目**。所以放弃时必须
-> `POST /task/cancel` 把它撤掉。
 
 ---
 
@@ -294,7 +291,7 @@ parts = re.split(r"(?<=[。！？；.!?;])\s*", para)
 
 `fastembed` 的 `TextEmbedding`，默认模型 `BAAI/bge-small-zh-v1.5`
 （`offline/converter.py:355-376`）。**维度在源码里没有常量**，是写入时从
-`vectors.shape[1]` 取的（`convert.py:397`）—— 本机实测 `512`。
+`vectors.shape[1]` 取的（`convert.py:397`）—— 实测 `512`。
 模型缓存在 `<知识库>/.cache/models`，默认把 `HF_ENDPOINT` 指向国内镜像
 （`converter.py:368`）。只补**缺向量**的切片（`LEFT JOIN ... WHERE e.chunk_id IS NULL`，
 `convert.py:378-384`）；向量是增强项，算不出来只提示、不阻塞关键词检索
@@ -487,11 +484,6 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 `kind` 有 `js / cmd / acquire / attach`；领取是原子的 `pending → running`
 并记 `fetched_by`（`:174-207`）。
 
-> ⚠ **超时判定必须放在派发方**，而且必须**主动撤回**：曾经有任务在派发方报失败
-> **几小时后**被刚打开的 Zotero 领走、真的建了条目（实测 22:36 派出、22:39 执行）。
-> 现在 `acquire.py` 轮询时若 30 秒仍 `pending`，就判定"插件没在轮询"并撤回
-> （`online/acquire.py:393-450`）。`/task/cancel` 只能撤 pending，
-> running 的撤不掉、如实说明（`localserver.py:225-237`）。
 
 服务还带**库变化监听**：每 20 秒看一次，发现新条目就切片并生成分类建议，
 写进 `kb/pending-suggestions.json`（`localserver.py:1859-1879`）。
@@ -523,8 +515,8 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 以免子菜单冒泡把自己的菜单拆掉，`src/14-menus.js` 的 `registerItemMenu`）：
 ① 发送到 DSH（新建/已有对话）② 分类建议 ③ 标为重点/取消
 ④ 补全元数据 ⑤ 重建这一篇的知识库条目（专治"正文提取坏了但版本号没变、
-增量会跳过"）⑥ **打开知识库（分级）**—— 二级菜单列这一篇的五个层面
-（摘要与要点 / 完整档案 / 按页正文 / 图注与表格 / 权重与经验），点了直接打开
+增量会跳过"）⑥ **打开知识库（分级）**—— 二级菜单列这一篇的六个层面
+（摘要与要点 / 分节纲要 / 完整档案 / 按页正文 / 图注与表格 / 权重与经验），点了直接打开
 那个 md，见下面 B7。
 
 **"发送到 DSH"走文件信箱，不走 HTTP**：往 `~/.dsh/zotero-bridge/` 投 JSON，
@@ -565,13 +557,13 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 定义在 `offline/kbviews.py` 的 `LEVELS`（**唯一事实来源**）：
 
 - **面板**：第一屏的「打开知识库」→ 先弹文献列表（复用已有的
-  `PaperPicker`：作者/年份/标题、可搜索可排序）→ 选中一篇再列五个级别
+  `PaperPicker`：作者/年份/标题、可搜索可排序）→ 选中一篇再列六个级别
   （`tools/panels/browser.py` 的 `LevelPicker`）→ 双击用系统默认程序打开那个 md。
-- **Zotero 右键**：第 ⑥ 组「打开知识库」二级菜单列同样的五个级别
+- **Zotero 右键**：第 ⑥ 组「打开知识库」二级菜单列同样的六个级别
   （`src/13-kbopen.js` 的 `KB_LEVELS` 是 Python 那份的**镜像**，
   由 `tools/check_kb_levels.py` 盯着 id/标签/路径模板三者一致）；
   缺文件的级别在文案里标「（还没生成）」而**不设 disabled**
-  —— 本机实测 menupopup 里只要有 disabled 的 menuitem，整个子菜单就点不开。
+  —— 实测 menupopup 里只要有 disabled 的 menuitem，整个子菜单就点不开。
 - **MCP**：资源 `zotero-kb://item/tldr/{key}` 的渲染实现就是
   `kbviews.render("tldr", …)`（原来写在 `online/server.py`，搬过去避免两份实现漂移）。
 
@@ -630,8 +622,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 
 ---
 
-#### B9.5 能力探测与"菜单不写死"（2026-10-05）
-
+#### B10. 能力探测与"菜单不写死"
 用户要求右键菜单别写死：「dsh 没接到就不显示，本地模型（或者接外部 api）没读取到也不显示
 对应的两条」，随后拍板成**显示但标「未连接」**。实现拆成两块：
 
@@ -645,30 +636,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   「发送到 DSH（未连接）」/「连接到本地模型（检测中）」这类标题 + 一句"怎么修"的提示。
   「分类建议」「补全元数据」合并成二级菜单「连接到本地模型」；「重建本条目知识库」改名。
 
-#### B10. （已删除）内容窗格「本地模型」与逐段检查
-
-**这两块在 2026-10-05 被用户要求整条删除**，原因是他自己的结论：
-「之前加到文献内部的本地模型对话没什么用而且 bug 多」、「逐段检测删就都删了」
-—— 而且 MinerU 接入之后，正文提取的段落问题本来就不那么明显了。
-
-删掉的东西（**别照着旧版本加回来**，`check_plugin.py` 有一条反向检查盯着）：
-
-| 曾经的东西 | 现在 |
-|---|---|
-| `src/19-itempane.js`（内容窗格分区 UI）、`src/20-reader.js`（阅读器选中入口） | 文件已删；`00-core.js` 的三个 startup step、`01-lifecycle.js` 的注销/退出提醒、`04-prefs.js`+`prefs.js` 的两个 pref 一起删 |
-| 七个端点 `/chat`、`/chat-context`、`/para-plan`、`/para-check`、`/para-locate`、`/kb-propose`、`/kb-apply` | 已删（服务端自检里反过来钉住它们必须 404）。**只留 `/exp-draft`** |
-| `offline/kbchat.py`、`offline/paras.py` | 已删；`kbchat.draft_experience` 搬进 `offline/experience.py`（面板「经验库 → 修改/增添经验」在用） |
-| 面板「损坏查询 → 逐段进度与正文修正」（`tools/panels/para_review.py`） | 已删（入口和产物都没了，留着按钮只会点空） |
-| 三张表 `para_check` / `para_override` / `fulltext_patch` | 从 `SCHEMA_SQL` 移除；老库要真删跑 `tools/kb_admin.py drop-legacy-tables --yes`（**先自动备份 index.db**，备份失败就不删） |
-| 两条提示词 `chat` / `para` / `propose`（共三条） | 从注册表删掉（9 条 → 6 条） |
-| 那一批界面文案（42 条 ftl） | 两个 ftl 清空（现在**一条文案都没有**）；l10n 挂载机制留着，注释里写清了两条坑（必填 l10nID、有值 message 会抹子节点） |
-
-`tools/verify_bootstrap.js` 里那几条断言也**反过来**了：不再断言"注册了分区"，
-而是断言"没有注册任何分区 / 没有阅读器入口 / startup 里没有那三步 /
-插件对象上没有那批函数"。桩里故意留着会记账的 `ItemPaneManager` 与 `Reader`，
-谁把调用加回来立刻红灯。
-
-#### B11. PDF 文本源：默认 Zotero 缓存 + PyMuPDF，可选 MinerU
+#### B11. 正文从哪来：Zotero 缓存 / PyMuPDF / MinerU（可选解析器）
 
 正文抽取那一步的接缝在 `offline/convert.py` 的主循环里：
 `pages, source = reader.fulltext_for(item, **ft_kw)` → `item.fulltext_pages` →
@@ -694,8 +662,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   VLM 档走 **llama.cpp + Q8 GGUF**；**PyPI 的 Windows torch 是 CPU 版**，得从
   `download.pytorch.org` 换 CUDA 轮子；模型走 modelscope（hf-mirror 的 API 403）。
 
-#### B11.1 MinerU 怎么接进建库流程（2026-10-05 第二轮）
-
+#### B12. MinerU 怎么接进建库流程
 接缝只有一处：`convert.py` 主循环里那个 `pages, source = reader.fulltext_for(...)`。
 改成"按 `--parser` 选源"：
 
@@ -715,7 +682,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 | 失败 | **按篇回落**到 Zotero 缓存 / PyMuPDF，`source` 加 `+fallback` 后缀、MANIFEST 里列出来 | 95 篇里混着扫描件/加密/损坏文件，任何一篇失败都不该把整轮降级 |
 | 面板 | 新页「PDF 解析」：档位下拉 + 只补缺失 / 全库重解析 / 解析选中这篇 / 删产物 / 打开产物目录 + 状态表（来源 / 档位 / 页数 / 图 / 耗时 / 产物状态）+ 汇总（多少篇已是 MinerU、产物占多少 MB） | "重解析全库"是几十分钟的操作，看不见状态没人敢点 |
 | CLI | `tools/kb_admin.py mineru {status,parse,clear,missing,reparse}` | 面板按钮调的就是它；`missing`/`reparse` 内部**包一层 `convert.build(ns)`**，不写第二份正文抽取 |
-| **批量** | `mineru.parse_many(pairs, batch_size=20)`：把 PDF 以 `<KEY>.pdf` **硬链**到临时输入目录 → `parse <目录> -o <输出> --format zip` **跑一次** → 按 `<KEY>.zip` 映射回 key 落产物；日志走 `_run_stream`（实时，面板也看它） | ⚠ **每次 `mineru-kit parse` 都要重新加载模型**（本机实测约 2 分钟）：逐篇跑 93 篇 ≈ 3 小时；批量时模型只加载一次，实测 1.7 页/秒。`missing`/`reparse` 因此都是「先批量解析（写好产物与指纹），再让 convert 命中指纹、只做切片与向量」 |
+| **批量** | `mineru.parse_many(pairs, batch_size=20)`：把 PDF 以 `<KEY>.pdf` **硬链**到临时输入目录 → `parse <目录> -o <输出> --format zip` **跑一次** → 按 `<KEY>.zip` 映射回 key 落产物；日志走 `_run_stream`（实时，面板也看它） | ⚠ **每次 `mineru-kit parse` 都要重新加载模型**（实测约 2 分钟）：逐篇跑 93 篇 ≈ 3 小时；批量时模型只加载一次，实测 1.7 页/秒。`missing`/`reparse` 因此都是「先批量解析（写好产物与指纹），再让 convert 命中指纹、只做切片与向量」 |
 
 ⚠ 三个实测出来的坑（都写进代码注释了）：
 ① 全库解析前**先退出 Ollama** —— 抢同一块显存，同一篇 5 页论文模型阶段
@@ -725,8 +692,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 ③ 那段"把配置同步进插件 pref"的 JS 不能塞进 f-string（嵌套 dict 花括号会让
 f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --check` 单测。
 
-#### B11.4 右侧栏「知识库」分区（2026-10-05 晚）
-
+#### B13. 右侧栏「知识库」分区
 用户：「zotero 的文献右侧栏是可以正确显示 md 格式的，能不能把知识库中的 md 在这里
 显示，方便和原文对照？」→ `zotero-plugin/src/20-kbview.js`。
 
@@ -746,8 +712,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - `md2html()` 是纯函数（桩测试 8 项）：标题/列表/引用/粗斜体/行内代码/链接/
   `$$公式$$`（保留 LaTeX、等宽底纹）/图片降级成图注；**先转义 HTML 再套标记**。
 
-#### B11.5 能力探测的菜单状态行（2026-10-05 修正）
-
+#### B14. 能力探测的菜单状态行
 第一版把「（未连接）/（检测中）」挂在**顶层标题**上，用户反馈两个问题：
 ① 标题太长；② 明明子菜单列着对话列表，标题却写"检测中"（`caps.dsh` 还是 `null`，
 因为探测是周期性的）。改法：
@@ -756,9 +721,8 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - **用这次真拿到的结果回填**：`listDSHSessions()` 成功即 `caps.dsh = true`
   —— 不再出现"列出对话却写检测中"；`null` 时不写"检测中"，据实说"还没检查过"。
 
-#### B11.2 元数据补全：两路首页正文 + 模型综合（2026-10-05）
-
-用户要求：「元数据补全能不能同时读首页和 MinerU 首页，然后本地模型综合一下再给出来。」
+#### B15. 元数据补全：两路首页正文 + 模型综合
+需求：「元数据补全能不能同时读首页和 MinerU 首页，然后本地模型综合一下再给出来。」
 
 - **两路**：A = `zreader.fulltext_for()`（PDF 原文字面）；B = `<kb>/mineru/<KEY>/pages.json`
   （MinerU 逐页正文）。取文本/合并/渲染全在**新模块** `offline/metafill_sources.py`
@@ -774,9 +738,8 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   显示出来（老服务端不给这些键时整块跳过）。
 - 退化路径都写进 `notes`：只有 A、只有 B、两路都没有、模型不可用、某一路首页过短。
 
-#### B11.3 中间层：分节纲要（2026-10-05）
-
-用户原话：「全文太长，现有的摘要还太短，怎么加中间的一层级」。答案是
+#### B16. 中间层：分节纲要
+需求：「全文太长，现有的摘要还太短，怎么加中间的一层级」。答案是
 **分节纲要**：`offline/digest.py`（新模块）按 MinerU 的标题块切节 → 每节让模型写
 2~4 句 + 3~6 条关键点 → 落 `meta.ai_outline:<KEY>`（结构化）+ `views/<KEY>.outline.md`
 （人读）。实测一篇 5 页论文：8 节、2600 字、33 秒（全文 12639 字、摘要几百字）。
@@ -786,13 +749,13 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   节数上限 24（超了合并相邻节）。每节带 `p.起–止` 页码 → 细看就按页取原文。
 - **按节指纹缓存**（`sha1(标题+正文[:2000])[:6]`）→ 改一章只重跑那一章；
   ⚠ 缓存判据里带 `tried`：有些节本来就产出不了要点（正文过短/模型没给结果），
-  只认"有 summary"的话这些节会**每次构建都被重问**（本机实测第二次仍有 1 节被重问）。
+  只认"有 summary"的话这些节会**每次构建都被重问**（实测第二次仍有 1 节被重问）。
 - **只读不生成**：`kbviews._render_outline` / MCP 资源 `zotero-kb://item/outline/<KEY>`
   只读现成产物；生成入口是面板按钮与 `python offline/digest.py <KEY>` ——
   一篇学位论文要几分钟，不能挂在"随手点一下"的读路径上。
 - **不写进索引、不改排序**（用户明确"检索分层算了吧"）。
 
-#### B12. 提示词注册表：话术只有一份，且用户改得动
+#### B17. 提示词注册表：话术只有一份，且用户改得动
 
 `offline/prompts.py`（2026-10-05 起 6 条：tag/summary/extract/metafill/
 draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/prompts.json`。要点：
@@ -806,7 +769,7 @@ draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/promp
 - **搬家没走样**：`tests/prompt_goldens.json` 是搬家**前**从真机抓的 5 次真实调用，
   逐字比对（含 metafill 的 `{{` 与 chunks 的双括号这两个容易走样的细节）。
 
-#### B13. 经验层的写入只有一份实现
+#### B18. 经验层的写入只有一份实现
 
 `offline/experience.py`：`add / update / delete / set_weight` + **唯一**的权重算术
 （`weight_statements`）。要点：
@@ -985,7 +948,7 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
    三条硬约束（Python 3.14 装不了 paddle、空闲内存 ~4 GB、Garnet/OvisOCR2 是
    整页 OCR 不是公式专用）与全部实测数据写在**工作档案待办 A** ——
    动手前先读那一节，别重新调研一遍。
-2. **同一篇里按"摘要深度"再分层** —— 现在的五个级别是按**产出物**分的
+2. **同一篇里按"摘要深度"再分层** —— 现在的六个级别是按**产出物**分的
    （摘要 / 档案 / 正文 / 图表 / 权重）；长学位论文还需要"逐段 → 逐节 → 全篇"
    这种按**深度**的分级
 3. **多级摘要树 + 知识卡片连线图** —— 跨文献的联系（哪几篇在讲同一件事、
