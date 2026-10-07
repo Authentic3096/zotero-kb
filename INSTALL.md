@@ -658,10 +658,10 @@ API 地址与 Key 就行。装了 Ollama 则分类 / 摘要 / 纲要 / 标签都
 dsh plugin --profile desktop add "link:<项目目录>/bundle"
 ```
 
-例如项目在 `D:\zotero-kb`：
+例如项目在 `C:\zotero-kb`：
 
 ```powershell
-dsh plugin --profile desktop add "link:<项目目录>/bundle"
+dsh plugin --profile desktop add "link:C:/zotero-kb/bundle"
 ```
 
 > 注意路径用**正斜杠**。

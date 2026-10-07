@@ -1,4 +1,4 @@
-# 把知识库本地服务装进 Windows 启动文件夹（开机自动跑）。
+﻿# 把知识库本地服务装进 Windows 启动文件夹（开机自动跑）。
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1 -Remove
