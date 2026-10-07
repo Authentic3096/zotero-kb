@@ -300,8 +300,16 @@ def audit_paths():
     GENERIC_USERS = {"public", "user", "admin", "runner", "build", "ubuntu",
                      "root", "circleci", "vsts", "gcp", "vscode", "test",
                      "user1", "administrator"}
+    # ⚠ 2026-10-08 补：仓库 owner 名是**公开信息**（就写在仓库地址里），而本机
+    #   Windows 用户名恰好与它同名 → 严格模式会把每一处仓库链接
+    #   （`github.com/<owner>/...`）都判成隐私泄漏。本机实测 14 处误报；
+    #   CI 上 user=runner 命中通用名表所以是绿的，只有本机红、容易被当成真问题。
+    #   把 owner 名一并降级后，`C:\Users\<名>\...` 这类真机器路径照样抓得住。
+    REPO_OWNER = "Authentic3096"
     in_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
-    loose = in_ci or (user or "").lower() in GENERIC_USERS
+    loose = (in_ci
+             or (user or "").lower() in GENERIC_USERS
+             or (user or "").lower() == REPO_OWNER.lower())
     hits: list[str] = []
     if user and user.lower() != "public":
         ctx = re.compile(r"(?:\\\\Users\\\\|/home/|/Users/)" + re.escape(user),
@@ -450,8 +458,17 @@ def audit_install():
 
 # 允许保留 BOM 的例外（白名单，按相对路径）。
 # 为什么会有例外：Windows PowerShell 5.1 读 **无 BOM** 的 .ps1 时会按 ANSI 解码，
-# 里面 69 处中文字符串会全部变乱码 —— 所以那个文件**必须**带 BOM，不是脏。
-BOM_ALLOWED = {"scripts/install-env.ps1"}
+# 里面成片的中文字符串会全部变乱码、甚至直接报语法错 ——
+# 所以 **含中文的 .ps1 必须带 BOM**，不是脏。
+# 2026-10-08：install-mineru / install-autostart / sync-skill / fetch-pdf 四个脚本
+# 当初漏了 BOM，在 PS 5.1 下根本跑不起来（MinerU 安装就是因此失败），一并登记。
+BOM_ALLOWED = {
+    "scripts/install-env.ps1",
+    "scripts/install-mineru.ps1",
+    "scripts/install-autostart.ps1",
+    "scripts/sync-skill.ps1",
+    "skills/zotero-acquire/tools/fetch-pdf.ps1",
+}
 
 
 def audit_encoding():
