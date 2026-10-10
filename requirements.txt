@@ -37,3 +37,8 @@ zstandard>=0.22
 #   import 了它 —— 靠传递依赖是脆的：哪天 fastembed 换了依赖树，
 #   面板就会莫名其妙少一张图（而且只是装饰，坏了不容易被发现）。
 pillow>=10
+
+# 公式 LaTeX → MathML（mdhtml.py）：让「按页正文 / 分节纲要」里的公式由 Zotero
+# 自带的显示能力排版。**缺了它不会崩**（mdhtml 会退化成代码样式显示 LaTeX 原文），
+# 但 1.7.7 起的发布说明里承诺的是"公式以 MathML 显示"，所以它是**必需依赖**。
+latex2mathml>=3.77

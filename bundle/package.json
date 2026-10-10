@@ -6,8 +6,7 @@
   "description": "把本地 Zotero 文献知识库接入 DeepSeek Harness（dsh-mcp-client 的一条 stdio 配置）",
   "license": "MIT",
   "files": [
-    "cordis.patch.yml",
-    "README.md"
+    "cordis.patch.yml"
   ],
   "dsh": {
     "bundle": {
