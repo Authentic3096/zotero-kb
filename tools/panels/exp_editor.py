@@ -167,7 +167,19 @@ class ExperienceEditor(tk.Toplevel):
             return
         self.outcome.set(str(row.get("outcome") or "unknown"))
         for name, _l, height in self.FIELDS:
-            val = str(row.get(name) or "")
+            # ⚠ T0-14 缺陷 1（**数据损坏**）：tags 这一列在库里是 **JSON**
+            #   （experience.dumps() 写进去的），喂进输入框前必须先 loads 摊成
+            #   逗号分隔的标签。原来这里一律 str(row.get(name) or "")，于是框里
+            #   躺着的是库里的**原文**（形如 ["甲", "乙"]）；保存时经 split_list
+            #   一按逗号切，就变成 ['["甲"', '"乙"]'] 写回库 —— 用户只是改了别的
+            #   字段，标签却被**静默毁掉**（split_list 对这种输入不报错）。
+            #   判据：库里的 JSON 列进出界面必须 dumps/loads 配对，不能靠
+            #   split_list 兜底。写法与 _apply_draft() 逐字一致。
+            #   item_keys 走的是 self.keys（下面那行已经用 EXP.loads），别改。
+            if name == "tags":
+                val = ", ".join(EXP.loads(row.get("tags"), []))
+            else:
+                val = str(row.get(name) or "")
             if height <= 1:
                 self.vars[name].set(val)
             else:
@@ -243,10 +255,10 @@ class ExperienceEditor(tk.Toplevel):
                 self.vars[name + "__text"].insert("1.0", val)
         if d.get("item_keys"):
             self.keys = list(dict.fromkeys(list(self.keys) + list(d["item_keys"])))
-        if res.get("items"):
-            # ⚠ 用**标题**显示，不用 key：模型猜的 key 可能错，
-            #   而关联错的文献会把权重加到别的论文上。
-            self._titles = {i["key"]: i["title"] for i in res["items"]}
+        # ⚠ 显示**不走模型给的那份标题**：模型猜的 key 可能错，而关联错的文献会把
+        #   权重加到别的论文上。取名一律由 _paint_items → experience.item_refs 从库里
+        #   现取 —— 库里查不到的 key 会当场显示成「（无此条目：XXXXXXXX）」，
+        #   这正好把"模型猜错了"暴露出来（以前是拿模型的标题当真，反而掩盖了它）。
         self._paint_items()
         sim = res.get("similar") or []
         self.draft_status.config(
@@ -255,15 +267,24 @@ class ExperienceEditor(tk.Toplevel):
                      if sim else "")))
 
     def _paint_items(self):
+        """把"已选文献"画出来 —— 名字与失效标记一律走 experience.item_refs。
+
+        （那是"key 怎么显示"的唯一实现：作者 年份 短标题 [KEY]；已删标
+          「（已删除）」、已并标「（已合并到 XXXX）」、库里没有标「（无此条目：X）」。）
+        """
         if not self.keys:
             self.items_label.config(text="（还没选 —— 没有关联文献的经验不会被检索加权，"
                                          "也不会出现在任何一篇的档案里）")
             return
-        titles = getattr(self, "_titles", {})
-        parts = []
-        for k in self.keys:
-            parts.append(f"{k}（{titles.get(k, '')[:40]}）" if titles.get(k) else k)
-        self.items_label.config(text="已选：" + "；".join(parts))
+        import sys
+        if os.path.join(ROOT, "offline") not in sys.path:
+            sys.path.insert(0, os.path.join(ROOT, "offline"))
+        import experience as EXP
+        refs = EXP.item_refs(self.keys)
+        text = "已选：" + refs["block"]
+        if refs["summary"]:
+            text += f"\n⚠ {refs['summary']}"
+        self.items_label.config(text=text)
 
     @staticmethod
     def picker_rows():
@@ -299,8 +320,14 @@ class ExperienceEditor(tk.Toplevel):
             conn.close()
 
     def do_pick(self):
-        """复用面板已有的 PaperPicker；**可以连着选几篇**。
+        """复用面板已有的 PaperPicker，走它的**多选模式**（T0-7）。
 
+        弹窗里：已选的排在最前且默认勾选；点一行 = 勾选/取消；双击或回车确认；
+        Esc/取消 = 什么都不改。回调收到的是**完整集合**（含被取消的），所以这里
+        直接替换 self.keys —— 不再是"点一次加一篇"（那样取消不掉）。
+
+        ⚠ 保存照旧走 experience.add_experience / update_experience：权重是按
+          item_keys 重算的，自己写库会让权重与关联对不上。
         「列表是空的」那个坑见 `picker_rows` 的说明。
         """
         try:
@@ -313,18 +340,55 @@ class ExperienceEditor(tk.Toplevel):
             messagebox.showerror("打不开文献列表", str(exc), parent=self)
             return
 
-        def on_pick(key):
-            if key and key not in self.keys:
-                self.keys.append(key)
+        def on_pick(keys):
+            self.keys = [str(k) for k in keys if k]     # 空列表 = 不关联，合法
             self._paint_items()
 
-        PaperPicker(self, rows, on_pick, ui_font=self.app.ui_font,
-                    mono_font=self.app.mono_font,
-                    title="选文献（再点一次「选文献…」可以继续加）")
+        PaperPicker(self, rows, on_pick, multi=True,
+                    selected_keys=list(self.keys),
+                    ui_font=self.app.ui_font, mono_font=self.app.mono_font,
+                    title="选文献（已选的在最前；点一行勾选/取消，双击确认）")
 
     def do_clear_items(self):
         self.keys = []
         self._paint_items()
+
+    @staticmethod
+    def _tags_from_box(raw: str) -> tuple:
+        """把标签框里的文字变成标签列表 —— 带一道「JSON 原文」的护栏。
+
+        T0-14 缺陷 1 的根因就是库里的 JSON 原文被喂进了这个框（_load 那边已经
+        修掉）。但同类输入还可能从别的路径溜进来（草稿回填、以后新加的入口），
+        而 split_list 对它是「静默切成残片」、没有任何报错 —— 所以这里显式挡
+        一道。返回 (tags, error, note)：
+
+          · 普通文字（甲, 乙）→ 交给 split_list，语义一点不改；
+          · JSON 数组原文 → 就地按数组解，note 说明是怎么理解的，界面上提示；
+          · 以 [ 开头却解不成数组 → error 非空，调用方中止保存。
+
+        注意别在这里"顺手"改 split_list 的语义：online/server.py 与它共享同一份。
+        """
+        import sys
+        if os.path.join(ROOT, "offline") not in sys.path:
+            sys.path.insert(0, os.path.join(ROOT, "offline"))
+        import experience as EXP
+
+        text = (raw or "").strip()
+        if not text.startswith("["):
+            return EXP.split_list(text), "", ""
+        try:
+            got = json.loads(text)
+        except ValueError:
+            got = None
+        if not isinstance(got, list):
+            return None, (
+                f"标签框里以 [ 开头，但它不是一个 JSON 数组：\n{text}\n\n"
+                "上一次就是这么把标签写坏的（会被切成 [\"x\" 这样的残片）。\n"
+                "请改成逗号分隔的标签（例如：甲, 乙, 丙）再保存；\n"
+                "如果这确实是一个标签，请去掉外层的方括号。"), ""
+        tags = [str(t).strip() for t in got if str(t).strip()]
+        return tags, "", ("标签框里写的是 JSON 原文，已经按数组读成："
+                          + "、".join(tags) + "。")
 
     def do_save(self):
         data = self._collect()
@@ -337,15 +401,25 @@ class ExperienceEditor(tk.Toplevel):
         if err:
             messagebox.showerror("还不能保存", err, parent=self)
             return
-        tags = EXP.split_list(data.get("tags"))
+        # ⚠ T0-14 护栏：标签框里出现 JSON 原文时**不许静默写坏**（见上面
+        #   _tags_from_box：能解成数组就地解，解不出来就报错中止）。
+        tags, tag_err, tag_note = self._tags_from_box(data.get("tags"))
+        if tag_err:
+            messagebox.showerror("标签框里的内容存不了", tag_err, parent=self)
+            return
+        if tag_note:
+            self.app.say(f"[{ts()}] {tag_note}")
+            messagebox.showinfo("标签框里是 JSON 原文",
+                                tag_note + "\n\n按「确定」继续保存。", parent=self)
 
         if not self.exp_id:
             # ---- 新增：把整条内容摆出来让用户确认
+            refs_text = EXP.item_refs(data["item_keys"], w)["text"]
             body = (f"问题：{data['asked']}\n效果：{data['outcome']}\n"
                     f"方法：{data['method']}\n原因：{data['reason']}\n"
                     f"条件：{data['context']}\n证据：{data['evidence']}\n"
                     f"标签：{', '.join(tags)}\n"
-                    f"关联文献：{', '.join(data['item_keys']) or '（无 —— 不会被加权）'}")
+                    f"关联文献：{refs_text or '（无 —— 不会被加权）'}")
             if not messagebox.askyesno("确认新增这条经验？", body, parent=self):
                 return
             try:
@@ -369,10 +443,16 @@ class ExperienceEditor(tk.Toplevel):
                         "method": data["method"], "context": data["context"],
                         "reason": data["reason"], "evidence": data["evidence"],
                         "tags": tags, "item_keys": data["item_keys"]}
-            diff = [f"{k}：\n  旧：{str(old_view.get(k))[:200]}\n"
-                    f"  新：{str(new_view.get(k))[:200]}"
-                    for k in new_view
-                    if str(old_view.get(k)) != str(new_view.get(k))]
+            # 关联文献这一项在 diff 里也换成可读名（原始 key 列表对用户没意义）。
+            # 判据仍是"变了没有"：标签自带 [KEY] 尾巴，key 变了文案就变，不会漏报。
+            old_shown = dict(old_view)
+            new_shown = dict(new_view)
+            old_shown["item_keys"] = EXP.item_refs(old_view.get("item_keys"), w)["text"]
+            new_shown["item_keys"] = EXP.item_refs(new_view.get("item_keys"), w)["text"]
+            diff = [f"{k}：\n  旧：{str(old_shown.get(k))[:200]}\n"
+                    f"  新：{str(new_shown.get(k))[:200]}"
+                    for k in new_shown
+                    if str(old_shown.get(k)) != str(new_shown.get(k))]
             body = ("\n\n".join(diff) if diff else "（内容没有变化）")
             if not messagebox.askyesno(
                     f"确认修改 #{self.exp_id}？（权重会按新旧内容重算）", body,

@@ -11,6 +11,9 @@ kb/bridge-token.txt
 bundle/cordis.patch.yml
 # 同理：知识库位置与运行环境也是各人不同的
 kb-location.json
+# .env 是**本机覆盖层**（用户可以往里写自己的路径），绝不进版本库。
+# 模板是 .env.example（只放键名 + 注释 + 占位符，跟仓库走）。
+.env
 
 # ---- 本机数据（体积大、且各人不同）----
 kb/index.db*

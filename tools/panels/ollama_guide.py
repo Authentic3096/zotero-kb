@@ -38,8 +38,11 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from tkinter import scrolledtext
 
-from .common import ROOT, CREATE_NO_WINDOW, ts
+from .common import ROOT, ts
 from .mineru_guide import _free_gb, _net_ok   # 共用这两个小工具（同一套判据）
+
+# 面板/服务里跑子进程的统一入口（stdin=DEVNULL，绕开 pythonw 的坏句柄）
+import procrun as PR  # noqa: E402
 
 SETUP_URL = "https://ollama.com/download/OllamaSetup.exe"
 DEFAULT_MODEL = "qwen3:4b-instruct"
@@ -94,7 +97,8 @@ def preflight(check_net: bool = True) -> dict:
         items.append({"level": "ok", "text": f"磁盘剩余 {free} GB（需要约 {need} GB）"})
 
     st = ollama_paths()
-    if st["exe"]:
+    installed = bool(st["exe"])
+    if installed:
         items.append({"level": "ok", "text": "Ollama 已经装好了：" + st["exe"]})
     else:
         items.append({"level": "warn", "text": "本机还没装 Ollama —— 这个窗口会帮你装"})
@@ -119,7 +123,8 @@ def preflight(check_net: bool = True) -> dict:
         elif bad:
             items.append({"level": "warn",
                           "text": "连不上：" + "、".join(bad) + "（可能仍然能装）"})
-    return {"ok": not blockers, "items": items, "blockers": blockers}
+    return {"ok": not blockers, "installed": installed,
+            "items": items, "blockers": blockers}
 
 
 class OllamaGuide(tk.Toplevel):
@@ -212,7 +217,13 @@ class OllamaGuide(tk.Toplevel):
                       ("! " if it["level"] == "warn" else "✗ ")) + it["text"]
                      for it in res["items"]]
             lines.append("")
-            lines.append("→ 可以开始安装。" if res["ok"] else "→ 先解决上面 ✗ 的项。")
+            if res.get("installed"):
+                lines.append("→ 已检测到本机装有 Ollama，无需重装"
+                             "（「开始安装」已置灰）。只是要拉模型的话，"
+                             "可以在命令行跑：ollama pull <模型名>。")
+            else:
+                lines.append("→ 可以开始安装。" if res["ok"]
+                             else "→ 先解决上面 ✗ 的项。")
             self.after(0, lambda: self._apply(res, lines))
 
         threading.Thread(target=work, daemon=True).start()
@@ -220,7 +231,13 @@ class OllamaGuide(tk.Toplevel):
     def _apply(self, res, lines):
         self._set_pf(lines)
         try:
-            self.install_btn.configure(state="normal" if res["ok"] else "disabled")
+            if res.get("installed"):
+                # 已装 → 即使没有阻塞项也不给点（用户 2026-10-10 的规矩，
+                # 与 MinerU 引导同一种灰）。拉模型可以走命令行或被别处复用。
+                self.install_btn.configure(state="disabled")
+            else:
+                self.install_btn.configure(
+                    state="normal" if res["ok"] else "disabled")
         except tk.TclError:
             pass
 
@@ -228,10 +245,10 @@ class OllamaGuide(tk.Toplevel):
 
     def _run(self, args, cwd=None) -> int:
         try:
-            self.proc = subprocess.Popen(
-                args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, encoding="utf-8", errors="replace",
-                creationflags=CREATE_NO_WINDOW)
+            self.proc = PR.popen(
+                args, cwd=cwd, merge_stderr=True,
+                on_tier=lambda m: self.after(0, lambda mm=m: self.say(
+                    f"[procrun] 子进程改用兜底档位：{mm}")))
             for line in self.proc.stdout:      # type: ignore[union-attr]
                 self.after(0, lambda ln=line: self.say(ln.rstrip()))
             return self.proc.wait()
@@ -245,6 +262,14 @@ class OllamaGuide(tk.Toplevel):
             return
         st = ollama_paths()
         skip_dl = bool(st["exe"])
+        if skip_dl:
+            # 按钮此时本来就是灰的；这条护栏是给"别处误调"兜底
+            messagebox.showinfo(
+                "已经装好了",
+                "本机已经装了 Ollama（" + st["exe"] + "），无需重装。\n\n"
+                "只是要拉模型的话，可以在命令行跑："
+                f"ollama pull {self.model.get()}")
+            return
         if not messagebox.askyesno(
                 "开始安装",
                 ("已经装了 Ollama" if skip_dl else "会下载并安装 Ollama（约 1.2 GB）")
@@ -282,9 +307,9 @@ class OllamaGuide(tk.Toplevel):
                     continue
                 try:
                     self.after(0, lambda c=cand: self.say(f"[{ts()}] 启动 {c}"))
-                    subprocess.Popen([cand, "serve"] if cand == exe else [cand],
-                                     cwd=os.path.dirname(cand),
-                                     creationflags=CREATE_NO_WINDOW)
+                    # 起了不管的后台进程：三个标准流都接 DEVNULL（procrun.spawn）
+                    PR.spawn([cand, "serve"] if cand == exe else [cand],
+                             cwd=os.path.dirname(cand))
                     break
                 except Exception as exc:      # noqa: BLE001
                     self.after(0, lambda e=exc: self.say(f"[!!] 启动失败：{e}"))
@@ -381,10 +406,7 @@ class OllamaGuide(tk.Toplevel):
             return
         pid = self.proc.pid
         self.say(f"[{ts()}] ⏹ 停止（杀进程树 {pid}）")
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, creationflags=CREATE_NO_WINDOW)
-        except Exception:      # noqa: BLE001
+        if not PR.kill_tree(pid):
             try:
                 self.proc.terminate()
             except Exception:  # noqa: BLE001

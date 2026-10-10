@@ -314,6 +314,9 @@ def main() -> int:
                 "writeStatusFile", "onNotify", "waitJob", "suggestFor", "buildMeta",
                 "notify", "registerWeightColumn", "refreshWeights",
                 "unregisterWeightColumn", "startTaskPolling", "stopTaskPolling",
+                # 文献列表另外两列（21-kbcols.js）—— 少任何一个分别是：
+                # 两列不出现 / 数据永远不刷新 / 卸载后留下悬空列。
+                "registerKbColumns", "refreshKbCols", "unregisterKbColumns",
                 "runTask", "runBuiltinCommand",
                 # 元数据补全（右键「补全元数据（本地模型）」那条链）：
                 # 少任何一个都是"点了没反应"或"建议拿到了写不进去"，

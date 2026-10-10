@@ -14,12 +14,14 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 from .common import (
-    CREATE_NO_WINDOW,
     ENV,
     PY,
     ROOT,
     ts,
 )
+
+# 面板/服务里跑子进程的统一入口（stdin=DEVNULL，绕开 pythonw 的坏句柄）
+import procrun as PR  # noqa: E402
 
 
 class ExperienceTab:
@@ -256,23 +258,34 @@ class ExperienceTab:
         self.exp_text.delete("1.0", "end")
         if not row:
             return
+        import sys
+        if os.path.join(ROOT, "offline") not in sys.path:
+            sys.path.insert(0, os.path.join(ROOT, "offline"))
+        import experience as EXP
         if row.get("pending"):
+            # 待确认那条的 items 也是**库里条目的 key**（匹配出来的），所以照样走
+            # item_refs：原来直接把 Python 列表印出来（['22X9PMR6']），既认不出是哪篇，
+            # 也看不出这条已经在库里没有了。item_refs 为空时退回模型写的原文片段。
+            pending_refs = EXP.item_refs(row.get("items"))
+            mentioned = row.get("item_refs") or []
+            shown = pending_refs["text"] or "、".join(str(x) for x in mentioned)
             text = (f"[待确认] {row.get('id')}　置信 {row.get('confidence', 0)}\n"
                     f"来源会话：{row.get('session')}　{row.get('when')}\n"
                     f"效果：{row.get('outcome')}\n\n"
                     f"问题：{row.get('asked')}\n\n方法：{row.get('method')}\n\n"
                     f"原因：{row.get('reason')}\n\n前提：{row.get('context')}\n\n"
                     f"依据：{row.get('evidence')}\n\n"
-                    f"关联文献：{row.get('items') or row.get('item_refs')}\n"
+                    f"关联文献：{shown or '（无 —— 不会被加权）'}\n"
+                    + (f"\n⚠ {pending_refs['summary']}\n"
+                       if pending_refs["summary"] else "")
                     + (f"\n⚠ {row['suspect']}\n" if row.get("suspect") else "")
                     + "\n（确认可用就点「采纳入库」；明显错就点「丢弃」）")
         else:
-            import sys
-            if os.path.join(ROOT, "offline") not in sys.path:
-                sys.path.insert(0, os.path.join(ROOT, "offline"))
-            import experience as EXP
-            keys = EXP.loads(row.get("item_keys"), [])
             tags = EXP.loads(row.get("tags"), [])
+            # 关联文献一律走 experience.item_refs（那一份是"key 怎么显示"的唯一实现）：
+            # 显示成 作者 年份 短标题 [KEY]，已删/已合并的标出来。
+            # 它**一次批量取数**（详情位跑在 Tk 主线程上，不许在这儿逐条查库）。
+            refs = EXP.item_refs(row.get("item_keys"))
             text = (f"#{row.get('id')}　{row.get('created_at')}\n"
                     f"来源：{row.get('source')}　会话：{row.get('session') or '(无)'}\n"
                     f"效果：{row.get('outcome')}"
@@ -280,10 +293,13 @@ class ExperienceTab:
                     + f"\n\n问题：{row.get('asked')}\n\n方法：{row.get('method')}\n\n"
                     f"原因：{row.get('reason')}\n\n前提：{row.get('context')}\n\n"
                     f"依据：{row.get('evidence')}\n\n"
-                    f"标签：{', '.join(tags)}\n关联文献：{', '.join(keys) or '（无）'}\n")
+                    f"标签：{', '.join(tags)}\n"
+                    f"关联文献：{refs['block'] or '（无）'}\n")
             if row.get("_why"):
                 text += f"\n⚠ 体检认为可疑：{row['_why']}\n"
-            if not keys:
+            if refs["summary"]:
+                text += f"\n⚠ {refs['summary']}\n"
+            if not refs["total"]:
                 text += ("\n⚠ 这条没有关联文献：不会被检索加权，"
                          "也不会出现在任何一篇的档案里。\n")
         self.exp_text.insert("1.0", text)
@@ -600,12 +616,11 @@ class ExperienceTab:
 
         def worker():
             try:
-                self.proc = subprocess.Popen(
+                self.proc = PR.popen(
                     [PY, "-X", "utf8", *args],
-                    cwd=ROOT, env={**ENV, **extra_env},
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace",
-                    creationflags=CREATE_NO_WINDOW,
+                    cwd=ROOT, env={**ENV, **extra_env}, merge_stderr=True,
+                    on_tier=lambda m: self.out_queue.put(
+                        ("log", f"[procrun] 子进程改用兜底档位：{m}")),
                 )
                 for line in self.proc.stdout:  # type: ignore[union-attr]
                     self.out_queue.put(("log", line.rstrip()))
@@ -623,22 +638,30 @@ class ExperienceTab:
             try:
                 import schemas as S
                 from searcher import Searcher
+                import experience as EXP
 
                 s = Searcher()
                 rows = s.read(
-                    "SELECT w.*, i.title, i.year FROM item_weight w "
+                    "SELECT w.*, i.year FROM item_weight w "
                     "LEFT JOIN items i ON i.key = w.item_key ORDER BY "
                     "(3*w.pinned + w.manual + 2*w.effective + 0.5*w.ineffective) DESC"
                 )
+                # 名字与"死引用"统一走 experience.item_refs：原来这里只印 8 位 key，
+                # 用户认不出是哪篇；条目被删/被合并之后也照样印，看不出是死引用。
+                # 一次批量（**不在下面的循环里查库**）。
+                refs = EXP.item_refs([r["item_key"] for r in rows], s)
+                by_key = {it["key"]: it["text"] for it in refs["items"]}
                 parts = [f"权重 {len(rows)} 行\n" + "=" * 70]
+                if refs["summary"]:
+                    parts.append(f"⚠ {refs['summary']}\n")
                 for r in rows:
                     mult = S.weight_multiplier(r, S.recency_base(r["year"]))
                     star = " ★重点" if r["pinned"] else ""
                     parts.append(
-                        f"{r['item_key']}  乘数 {mult:.2f}{star}\n"
+                        f"{by_key.get(str(r['item_key']), r['item_key'])}"
+                        f"  乘数 {mult:.2f}{star}\n"
                         f"  尝试 {r['attempts']}｜有效 {r['effective']}｜"
                         f"无效 {r['ineffective']}｜部分 {r['partial']}\n"
-                        f"  {(r['title'] or '')[:70]}\n"
                         + (f"  备注：{r['note']}\n" if r["note"] else ""))
                 s.close()
                 self.out_queue.put(("show", (self.adv_text, "\n".join(parts))))

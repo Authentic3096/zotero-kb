@@ -34,6 +34,7 @@ sys.path.insert(0, HERE)
 import schemas as S  # noqa: E402
 import experience as EXP  # noqa: E402 —— 经验层的唯一写入实现（含权重算术）
 import extrafill as XF  # noqa: E402 —— 结构化字段的展示口径在这里（describe）
+import procrun as PR  # noqa: E402 —— 子进程统一走它（stdin=DEVNULL）
 import kbviews as KBV  # noqa: E402 —— 分级视图（tldr 级的渲染实现在那儿）
 
 try:
@@ -702,7 +703,6 @@ def kb_reindex(key: str = "", scope: str = "changed") -> str:
         scope: changed（只处理变化过的，默认）/ all（全量，慢）。
     """
     import importlib
-    import subprocess
 
     args = [sys.executable, os.path.join(ROOT, "offline", "convert.py")]
     keys = [k.strip() for k in str(key or "").split(",") if k.strip()]
@@ -716,8 +716,7 @@ def kb_reindex(key: str = "", scope: str = "changed") -> str:
         args.append("--full")
     args.append("--no-vectors")   # 交互式补抽不阻塞在向量计算上
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
-                              timeout=300, cwd=ROOT)
+        proc = PR.run(args, merge_stderr=True, timeout=300, cwd=ROOT)
     except Exception as exc:  # noqa: BLE001
         return jdump({"error": f"补抽失败：{type(exc).__name__}: {exc}"})
     global _searcher

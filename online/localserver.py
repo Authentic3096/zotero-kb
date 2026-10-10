@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.join(ROOT, "offline"))
 sys.path.insert(0, HERE)
 
 import schemas as S  # noqa: E402
+import procrun as PR  # noqa: E402 —— 服务是 pythonw 起的，子进程统一走它
 
 DEFAULT_PORT = 8765
 TOKEN_PATH = os.path.join(S.KB_DIR, "service-token.txt")
@@ -71,8 +72,24 @@ _TASK_KEEP = 30
 
 
 def log(msg: str) -> None:
+    """打一行日志（stdout + 知识库目录下的 logs/localserver.log）。
+
+    ⚠ **两个写口都必须自己接住异常**，因为它跑在调用方的线程里：
+      服务是插件用 `Subprocess.call(..., stdout: "ignore")` 起的，而那个
+      "ignore" 并不真的把孩子接到 NUL —— 孩子**继承父进程的句柄**，父进程
+      （Zotero）那边的管道一旦失效，孩子这里的 stdout 就成了坏句柄：
+      `print` 抛 `OSError: [Errno 22] Invalid argument`。
+      本机实测踩到（2026-10-10）：Zotero 重启后新起的服务里**每一次 log()
+      都抛**，于是 POST /task 连响应都发不出去（客户端看到连接被掐断）、
+      生成纲要的任务 2 秒就报 `OSError: [Errno 22] Invalid argument` ——
+      现象离真凶（"日志打不出去"）十万八千里。
+      结论：**日志失败绝不允许影响业务**，所以这里静默降级（文件那份照写）。
+    """
     line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:      # noqa: BLE001  —— 坏句柄、管道断开都算，业务优先
+        pass
     try:
         os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as fh:
@@ -122,8 +139,14 @@ def get_token(force_refresh: bool = False) -> str:
     return tok
 
 
-def start_job(title: str, fn, *args, **kwargs) -> str:
-    """把长任务丢到后台线程跑，返回 job id。"""
+def start_job(title: str, fn, *args, progress: bool = False, **kwargs) -> str:
+    """把长任务丢到后台线程跑，返回 job id。
+
+    `progress=True` 时给被调用的 fn 额外塞一个 **关键字参数 `progress`**
+    （一个 `lambda 一行文本 -> None`），它写进 job 的 `log` 里 ——
+    插件轮询 `GET /jobs/<id>` 就能把"现在跑到第几节"显示出来。
+    默认 False：既有调用方一个都不受影响（它们没有 `progress` 形参）。
+    """
     job_id = f"job-{int(time.time() * 1000) % 100000000}"
     entry = {"id": job_id, "title": title, "state": "running",
              "started": datetime.now().isoformat(timespec="seconds"),
@@ -134,9 +157,21 @@ def start_job(title: str, fn, *args, **kwargs) -> str:
             for old in sorted(JOBS, key=lambda k: JOBS[k]["started"])[:-_MAX_JOBS]:
                 JOBS.pop(old, None)
 
-    def worker():
+    def emit(msg) -> None:
+        """记一行进度。**有上限** —— 一篇学位论文几十节，别让它无限长。"""
         try:
-            result = fn(*args, **kwargs)
+            entry["log"].append(str(msg)[:400])
+            if len(entry["log"]) > 200:
+                del entry["log"][:-200]
+        except Exception:      # noqa: BLE001
+            pass
+
+    def worker():
+        call = dict(kwargs)
+        if progress:
+            call["progress"] = emit
+        try:
+            result = fn(*args, **call)
             entry["result"] = result
             entry["state"] = "done"
         except Exception as exc:  # noqa: BLE001
@@ -164,11 +199,68 @@ def do_reindex(keys: list[str] | None, full: bool) -> dict:
     log("跑构建：" + " ".join(args[2:]))
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
            "HF_ENDPOINT": "https://hf-mirror.com"}
-    proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", cwd=ROOT, env=env, timeout=1800)
+    proc = PR.run(args, merge_stderr=True, cwd=ROOT, env=env, timeout=1800,
+                  on_tier=lambda m: log(f"[procrun] 构建子进程改用兜底档位：{m}"))
     tail = (proc.stdout or "").strip().split("\n")[-12:]
     log(f"构建结束，退出码 {proc.returncode}")
     return {"exit_code": proc.returncode, "output_tail": tail}
+
+
+# 「生成分节纲要」的停止标记。
+#
+# 为什么要有它：纲要要一节一节调本地模型（论文几十秒、学位论文几分钟），
+# 用户在 Zotero 里点了以后总得能停下来。面板那条路的「停止当前任务」是它
+# 自己 kill 子进程（tools/panels/base.py），而插件这条路是**服务端线程**里
+# 跑的，杀不掉也没必要杀 —— 在**节与节之间**看一眼这个标记就够（真正耗时的
+# 是模型调用，节边界就是安全点，见 digest.build 的 should_stop）。
+#
+# ⚠ 全局一个标记而不是每个 job 一个：本机是 4B 小模型 + 单 GPU，服务端同一
+#   时刻只应该有一个纲要任务在跑（插件侧也是串行提交的）。每次 POST /digest
+#   都会先 clear()，免得上一批的取消把这一批也带走。
+_DIGEST_CANCEL = threading.Event()
+
+
+def _digest_cancelled() -> bool:
+    return _DIGEST_CANCEL.is_set()
+
+
+def do_digest(key: str, force: bool = False, progress=None) -> dict:
+    """给一篇生成/增量更新「分节纲要」（POST /digest 的后台 job）。
+
+    为什么放服务端：MinerU 产物、向量库、模型、views/ 目录都在这边，
+    插件只把一个 key 发过来（与 /reindex 同一套分工）。
+
+    为什么不走子进程（do_reindex 那样）：digest.build() 的返回值本身
+    就是一份结构化结果（ok / n_sections / cached / asked / why / cancelled），
+    in-process 直接拿到，不用去解析 stdout —— 而 stdout 那条路还踩过
+    「pythonw 下 stdout 是 None」的坑（见插件 14-menus.js 的 runPython）。
+
+    返回的是 build() 的结果**去掉 outline**（整份纲要几十 KB，塞进 HTTP
+    响应没意义；插件要的是"成了几节"），另外补两件事：
+      · existed_before —— 这次跑之前 views/<key>.outline.md 在不在；
+      · skipped —— 一节模型都没问（全都是节指纹复用），也就是
+        「这篇本来就有纲要，这次等于跳过」。插件靠它汇总"跳过 M 篇"。
+    """
+    import digest as D
+    key = (key or "").strip()
+    vpath = os.path.join(S.VIEWS_DIR, f"{key}.outline.md")
+    existed = os.path.isfile(vpath)
+
+    def note(msg) -> None:
+        if progress:
+            progress(msg)
+        log(f"[digest] {msg}")
+
+    log(f"生成分节纲要 {key}（force={force}，"
+        + ("已有纲要" if existed else "还没有纲要") + "）")
+    r = D.build(key, force=force, log=note, should_stop=_digest_cancelled)
+    r.pop("outline", None)
+    r["existed_before"] = existed
+    r["skipped"] = bool(r.get("ok")) and not r.get("asked")
+    log(f"生成分节纲要 {key} 结束：ok={r.get('ok')} "
+        f"{r.get('n_sections')} 节（新跑 {r.get('asked')}）"
+        + ("，已取消" if r.get("cancelled") else ""))
+    return r
 
 
 def _task_new(kind: str, code: str, timeout: float = 60.0) -> dict:
@@ -371,6 +463,112 @@ def do_weights_map(keys: list[str] | None = None) -> dict:
         if keys:
             out["weights"] = {k: weights[k] for k in keys if k in weights}
         return out
+    finally:
+        s.close()
+
+
+# 「分节纲要」的元数据前缀。⚠ 与 offline/digest.py::META_PREFIX 是同一个值
+# （那边是唯一写路径）—— 改了要两边一起改。
+_OUTLINE_META_PREFIX = "ai_outline:"
+
+
+def _outline_meta_counts(s) -> dict[str, int]:
+    """一次取全量：`{key: 节数}`，来自 `meta.ai_outline:<key>` 的 JSON。
+
+    为什么按 **meta** 而不是文件：读端（`offline/kbviews.py::_render_outline`、
+    MCP 资源、面板「打开知识库 → 分节纲要」）读的全都是 meta，
+    `views/<key>.outline.md` 只是渲染产物。
+
+    ⚠ T0-8 那列当初按**文件**计数，于是本机 94 篇**全都有纲要**（meta 94 行、
+    读端也读得到）却只显示 41 篇（views 里只有 49 个 .outline.md 文件）——
+    46 篇明明有纲要却显示成 ✗（2026-10-10 面板修整时查实）。真相应以 meta 为准。
+    """
+    out: dict[str, int] = {}
+    try:
+        rows = s.read("SELECT k, v FROM meta WHERE k LIKE ?",
+                      (_OUTLINE_META_PREFIX + "%",))
+    except Exception as exc:      # noqa: BLE001
+        log(f"/col-status 读纲要 meta 失败：{type(exc).__name__}: {exc}")
+        return out
+    for r in rows:
+        try:
+            k = str(r["k"])[len(_OUTLINE_META_PREFIX):]
+        except Exception:      # noqa: BLE001
+            continue
+        try:
+            data = json.loads(r["v"] or "{}")
+        except Exception:      # noqa: BLE001
+            data = {}
+        out[k] = len(data.get("sections") or []) if isinstance(data, dict) else 0
+    return out
+
+
+def _outline_file_keys() -> set[str]:
+    """`views/` 下**已经存在** `*.outline.md` 的 key 集合。"""
+    out: set[str] = set()
+    try:
+        for fn in os.listdir(S.VIEWS_DIR):
+            if fn.endswith(".outline.md"):
+                out.add(fn[: -len(".outline.md")])
+    except OSError:
+        pass
+    return out
+
+
+def do_col_status() -> dict:
+    """文献列表那两列（「已建知识库」「分节纲要」）要的数据。
+
+    返回 `{"ok": true, "items": {key: {"in_kb": bool, "outline_sections": int,
+    "outline_file": bool}}, "with_outline": int, "with_outline_file": int,
+    "outline_orphans": [key, …]}`。
+
+    三条语义（插件按它们渲染 ✓/✗ 与「N 节」）：
+      · 映射里出现的 key 就是"在知识库里"（它们逐条来自 items 表）；
+        插件那边的判据是"**完整**的映射里查不到 = 还没建库"；
+      · outline_sections 数的是 `meta.ai_outline:<key>` 里的节数（= 读端看到的），
+        没有就是 **0（真的没有）**，不是"没数到"；
+      · outline_file 是"人读的那份渲染文件在不在"（views/<key>.outline.md），
+        它只是派生物 —— 有 meta 没文件时读端仍能渲染出纲要。
+
+    为什么一次给全量：ItemTree 的 dataProvider 是**同步**的、每行都会被调用
+    （同 /weights 的理由）—— 逐行发请求会把本地服务打爆。
+    """
+    from searcher import Searcher
+
+    try:
+        s = Searcher()
+    except Exception as exc:  # noqa: BLE001
+        # 知识库还没建 / 索引文件坏了：回 ok=False + 空映射，让插件**留空**。
+        # 不能回一份空映射却说 ok=True —— 那样插件会把"服务没数据"
+        # 画成"每条都没建库"（两句完全不同的话）。
+        log(f"/col-status 读不了索引：{type(exc).__name__}: {exc}")
+        return {"ok": False, "items": {},
+                "error": f"{type(exc).__name__}: {exc}"}
+    try:
+        counts = _outline_meta_counts(s)
+        files = _outline_file_keys()
+        items: dict[str, dict] = {}
+        for r in s.read("SELECT key FROM items"):
+            key = r["key"]
+            n = int(counts.get(key, 0) or 0)
+            items[key] = {"in_kb": True,
+                          "outline_sections": n,
+                          "outline_file": key in files}
+        # 孤儿 = 有渲染文件、但 meta 里没有纲要（或 0 节）：多半是删过 meta、
+        # 或那一篇已不在 items 里。**只报警、不静默删**（用户的文件用户说了算）。
+        orphans = sorted(k for k in files
+                         if k not in items or not int(counts.get(k, 0) or 0))
+        return {
+            "ok": True,
+            "items": items,
+            "count": len(items),
+            "with_outline": sum(1 for v in items.values()
+                                if v["outline_sections"]),
+            "with_outline_file": sum(1 for v in items.values()
+                                     if v["outline_file"]),
+            "outline_orphans": orphans,
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+        }
     finally:
         s.close()
 
@@ -1297,6 +1495,15 @@ def _model_judge_pairs(pairs: list[tuple], model: str) -> list[dict]:
     return out
 
 
+def _env_file_info() -> dict:
+    """覆盖层 .env 的位置 + 当前生效的键名（面板「运行环境」页要显示）。"""
+    try:
+        import settings as SETT
+        return {"path": SETT.path(), "keys": SETT.keys()}
+    except Exception:        # noqa: BLE001 —— 读不到就当"没有覆盖层"
+        return {"path": "", "keys": []}
+
+
 def _python_exe() -> str:
     """本项目用的 Python 解释器（优先 venv 的 pythonw —— 无控制台窗口）。
 
@@ -1305,6 +1512,42 @@ def _python_exe() -> str:
     """
     import schemas as S
     return S.resolve_python()
+
+
+def _ollama_probe() -> dict:
+    """Ollama 的三件事：**文件在不在 / API 通不通 / 有哪些模型**。
+
+    ⚠ 这个形状是给插件用的：19-caps.js::probeLocalModel() 按
+      {path, exists, api_up, models} 读 —— 它原来读的是 /health 的
+      ollama 字段，而那个字段是**一个路径字符串**，于是 info.exists
+      恒为 undefined：明明 Ollama 在跑、模型也齐，右键菜单却写
+      「未连接：没找到 Ollama」（用户 2026-10-10 报的正是这个）。
+
+    为什么不直接把 /health 的 ollama 改成这个结构：面板「运行环境」页
+    读的是 /health 并把 ollama 当**路径字符串**填进输入框、还 os.path.exists 它
+    （见 tools/panels/tab_env.py::refresh_env）—— 改成结构会当场把它弄崩。
+    所以保留字符串键 ollama，另加结构化的 ollama_info。
+    """
+    path = S.resolve_ollama()
+    api_up, models = False, []
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags",
+                                    timeout=3) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        api_up = True
+        models = [m.get("name", "") for m in (data.get("models") or [])]
+    except Exception:  # noqa: BLE001
+        pass
+    return {
+        "path": path,
+        "exists": bool(path) and os.path.isfile(path),
+        "api_up": api_up,
+        "models": models,
+        "hint": "" if path else
+                "没找到 Ollama（可选组件）。不装也能用："
+                "改用 OpenAI 兼容 API，或干脆不用模型功能。",
+    }
 
 
 def env_report() -> dict:
@@ -1320,38 +1563,30 @@ def env_report() -> dict:
     py_ok, py_ver = False, ""
     if py and os.path.isfile(py):
         try:
-            cp = subprocess.run([py, "--version"], capture_output=True,
-                                text=True, timeout=15, encoding="utf-8",
-                                errors="replace",
-                                creationflags=CREATE_NO_WINDOW)
+            cp = PR.run([py, "--version"], merge_stderr=True, timeout=15)
             py_ver = ((cp.stdout or "") + (cp.stderr or "")).strip()
             py_ok = cp.returncode == 0
         except (OSError, subprocess.SubprocessError) as exc:
             py_ver = f"运行失败：{exc}"
 
     # ---- Ollama：文件在不在 + 服务通不通（两个概念，分开报）
-    ollama = _S.resolve_ollama()
-    ollama_api, ollama_models = False, []
-    try:
-        import urllib.request
-        with urllib.request.urlopen("http://127.0.0.1:11434/api/tags",
-                                    timeout=3) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        ollama_api = True
-        ollama_models = [m.get("name", "") for m in (data.get("models") or [])]
-    except Exception:  # noqa: BLE001
-        pass
+    ollama_info = _ollama_probe()
 
     root = _S.resolve_project_root()
     panel = os.path.join(root, "tools", "gui.py")
 
+    sources = _S.resolve_sources()
+    ollama_info["source"] = (sources.get("ollama") or {}).get("source", "")
     return {
         "ok": py_ok,
+        "sources": sources,
+        "env_file": _env_file_info(),
         "python": {
             "path": py,
             "exists": bool(py) and os.path.isfile(py),
             "runnable": py_ok,
             "version": py_ver,
+            "source": (sources.get("python") or {}).get("source", ""),
             "candidates": _S._scan_for_python(root),
             "hint": "" if py_ok else
                     "没找到能用的 Python。请点「浏览…」选到 "
@@ -1361,6 +1596,7 @@ def env_report() -> dict:
         "project_root": {
             "path": root,
             "exists": os.path.isdir(root),
+            "source": (sources.get("project_root") or {}).get("source", ""),
             "has_venv": os.path.isdir(os.path.join(root, ".venv")),
             "has_panel": os.path.isfile(panel),
             "panel": panel,
@@ -1368,15 +1604,7 @@ def env_report() -> dict:
                     "这个目录里没有 tools\\gui.py，可能选错了。"
                     "它应该是包含 offline\\、online\\、zotero-plugin\\ 的那个目录。",
         },
-        "ollama": {
-            "path": ollama,
-            "exists": bool(ollama) and os.path.isfile(ollama),
-            "api_up": ollama_api,
-            "models": ollama_models,
-            "hint": "" if ollama else
-                    "没找到 Ollama（可选组件）。不装也能用："
-                    "改用 OpenAI 兼容 API，或干脆不用模型功能。",
-        },
+        "ollama": ollama_info,
         "location_file": _S.LOCATION_FILE,
         "user_location_file": _S.USER_LOCATION_FILE,
         "runtime_state": _S.read_runtime_state(),
@@ -1392,6 +1620,7 @@ def _migrate_kb(target: str) -> dict:
     ⚠ 是**复制**不是移动：迁完两边都在，确认没问题再让用户自己删。
     """
     import shutil
+    import sqlite3
     import time as _t
 
     import schemas as S
@@ -1544,8 +1773,7 @@ def _sync_by_command(cmd: str) -> dict:
             return {"ok": False, "error": f"命令里有危险片段，拒绝执行：{bad}"}
     try:
         # shell=True 是必要的（用户填的是完整命令行），所以上面做了粗过滤
-        p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                           timeout=1800, encoding="utf-8", errors="replace")
+        p = PR.run(cmd, shell=True, merge_stderr=True, timeout=1800)
         out = ((p.stdout or "") + (p.stderr or ""))[-2000:]
         return {"ok": p.returncode == 0, "returncode": p.returncode,
                 "output": out,
@@ -1753,9 +1981,7 @@ def _watch_handle_change() -> None:
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
            "HF_ENDPOINT": "https://hf-mirror.com"}
     try:
-        proc = subprocess.run(args, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace",
-                              cwd=ROOT, env=env, timeout=1800)
+        proc = PR.run(args, merge_stderr=True, cwd=ROOT, env=env, timeout=1800)
         tail = (proc.stdout or "").strip().split("\n")[-4:]
         log(f"增量构建完成（退出码 {proc.returncode}）：{' | '.join(tail)}")
     except Exception as exc:  # noqa: BLE001
@@ -2092,10 +2318,23 @@ class Handler(BaseHTTPRequestHandler):
                 "project_root": S.resolve_project_root(),
                 "python": _python_exe(),
                 "panel": os.path.join(S.resolve_project_root(), "tools", "gui.py"),
+                # ⚠ 两个键都要：
+                #   · ollama 是**路径字符串** —— 面板「运行环境」页拿它填输入框
+                #     （tools/panels/tab_env.py::refresh_env，还 os.path.exists 它）；
+                #   · ollama_info 是**结构化状态** —— 插件 19-caps.js 按
+                #     {exists, api_up, models} 判断本地模型可用不可用。
+                #   2026-10-10 之前只有前者，于是插件 info.exists 恒 undefined，
+                #   明明连上也显示「未连接」。
                 "ollama": S.resolve_ollama(),
+                "ollama_info": _ollama_probe(),
                 # MinerU 是可选组件：这里只报**路径**（一次文件系统检查，快）。
                 # 要"版本/后端/档位"这种要跑子进程的信息，走 /mineru-check。
                 "mineru": S.resolve_mineru(),
+                # 来源（"这个值从哪来"）：面板「运行环境」页紧接着每个值显示它。
+                # 插件不用这一项（它只读 project_root / python / ollama），
+                # 所以是纯增量、不影响任何现有前端。
+                "sources": S.resolve_sources(),
+                "env_file": _env_file_info(),
                 "time": datetime.now().isoformat(timespec="seconds"),
             }
             if from_web:
@@ -2137,6 +2376,14 @@ class Handler(BaseHTTPRequestHandler):
             raw = (qs.get("keys") or [""])[0]
             keys = [k.strip() for k in raw.split(",") if k.strip()] or None
             return self._send(200, do_weights_map(keys))
+        if path == "/col-status":
+            # GET /col-status → 全量「在不在知识库 + 有几节纲要」映射
+            # （插件文献列表的「已建知识库」「分节纲要」两列用，见 21-kbcols.js）
+            #
+            # ⚠ 和 /weights 同一个坑：**读接口必须写在 do_GET 里**，
+            #   写进 do_POST 的话 GET 过来就是 404。本项目在这上面踩过三次，
+            #   所以这两个端点各自都留了这句注释。
+            return self._send(200, do_col_status())
 
         # 插件任务队列的**读**接口（POST 那侧负责派发与回报）
         if path == "/task":
@@ -2299,6 +2546,30 @@ class Handler(BaseHTTPRequestHandler):
             job = start_job("重建知识库索引" + ("（全量）" if full else "（增量）"),
                             do_reindex, keys, full)
             return self._send(202, {"job": job, "state": "running"})
+
+        if path == "/digest":
+            # 给一篇生成「分节纲要」（插件右键菜单「生成分节纲要」用它）。
+            # 异步：POST 只派活立刻回 202，进度与结果都在 GET /jobs/<id> 里 ——
+            # 一篇学位论文要几分钟，同步等会把插件的请求超时（120s）撞穿。
+            key = str(body.get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key"})
+            # 先把上一批的停止标记清掉：不清的话，用户上一次点了「停止」
+            # 之后，这一次刚派出去的任务第一件事就是收工。
+            _DIGEST_CANCEL.clear()
+            job = start_job("生成分节纲要 " + key, do_digest, key,
+                            force=bool(body.get("force")), progress=True)
+            return self._send(202, {"job": job, "state": "running", "key": key})
+
+        if path == "/digest/cancel":
+            # 停掉正在跑的纲要生成。⚠ 不是杀线程，而是**置一个标记**：
+            #   digest.build 在每节开始前看一眼（见 should_stop 的说明），
+            #   所以已经在跑的那一次模型调用会跑完，然后才收工。
+            # 路径必须在 POST /digest 之外单独一支（精确相等，不存在前缀吞并），
+            # 但顺序上紧挨着写，读起来是一对。
+            _DIGEST_CANCEL.set()
+            return self._send(200, {"ok": True, "cancelled": True,
+                                    "hint": "当前这一篇会在这一节跑完后停下"})
 
         if path == "/item-info":
             keys = body.get("keys") or []
@@ -2710,6 +2981,100 @@ def self_test(port: int) -> int:
     print(f"  {'PASS' if ok3 else 'FAIL'}  /weights?keys= 过滤生效"
           f"（返回 {list(got)}）")
     passed, failed = (passed + 1, failed) if ok3 else (passed, failed + 1)
+
+    print("\n[5b] 文献列表两列的列状态（/col-status）")
+    # 这个端点给插件的「已建知识库」「分节纲要」两列。五条断言：
+    #   ① 结构对（ok=true + 全量映射，每条 in_kb / outline_sections /
+    #      outline_file 齐全）；
+    #   ② **有纲要**的那条：节数来自 meta.ai_outline:<key>（**不是**文件！），
+    #      再用 digest.load_outline 独立读一次交叉验证；
+    #   ③ 标了 outline_file=True 的条目，磁盘上那份 .outline.md 确实在；
+    #   ④ 孤儿列表 = 磁盘上有文件、meta 里却没纲要的那些（只报警）。
+    # ②③ 才是"数值与真实来源一致"的回归 —— 只比较两个都从同一处来的数字，
+    # 数错了也发现不了（本项目吃过"检查只是在复述自己"的亏）。
+    # ⚠ 2026-10-10 改判据：原来数的是 views/*.outline.md 里的 `## ` 行，于是
+    #   「有 meta、没文件」的 46 篇被显示成 ✗ —— 读端读的是 meta，文件只是派生物。
+    cs = call("GET", "/col-status")
+    cs_items = (cs or {}).get("items") or {}
+    ok = (bool((cs or {}).get("ok")) and isinstance(cs_items, dict)
+          and bool(cs_items))
+    print(f"  {'PASS' if ok else 'FAIL'}  /col-status 返回全量映射，共 "
+          f"{len(cs_items)} 条（meta 有纲要 {(cs or {}).get('with_outline', '?')} 条"
+          f" / 文件 {((cs or {}).get('with_outline_file', '?'))} 份）")
+    passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+    fields_ok = bool(cs_items) and all(
+        isinstance(v, dict) and "in_kb" in v and "outline_sections" in v
+        and "outline_file" in v
+        for v in cs_items.values())
+    print(f"  {'PASS' if fields_ok else 'FAIL'}  "
+          f"每条都带 in_kb / outline_sections / outline_file")
+    passed, failed = (passed + 1, failed) if fields_ok else (passed, failed + 1)
+    import digest as _D
+    have = next((k for k, v in cs_items.items() if v.get("outline_sections")), "")
+    if have:
+        real = len((_D.load_outline(have).get("sections") or []))
+        same = real == cs_items[have]["outline_sections"]
+        print(f"  {'PASS' if same else 'FAIL'}  节数与 meta 一致（{have}："
+              f"接口 {cs_items[have]['outline_sections']} / meta {real} 节）")
+        passed, failed = (passed + 1, failed) if same else (passed, failed + 1)
+    withf = next((k for k, v in cs_items.items() if v.get("outline_file")), "")
+    if withf:
+        exists = os.path.isfile(os.path.join(S.VIEWS_DIR,
+                                             f"{withf}.outline.md"))
+        print(f"  {'PASS' if exists else 'FAIL'}  "
+              f"outline_file=True 的条目文件确实在（{withf}）")
+        passed, failed = (passed + 1, failed) if exists else (passed, failed + 1)
+    disk = ({fn[: -len(".outline.md")] for fn in os.listdir(S.VIEWS_DIR)
+             if fn.endswith(".outline.md")}
+            if os.path.isdir(S.VIEWS_DIR) else set())
+    want_orphans = sorted(k for k in disk
+                          if not cs_items.get(k, {}).get("outline_sections"))
+    got_orphans = list((cs or {}).get("outline_orphans") or [])
+    ok_orph = want_orphans == got_orphans
+    print(f"  {'PASS' if ok_orph else 'FAIL'}  孤儿列表与磁盘事实一致"
+          f"（{len(got_orphans)} 个：{got_orphans[:5]}）")
+    passed, failed = (passed + 1, failed) if ok_orph else (passed, failed + 1)
+
+    print("\n[5c] 分节纲要的生成入口（/digest：插件右键菜单靠它）")
+    # ⚠ 自检**不能真跑模型**（一篇论文几十秒、学位论文几分钟，客户机上也未必
+    #   有模型）。用一个**库里根本没有的 key**：digest.build 在找 MinerU 产物
+    #   那一步就返回 ok=False，一次模型都不调；而走的路跟真实任务完全一样
+    #   （/digest → 后台 job → 轮询 /jobs/<id>），所以端点是真被走通了。
+    call("POST", "/digest", {}, token=True, expect=400)      # 缺 key 必须拒绝
+    d = call("POST", "/digest", {"key": "ZZZZZZZZ"}, token=True, expect=202)
+    dj = (d or {}).get("job", "")
+    print(f"        job = {dj}")
+    st: dict = {}
+    for _ in range(40):
+        time.sleep(0.2)
+        st = call("GET", f"/jobs/{dj}", expect=200)
+        if st.get("state") in ("done", "failed"):
+            break
+    ok = st.get("state") == "done"
+    print(f"  {'PASS' if ok else 'FAIL'}  任务跑完（state={st.get('state')}）")
+    passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+    res = st.get("result") or {}
+    # 结果结构是插件汇总「已生成 N / 跳过 M / 失败 K」的依据，少一个字段
+    # 那边就会把一次成功显示成失败（所以这里逐个点名，不用 truthy 判断）。
+    need = ("ok", "n_sections", "asked", "why", "existed_before", "skipped")
+    miss = [k for k in need if k not in res]
+    ok2 = (not miss) and res.get("ok") is False and "MinerU" in str(res.get("why"))
+    print(f"  {'PASS' if ok2 else 'FAIL'}  结果字段齐全且如实报原因"
+          f"（缺 {miss}｜{str(res.get('why'))[:36]}）")
+    passed, failed = (passed + 1, failed) if ok2 else (passed, failed + 1)
+    ok3 = "outline" not in res
+    print(f"  {'PASS' if ok3 else 'FAIL'}  响应里没有整份纲要（outline 已剥掉）")
+    passed, failed = (passed + 1, failed) if ok3 else (passed, failed + 1)
+    # 停止端点：只置标记、必须立刻回 200（真取消要等下一篇/下一节）
+    call("POST", "/digest/cancel", {}, token=True, expect=200)
+    ok4 = _DIGEST_CANCEL.is_set()
+    print(f"  {'PASS' if ok4 else 'FAIL'}  /digest/cancel 置上了停止标记")
+    passed, failed = (passed + 1, failed) if ok4 else (passed, failed + 1)
+    # 下一次派活必须自己把标记清掉，否则"停过一次之后就再也跑不起来"
+    call("POST", "/digest", {"key": "ZZZZZZZZ"}, token=True, expect=202)
+    ok5 = not _DIGEST_CANCEL.is_set()
+    print(f"  {'PASS' if ok5 else 'FAIL'}  新的 /digest 会清掉上一次的停止标记")
+    passed, failed = (passed + 1, failed) if ok5 else (passed, failed + 1)
 
     print("\n[6] 异步任务：分类建议（纯确定性部分，不调模型）")
     job = call("POST", "/collection-suggest", {"use_model": False}, expect=202)

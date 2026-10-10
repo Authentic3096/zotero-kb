@@ -160,7 +160,11 @@ Object.assign(ZoteroKB, {
         if (tick % 2 === 0) {
           await self.refreshWeights();
         }
+        // 两列（已建库 / 纲要）变得**慢得多**：建一次库、生成一次纲要才变，
+        // 所以 15 个 tick（INTERVAL=2000ms → 约 30 秒）拉一次就够。
+        // 和权重一样，内容没变不会重画（见 refreshKbCols 的内容比对）。
         if (tick % 15 === 0) {
+          await self.refreshKbCols();
           self.writeStatusFile();
         }
       } catch (e) {
@@ -247,6 +251,9 @@ Object.assign(ZoteroKB, {
           serverOk: self.serverOk,
           weightColumnKey: self.weightColumnKey,
           weightsCached: Object.keys(self.weightsCache || {}).length,
+          kbColKeys: self.kbColKeys || [],
+          colStatusCached: Object.keys(self.colStatusCache || {}).length,
+          colStatusReady: !!self.colStatusReady,
           notifyIDs: self.notifyIDs || [],
           taskPolling: !!self.taskTimer,
         };
@@ -258,6 +265,12 @@ Object.assign(ZoteroKB, {
       case "reloadWeightsCache":
         self.weightsCache = {};
         return { ok: await self.refreshWeights() };
+      case "refreshKbCols":
+        // 两列（已建库 / 纲要）的缓存重拉一次 —— DSH 那边刚建完库/生成完
+        // 纲要时用它让列表立刻反映出来，不必等 30 秒的轮询。
+        return { ok: await self.refreshKbCols(),
+                 cached: Object.keys(self.colStatusCache || {}).length,
+                 ready: !!self.colStatusReady };
       // ⚠ 这里**故意没有**"批量写回"这类内建命令：
       //   改**已有条目**的字段只应该由用户在 Zotero 界面里的动作触发
       //   （右键菜单 → 确认框）。批量写回的实现是 `applyMetaBatch`，

@@ -35,6 +35,16 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# GBK 控制台兜底：本脚本会打印 ✓ / ❌ / ℹ 这类符号，GBK 编不出来会直接
+# UnicodeEncodeError 崩掉 —— 而它恰恰是**手动跑**的发布前步骤（只有 scripts\*.cmd
+# 那些正式入口才设 PYTHONUTF8）。这里只放宽 errors（**不动 encoding**）：
+# 中文照常显示，编不出的符号降级成 ?，而不是整份审计挂掉。
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:          # noqa: BLE001
+        pass
+
 # 不扫的目录：依赖、数据、备份、会话产物
 #
 # ⚠ `.mineru` 是**可选组件 MinerU 的本地安装**（scripts/install-mineru.ps1 装的：
@@ -510,17 +520,61 @@ def audit_encoding():
             check(f"{rel} 保留 BOM（PS 5.1 需要它才能读中文）", ok)
 
 
+# ---------------------------------------------------------------- E. .env 覆盖层
+
+# .env.example 里**绝不能**出现的：真实盘符路径、用户目录、疑似 token。
+# 为什么单独查：.env 是**本机覆盖层**（路径、用户名这类东西天然在里面），误提交
+# 就是把开发机的目录结构发出去；而 .env.example 是跟着仓库走的模板，只允许
+# 键名 + 注释 + 占位符。
+# ⚠ 盘符要排除 URL 里的 "http://"：前面的字符不能是字母/数字/下划线。
+ENV_DRIVE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]")
+ENV_USERS = re.compile(r"\\Users\\|/Users/|/home/", re.I)
+ENV_SECRET = re.compile(r"sk-[A-Za-z0-9\-_]{12,}|[A-Za-z0-9_\-]{32,}")
+
+
+def audit_dotenv():
+    """`.env` 用户覆盖层的两条硬规矩（用户要求）。"""
+    print("\n[E] .env 用户覆盖层")
+    envp = os.path.join(ROOT, ".env")
+    check("仓库里没有 .env（本机覆盖层，绝不进版本库）",
+          not os.path.exists(envp),
+          "发现 " + envp + " —— 删掉它（模板是 .env.example）")
+    check(".gitignore 忽略了 .env", ".env" in gitignored(),
+          "把 .env 加进 .gitignore")
+
+    example = os.path.join(ROOT, ".env.example")
+    check(".env.example 在仓库里（模板）", os.path.exists(example))
+    if not os.path.exists(example):
+        return
+    bad: list = []
+    for i, ln in enumerate(read(example).split("\n"), 1):
+        if ENV_DRIVE.search(ln) or ENV_USERS.search(ln):
+            bad.append(".env.example:%d  真实路径  %s" % (i, ln.strip()[:60]))
+        for m in ENV_SECRET.finditer(ln):
+            val = m.group(0)
+            # 占位符/示例词放过（与 audit_privacy 同一口径）
+            if "EXAMPLE" in val.upper() or "PLACEHOLDER" in val.upper():
+                continue
+            bad.append(".env.example:%d  疑似 token  %s…" % (i, val[:16]))
+    if bad:
+        for x in bad[:10]:
+            print("    " + x)
+    check(".env.example 里没有盘符路径 / 用户目录 / 疑似 token",
+          not bad, "%d 处" % len(bad))
+
+
 # ---------------------------------------------------------------- 主流程
 
 def main() -> int:
     print("=" * 72)
-    print("发布前综合审计：隐私 / 路径 / 安装 / 编码")
+    print("发布前综合审计：隐私 / 路径 / 安装 / 编码 / .env")
     print("=" * 72)
     print(f"  项目根：{ROOT}")
     audit_privacy()
     audit_paths()
     audit_install()
     audit_encoding()
+    audit_dotenv()
     print()
     print("=" * 72)
     if PROBLEMS:

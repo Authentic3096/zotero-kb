@@ -260,12 +260,35 @@ def section_fp(s: dict) -> str:
 
 # ================================================================ 读缓存 / 生成
 
-def load_outline(key: str, s=None) -> dict:
-    """读 `<kb>` 里这一篇的纲要（JSON）。没有就返回 `{}`。"""
+def _meta_value(s, key: str):
+    """取 `meta` 里一行，兼容两种"读封装"。
+
+    · 裸 sqlite3 连接 —— `s.execute(sql, params).fetchone()`；
+    · Searcher（`online/searcher.py`，只读带锁，只有 `read_one`）。
+
+    ⚠ 这里原来只写 `s.execute(...)`：调用方 `kbviews.write_levels` 传进来的是
+      Searcher，于是"补渲染 views/<KEY>.outline.md"那条路**每次都在这里抛
+      AttributeError**、被外层 except 吞成"没有纲要" —— 46 篇有 meta 却没
+      文件的条目因此永远补不出来（2026-10-10 面板修整时查实）。
+    """
+    sql = "SELECT v FROM meta WHERE k = ?"
+    params = (META_PREFIX + key,)
     try:
-        s = s or S.connect(S.INDEX_DB)
-        row = s.execute("SELECT v FROM meta WHERE k = ?",
-                        (META_PREFIX + key,)).fetchone()
+        return s.execute(sql, params).fetchone()
+    except AttributeError:
+        return s.read_one(sql, params)
+
+
+def load_outline(key: str, s=None) -> dict:
+    """读 `<kb>` 里这一篇的纲要（JSON）。没有就返回 `{}`。
+
+    `s` 可以是 Searcher / 裸 sqlite3 连接；不传就自己开一个、读完关掉
+    （原来不关，逐篇循环调用时会把连接攒下来）。
+    """
+    own = s is None
+    conn = s or S.connect(S.INDEX_DB)
+    try:
+        row = _meta_value(conn, key)
         if not row:
             return {}
         raw = row["v"] if isinstance(row, dict) or hasattr(row, "keys") else row[0]
@@ -273,6 +296,12 @@ def load_outline(key: str, s=None) -> dict:
         return data if isinstance(data, dict) else {}
     except Exception:      # noqa: BLE001
         return {}
+    finally:
+        if own:
+            try:
+                conn.close()
+            except Exception:      # noqa: BLE001
+                pass
 
 
 def save_outline(key: str, data: dict, s=None) -> None:
@@ -322,11 +351,21 @@ def _ask_section(title: str, sec: dict, model: str = "") -> dict:
 
 
 def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
-          limit_sections: int = 0, log=None) -> dict:
+          limit_sections: int = 0, log=None, should_stop=None) -> dict:
     """给一篇生成（或增量更新）分节纲要。
 
-    返回 `{ok, key, n_sections, cached, asked, seconds, why, outline}`；
-    任何情况都返回 dict（不抛）。`limit_sections>0` 时只跑前 N 节（先看效果用）。
+    返回 `{ok, key, n_sections, cached, asked, seconds, why, outline,
+    cancelled}`；任何情况都返回 dict（不抛）。`limit_sections>0` 时只跑前
+    N 节（先看效果用）。
+
+    `should_stop` 是"要不要停"的**外部判据**（服务端右键菜单那条路用它做
+    「停止生成纲要」）：在**每节开始之前**问一次，返回真就立刻收工。为什么
+    必须在节与节之间问：真正耗时的是每节一次模型调用，只有节边界才是安全点。
+
+    ⚠ 取消时**不落盘**（既不写 meta 也不写 views/<KEY>.outline.md）——
+      半份纲要写进去，用户打开"分节纲要"看到的是一篇缺了后半截的论文，
+      比"什么都没有"更糟。代价是这一篇已经跑完的几节要重跑（节指纹只在
+      落盘时保存）。
     """
     import time
     t0 = time.time()
@@ -343,7 +382,7 @@ def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
     adir = M.artifact_dir(key, kb_dir)
     struct_path = os.path.join(adir, "structured_content.json")
     out = {"ok": False, "key": key, "n_sections": 0, "cached": 0, "asked": 0,
-           "seconds": 0.0, "why": "", "outline": {}}
+           "seconds": 0.0, "why": "", "outline": {}, "cancelled": False}
     if not os.path.isfile(struct_path):
         out["why"] = ("没有 MinerU 产物（先解析这一篇：面板「PDF 解析」页或 "
                       "tools\\kb_admin.py mineru parse --key " + key + "）")
@@ -374,6 +413,15 @@ def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
     if limit_sections:
         secs = secs[:limit_sections]
     for i, sec in enumerate(secs, 1):
+        # 停止判据只在**节边界**问（见 docstring）：这一节还没开始跑模型，
+        # 现在收工不会有"跑了一半的模型调用"。
+        if should_stop and should_stop():
+            out["cancelled"] = True
+            out["why"] = (f"已取消（{len(kept)}/{len(secs)} 节已跑完，"
+                          "这一篇没有落盘）")
+            out["seconds"] = round(time.time() - t0, 1)
+            note("    [!!] 收到停止请求，这一篇就此打住（不落盘）")
+            return out
         if sec.get("skip"):
             kept.append(dict(sec, summary="（这一节不展开：参考文献/致谢/附录类）",
                              points=[], model="", cached=True, tried=True))

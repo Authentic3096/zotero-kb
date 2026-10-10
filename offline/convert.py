@@ -20,6 +20,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,7 +32,9 @@ import converter as C  # noqa: E402
 import extrafill as XF  # noqa: E402
 # MinerU 是**可选组件**：`import mineru` 只是导入这个探测/解析包装模块
 # （纯标准库），没装 MinerU 也能 import —— 真正的可用性由 probe() 判。
+import keys as K  # noqa: E402 —— 合并映射与 resolve_key 的唯一实现（见该模块头部）
 import mineru as M  # noqa: E402
+import trash as TR  # noqa: E402 —— 归档/还原/删除三动作的唯一实现（见该模块头部）
 from zreader import ZoteroReader  # noqa: E402
 
 DEFAULT_EMBED_MODEL = "BAAI/bge-small-zh-v1.5"
@@ -80,23 +83,54 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
         # ---- 老库一次性回填结构化字段（见 _backfill_extra_once 的说明）
         _backfill_extra_once(conn, reader, all_ids, extra_on)
 
-        # ---- 清孤儿：Zotero 里已经删掉、知识库里还留着的条目。
+        # ---- 删除对账：Zotero 侧变了、知识库这边还没跟上的条目。
         #
-        # 为什么放在增量判断**之前**：孤儿不在 all_ids 里，增量判断压根看不到它，
-        # 于是永远不处理。用户删了一篇文献，`kb_search` 却还搜得到 —— 这违背
-        # 他对"删除"的预期。**全量模式也要清**（它同样只遍历 all_ids）。
+        # 两段式（用户 2026-10-09 定稿，方案附录 H.1）：
+        #   · 进了回收站        → **归档**到 kb/trash/<key>/（不是直接删）
+        #   · 回收站里也彻底删  → 清掉归档、墓碑改 kind='deleted'
+        #   · 从回收站还原回来  → 按 rows.json 搬回来、复原数据库行
         #
-        # ⚠ 只在"确实读到了库"时才清：万一 reader 因为权限/锁返回了空列表，
-        #   贸然按空集清理会把整个知识库抹掉。所以加一条保险。
+        # 为什么放在增量判断**之前**：这三种条目都不在 all_ids 里（回收站条目被
+        # zreader 排除在外），增量判断压根看不到它们，于是永远不处理。用户删了一篇
+        # 文献、`kb_search` 却还搜得到 —— 这违背他对"删除"的预期。
+        # **全量模式也要对账**（它同样只遍历 all_ids）。
+        #
+        # ⚠ 只在"确实读到了库"时才处理：万一 reader 因为权限/锁返回了空列表，
+        #   贸然按空集对账会把整个知识库归档掉。所以加一条保险。
         if all_ids:
-            live_keys = {it.key for it in reader.load_items(all_ids)}
-            dead = _purge_orphans(conn, live_keys)
-            if dead:
-                log(f"清理已从 Zotero 删除的条目 {len(dead)} 条："
-                    + "、".join(sorted(dead)[:8])
-                    + ("…" if len(dead) > 8 else ""))
+            items_now = reader.load_items(all_ids)
+            live_keys = {it.key for it in items_now}
+            # 还原时要把「Zotero 当前 version」写进还原行，否则刚还原的条目
+            # 会被增量当成变过的条目重抽一遍（见 trash.restore 的说明）。
+            live_versions = {it.key: it.version for it in items_now}
+            rep = _reconcile_deletions(conn, live_keys, reader.trashed_keys,
+                                       live_versions)
+            for label, keys in (("归档（Zotero 回收站）", rep["archived"]),
+                               ("删除（回收站里已彻底删）", rep["deleted"]),
+                               ("还原（从回收站恢复）", rep["restored"])):
+                if keys:
+                    log(f"{label} {len(keys)} 条：" + "、".join(sorted(keys)[:8])
+                        + ("…" if len(keys) > 8 else ""))
+            for why in rep.get("degraded") or []:
+                log(f"  [!!] 还原降级为重建（id 已被别的文献复用）：{why}")
+                log("       产物已搬回原位；数据库行一概不复原，交给本次增量重抽"
+                    "（详见知识库 logs\\trash.log）")
         else:
-            log("  [!!] 一条 Zotero 条目都没读到 —— 跳过孤儿清理（防误删整个知识库）")
+            log("  [!!] 一条 Zotero 条目都没读到 —— 跳过删除对账（防误删整个知识库）")
+
+        # ---- 合并映射：把 Zotero 的 dc:replaces 落进 item_merge（只增不改）。
+        #
+        # 放在这里的理由：挨着删除对账，两者都是"知识库跟上 Zotero 的生命周期变化"，
+        # 而且 reader 已经开着（快照只拷一次库）。**只写映射表** —— relink 图谱数据、
+        # 合并权重都还没做（见方案 G.4 第 2/4 步与 keys.py 头部"不做的事"），
+        # 所以这一步只让 resolve_key() 能查到答案，不改变任何一条文献的去留。
+        if all_ids:
+            mg = K.sync_merges(conn, reader)
+            if mg.get("error"):
+                log(f"  [!!] 合并映射同步失败（不影响构建）：{mg['error']}")
+            elif mg["inserted"]:
+                log(f"  合并映射：新增 {mg['inserted']} 条（共 {mg['total']} 条，"
+                    f"待处理 {K.pending_count(conn)} 条）")
 
         # ---------------------------------------------------------- 增量判断
         # 比对「version + 分类标签指纹」两项：
@@ -742,76 +776,133 @@ def _count_item_extra(conn) -> int | None:
         return None
 
 
-def _purge_key(conn, key: str) -> None:
-    """按 key 把一个条目从知识库里彻底移除（`_purge_item` 的实际执行者）。
+# ---------------------------------------------------------------- 删除对账
+#
+# 三个动作（归档 / 删除 / 还原）的**实现在 offline/trash.py**，这里只是给对账
+# 逻辑起名字（全局纪律 7：同一件事只允许一份实现，别处只能调它）。
+# 保留这三个薄封装是为了让下面 `_reconcile_deletions` 读起来就是"三支动作"，
+# **别再往它们里面加 SQL 或文件操作**。
 
-    单独抽出来是因为**孤儿**（条目已经从 Zotero 里删掉、知识库里还留着）
-    只有 key、没有条目对象 —— 见 `_purge_orphans`。
+
+def _archive_key(conn, key: str) -> dict:
+    """阶段①：进回收站 → 归档到 kb/trash/<key>/（含视图/档案/正文/MinerU 产物）。"""
+    return TR.archive(conn, key)
+
+
+def _delete_archived(conn, key: str) -> dict:
+    """阶段②：回收站里彻底删 → 清掉归档目录，墓碑改 kind='deleted'。"""
+    return TR.delete_archived(conn, key)
+
+
+def _restore_key(conn, key: str, version: int | None = None) -> dict:
+    """阶段③：从回收站还原 → 搬回产物 + 按 rows.json 复原数据库行 + 清墓碑。"""
+    return TR.restore(conn, key, version=version)
+
+
+def _reconcile_deletions(conn, live_keys: set[str], trashed_keys: set[str],
+                         live_versions: dict | None = None) -> dict:
+    """把知识库与 Zotero 的"条目集合"对齐（两段式删除，见方案附录 H.1）。
+
+    三个集合的分工（H.1 的检测信号）：
+        live_keys     在 Zotero 的 items 里、且不在 deletedItems  → 正常
+        trashed_keys  在 items 里、且在 deletedItems             → 归档（阶段①）
+        两处都没有                                               → 删除（阶段②）
+
+    四支判断：
+      · 库里有这条、Zotero 里在回收站            → `_archive_key()`
+      · 库里有这条、Zotero 里两处都没有          → `_delete_archived()`
+      · 库里没有、live 且有 kind='trashed' 墓碑  → `_restore_key()`
+      · 归档目录还在、Zotero 里两处都没有        → `_delete_archived()`
+        （库里已经没有它的行，只需清目录 + 改墓碑）
+
+    返回值里的 `degraded` **不是第五支判断**，而是阶段③的降级记录（T0-11）：
+    还原时探到快照里的 id 已被别的文献复用，就整条放弃直插、只把产物搬回原位，
+    数据库行交给紧随其后的增量重抽。这里只负责把它报出来（原因在 trash.py 的
+    `_id_conflicts`）。
+
+    ⚠ 这是"既有缺陷的修补"的延续：原来 `_purge_orphans` 只在"条目还在、但 PDF
+      没了"时清理，而"用户在 Zotero 里把整条删了"没有任何路径会处理它 —— 增量判断
+      只比对 `items.version`，条目都不在了自然也没得比，于是孤儿永远留在库里，
+      `kb_search` 还能搜到一篇**已经被删掉的文献**。**删了就该搜不到**。
     """
-    conn.execute("DELETE FROM chunks_fts WHERE rowid IN "
-                 "(SELECT chunk_id FROM chunks WHERE item_key = ?)", (key,))
-    conn.execute("DELETE FROM embeddings WHERE chunk_id IN "
-                 "(SELECT chunk_id FROM chunks WHERE item_key = ?)", (key,))
-    conn.execute("DELETE FROM chunks WHERE item_key = ?", (key,))
-    conn.execute("DELETE FROM figures WHERE item_key = ?", (key,))
+    archived: list[str] = []
+    deleted: list[str] = []
+    restored: list[str] = []
+    degraded: list[str] = []        # 还原时探到 id 被复用、只能重建的（T0-11）
+
+    kb_keys = {row["key"] for row in conn.execute("SELECT key FROM items")}
+    tombstones: dict[str, str] = {}
     try:
-        conn.execute("DELETE FROM item_health WHERE item_key = ?", (key,))
-    except Exception:                                        # noqa: BLE001
-        pass                     # 表还没建过（没跑过体检）
-    conn.execute("DELETE FROM items WHERE key = ?", (key,))
-    for path in (os.path.join(S.FULLTEXT_DIR, f"{key}.md"),
-                 os.path.join(S.PAPERS_DIR, f"{key}.md")):
-        try:
-            if path and os.path.exists(path):
-                os.remove(path)
-        except OSError:
-            pass
-    # 分级视图（views/<key>.*.md）也要跟着走 —— 否则条目删了、
-    # 视图还在，右键菜单会打开一份指向已删文献的 md。
-    try:
-        import kbviews as KV
-        KV.purge(key)
-    except Exception:  # noqa: BLE001
-        pass
+        tombstones = {row["key"]: row["kind"] for row in conn.execute(
+            "SELECT key, kind FROM item_tombstone")}
+    except sqlite3.Error:
+        pass        # 老库还没补上墓碑表（init_db/connect 会补），按"没有墓碑"处理
 
+    # 阶段③：从回收站还原回来了（key 回到 live，且留着 kind='trashed' 的墓碑）
+    for key, kind in sorted(tombstones.items()):
+        if kind == "trashed" and key in live_keys:
+            result = _restore_key(conn, key, (live_versions or {}).get(key))
+            if result["ok"]:
+                restored.append(key)
+                # 探到 id 已被别人复用（T0-11）：数据库行**没有**复原，只能等增量重抽。
+                # 记下来给构建收尾报一声 —— 这件事必须看得见，静默降级等于没修。
+                if result.get("degraded"):
+                    degraded.append(
+                        f"{key}（{result.get('note') or 'id 已被复用'}）")
+            else:
+                # 失败必须报出来：这里原来**没有 else** —— 一次失败的还原连日志都不留，
+                # 条目就留在归档里、每轮重试、每轮静默失败（本机在 items.item_id 撞
+                # UNIQUE 那条路径上实测到过：`IntegrityError: UNIQUE constraint
+                # failed: items.item_id`）。
+                log(f"  [!!] 还原 {key} 失败：{result['why']}")
 
-def _purge_orphans(conn, live_keys: set[str]) -> list[str]:
-    """清掉"Zotero 里已经没有、知识库里还留着"的条目。返回被清的 key。
+    handled: set[str] = set()
+    for key in sorted(kb_keys):
+        if key in live_keys or key in handled:
+            continue
+        if key in trashed_keys:
+            result = _archive_key(conn, key)
+            if result["ok"]:
+                archived.append(key)
+            else:
+                log(f"  [!!] 归档 {key} 失败：{result['why']}")
+        else:
+            result = _delete_archived(conn, key)
+            if result["ok"]:
+                deleted.append(key)
+            else:
+                log(f"  [!!] 删除 {key} 失败：{result['why']}")
+        handled.add(key)
 
-    ⚠ 这是个**既有缺陷的修补**：原来 `_purge_item` 只在"条目还在、但 PDF 没了"
-    时被调用，而"用户在 Zotero 里把整条删了"没有任何路径会清理它 ——
-    增量判断只比对 `items.version`，条目都不在了自然也没得比。结果是孤儿
-    永远留在知识库里，`kb_search` 还能搜到一篇**已经被删掉的文献**。
-
-    触发场景很常见：用户在 Zotero 里删掉一篇不想要的文献、或者（像刚才那样）
-    一次验收测试建了又删。**删了就该搜不到** —— 这是用户对"删除"的预期。
-    """
-    dead = []
-    for row in conn.execute("SELECT key FROM items"):
-        k = row["key"]
-        if k not in live_keys:
-            _purge_key(conn, k)
-            dead.append(k)
-    return dead
+    # 阶段②的另一半：库里已经没有行，但 kb/trash 下还留着目录
+    for key in TR.archived_keys():
+        if key in live_keys or key in trashed_keys or key in handled:
+            continue
+        result = _delete_archived(conn, key)
+        if result["ok"]:
+            deleted.append(key)
+    return {"archived": archived, "deleted": deleted, "restored": restored,
+            "degraded": degraded}
 
 
 def _purge_item(conn, item) -> None:
-    """把一个条目从知识库里**彻底移除**。
-
-    删：切片、FTS、向量、图注、正文文件、文献卡片、`item_health` 体检行，
-    以及 `items` 元数据行本身。
+    """条目**还在 Zotero 里**、只是没有 PDF 附件了：把它从知识库里摘掉。
 
     给"没有 PDF 附件的条目"用（用户要求：没有 PDF 的就不要它）。
     **必须主动清**：用户删掉 PDF 附件之后，这些派生数据不会自己消失 ——
     增量判断只看 `items.version`，而删附件不一定改它。不清的话用户会看到
     "我明明没有 PDF，怎么还能搜到"。
 
+    ⚠ 这一条**不归档、不留墓碑**（走 `trash.discard_live`）：它没有被删，
+      还在 Zotero 里；留了 kind='trashed' 的墓碑，下一轮对账就会把它当成
+      "从回收站还原"搬回来 —— 删掉 PDF 的条目会每轮复活一次。
+
     ⚠ 不动 `experience` / `item_weight`：那是**用户自己记的数据**
     （用过什么方法、效果如何、标没标重点），不属于"构建产物"。
-    重建知识库从来不该丢经验，这里也一样。**孤儿清理也不动它们** ——
+    重建知识库从来不该丢经验，删除也一样。**对账也不动它们** ——
     用户可能给一篇已删文献记过经验，那是有价值的记录。
     """
-    _purge_key(conn, item.key)
+    TR.discard_live(conn, item.key)
 
 
 def _upsert_item(conn, item, source: str, built_at: str) -> None:

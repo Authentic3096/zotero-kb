@@ -18,9 +18,11 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import tkinter as tk
 from tkinter import messagebox, ttk
+
+from .common import ROOT  # noqa: F401 —— 顺便完成 offline\ 的 sys.path 引导
+import procrun as PR  # noqa: E402
 
 
 def level_rows(key: str) -> list[dict]:
@@ -210,7 +212,7 @@ class LevelPicker(tk.Toplevel):
             # ⚠ explorer 的 /select 要求路径**紧跟**在 `/select,` 后面，
             #   所以这里拆成两个 argv（Python 会为含空格的那个自动加引号），
             #   这是本机实测能选中文件的形式。
-            subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
+            PR.spawn(["explorer", "/select,", os.path.normpath(path)])
         except Exception:  # noqa: BLE001
             # 退一步：至少把所在目录打开（用户自己一眼就能看到那个文件）
             try:

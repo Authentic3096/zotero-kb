@@ -30,9 +30,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import prompts as PR  # noqa: E402 —— 提示词注册表（用户可改，改完立即生效）
 import schemas as S  # noqa: E402
+import settings as SETT  # noqa: E402 —— .env 覆盖层（进程环境变量 > .env）
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
-DEFAULT_MODEL = os.environ.get("KB_LOCAL_MODEL", "qwen3:4b-instruct")
+# ⚠ 这两个走 settings：**参数类**（地址 / 模型名），不是密钥 —— 可以写进 .env，
+#   这样"面板还没起来、要先改地址"时有一层文件可改。密钥（api_key）**不进 .env**，
+#   仍然只在 kb/llm-config.json 里（见 settings.py 的边界说明）。
+OLLAMA_HOST = SETT.get("OLLAMA_HOST") or "http://127.0.0.1:11434"
+DEFAULT_MODEL = SETT.get("KB_LOCAL_MODEL") or "qwen3:4b-instruct"
 
 # ---------------------------------------------------------------- 模型配置
 #
@@ -232,7 +236,7 @@ def pick_model(preferred: str = "", host: str = "") -> str:
     注意：这里**不要**去临时改全局 OLLAMA_HOST —— Python 会报
     "name is used prior to global declaration"，而且改全局本来就脏。
     """
-    preferred = preferred or os.environ.get("KB_LOCAL_MODEL", "")
+    preferred = preferred or SETT.get("KB_LOCAL_MODEL", "")
     ok, models = _ollama_tags(host)
     if not ok or not models:
         return ""

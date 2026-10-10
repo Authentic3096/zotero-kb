@@ -27,16 +27,20 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "offline"))
 
 import schemas as S  # noqa: E402
+import settings as _ST  # noqa: E402（.env 覆盖层，本工具自己的设置）
 
 ZOTERO_DIR = os.path.dirname(S.ZOTERO_DB)          # …\<Zotero 数据目录>\Zotero
 PROFILE_DIR = os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "Zotero",
                            "Zotero", "Profiles")
-BACKUP_ROOT = r"D:\ZoteroBackup"
+BACKUP_ROOT = (_ST.get("ZOTERO_BACKUP_ROOT")
+               or os.path.join(os.path.expanduser("~"), "ZoteroBackup"))
+# 备份目录：`ZOTERO_BACKUP_ROOT`（环境变量或 .env）> 用户目录下的 ZoteroBackup。
+# 原来写死 `D:\ZoteroBackup`（旧机器）—— 换机器后那个盘符可能根本不存在。
 
 OK, WARN, BAD = "  [OK]  ", "  [!!]  ", "  [XX]  "
 
 
-ZOTERO_EXE = r"D:\Application\Zotero\zotero.exe"
+ZOTERO_EXE = S.resolve_zotero()   # 自动探测（ZOTERO_EXE 环境变量/.env → 常见位置 → 注册表）；找不到是 ""
 
 
 def _ver_tuple(text: str) -> tuple:
@@ -331,7 +335,8 @@ def cmd_check() -> int:
         print("检查通过，可以升级。")
     print("\n升级方式（二选一）：")
     print("  A. Zotero 里：帮助 → 检查更新（最省事，能看到进度）")
-    print("  B. 官网下载 10.x 安装包，直接覆盖安装到 D:\\Application\\Zotero")
+    print("  B. 官网下载 10.x 安装包，覆盖安装到当前 Zotero 目录"
+          + (f"（{os.path.dirname(ZOTERO_EXE)}）" if ZOTERO_EXE else ""))
     print("     官方说明：可以直接覆盖安装新版本，不会丢数据。")
     print("  升级完跑一次：python tools/zotero_upgrade.py verify")
     print("=" * 68)

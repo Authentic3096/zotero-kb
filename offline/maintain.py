@@ -5,6 +5,9 @@
     python offline/maintain.py backup     # 备份 index.db 与经验层
     python offline/maintain.py reindex-fst   # 只重建 FTS 与词元表（不动向量）
     python offline/maintain.py vacuum     # 整理数据库
+    python offline/maintain.py reconcile  # 与 Zotero 对账巡检（**默认只读**）
+    python offline/maintain.py reconcile --apply 1   # 只处理第 1 项，逐条确认
+    python offline/maintain.py reconcile --apply --yes   # 全部可动项，免确认（慎用）
 
 自检是给"换机器 / 隔了几个月回来"用的：它会明确指出哪一环断了、怎么修。
 """
@@ -12,8 +15,10 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -445,14 +450,451 @@ def vacuum() -> int:
     return 0
 
 
+# ---------------------------------------------------------------- 对账巡检
+#
+# 目标：把"知识库 vs Zotero 的差异"变成一条**只读报告**。
+# 默认什么也不动；--apply 才动，而且**逐条二次确认**。
+#
+# ⚠ 本命令**不重复实现**删除/归档/还原 —— 那些是 offline/trash.py 的事
+#   （convert.py 的删除对账也是调它）。这里只做发现、统计、展示；要动数据时
+#   调 trash 的既有函数。经验层的失效引用**永远只提示**（那是用户手记）。
+
+RECONCILE_TITLES = {
+    1: "KB 有、Zotero 没有（真删 / 待清理）",
+    2: "未处理的合并映射（item_merge 里 applied_at 为空）",
+    3: "经验里的失效引用（只提示，绝不自动改）",
+    4: "磁盘残留（没有对应 items 行的产物）",
+    5: "kb/trash/ 归档占用（可回收空间）",
+}
+# --apply 真正能动的项：2 属后续任务（relink），3 是用户手记 —— 这两项永不改
+RECONCILE_APPLICABLE = (1, 4, 5)
+# Zotero 条目 key 的形状（8 位大写字母数字）。用它筛残留文件，避免误伤
+# "README.md" 这种不是条目的东西。
+_KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
+
+
+def _human(n: int) -> str:
+    if n >= 1024 ** 3:
+        return "%.2f GB" % (n / 1024 ** 3)
+    if n >= 1024 ** 2:
+        return "%.1f MB" % (n / 1024 ** 2)
+    if n >= 1024:
+        return "%.0f KB" % (n / 1024)
+    return "%d B" % n
+
+
+def _walk_size(path: str) -> int:
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except OSError:
+                pass
+    return total
+
+
+def _preview(seq, n: int = 8) -> str:
+    items = [str(x) for x in seq]
+    if not items:
+        return "（无）"
+    head = "、".join(items[:n])
+    return head + ("……" if len(items) > n else "")
+
+
+def _trash_mod():
+    """offline/trash.py —— 归档/还原/彻底删除的**唯一实现**（别自己再写一套）。"""
+    import trash as TR       # noqa: PLC0415
+    return TR
+
+
+def _zotero_keys():
+    """Zotero 侧的条目集合：(live, trashed, err)。
+
+    读不到（没装 Zotero / 数据目录不对 / 快照失败）时两个集合都是 None、err 非空
+    —— 调用方据此把第 1 项标成"跳过"，而不是把整库当成"Zotero 里没有"。
+    """
+    rd = None
+    try:
+        import zreader
+        rd = zreader.ZoteroReader()
+        ids = rd.top_level_items()
+        live = {it.key for it in rd.load_items(ids)}
+        trashed = set(rd.trashed_keys or ())
+        return live, trashed, ""
+    except Exception as exc:        # noqa: BLE001 —— 可选依赖/数据缺失都按"读不到"
+        return None, None, "%s: %s" % (type(exc).__name__, exc)
+    finally:
+        if rd is not None:
+            try:
+                rd.close()
+            except Exception:       # noqa: BLE001
+                pass
+
+
+def _disk_orphans(live: set) -> list:
+    """没有对应 items 行的磁盘产物：views/<key>.*、papers/<key>.*、
+    fulltext/<key>.*、mineru/<key>/。只认**像 Zotero key** 的名字。"""
+    # ⚠ 用 S.kb_dir()（= dirname(INDEX_DB)）而不是模块常量 S.KB_DIR：
+    #   它是"知识库在哪"的唯一事实定义，而且 trash.py 也按它找落点 ——
+    #   两处用不同的口径，测试里改了 INDEX_DB 就会去扫**真实**知识库。
+    kb = S.kb_dir()
+    out: list = []
+    for sub in ("views", "papers", "fulltext"):
+        for path in sorted(glob.glob(os.path.join(kb, sub, "*"))):
+            if not os.path.isfile(path):
+                continue
+            key = os.path.basename(path).split(".")[0]
+            if key in live or not _KEY_RE.match(key):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                size = 0
+            out.append({"key": key, "kind": sub, "path": path, "size": size})
+    mdir = os.path.join(kb, "mineru")
+    if os.path.isdir(mdir):
+        for name in sorted(os.listdir(mdir)):
+            path = os.path.join(mdir, name)
+            if name in live or not os.path.isdir(path) or not _KEY_RE.match(name):
+                continue
+            out.append({"key": name, "kind": "mineru", "path": path,
+                        "size": _walk_size(path)})
+    return out
+
+
+def reconcile_snapshot(conn) -> dict:
+    """只读快照：trash 体积/条数 + 磁盘残留（面板那一行与第 4/5 项共用一份口径）。"""
+    TR = _trash_mod()
+    live = {r["key"] for r in conn.execute("SELECT key FROM items")}
+    orphans = _disk_orphans(live)
+    trash_keys = TR.archived_keys()
+    return {
+        "trash_keys": trash_keys,
+        "trash_size": TR.trash_size(),
+        "orphans": orphans,
+        "orphan_keys": sorted({o["key"] for o in orphans}),
+        "orphan_size": sum(o["size"] for o in orphans),
+    }
+
+
+def reconcile_summary_line(conn) -> str:
+    """面板「知识库结构」页那一行：trash 体积 + 残留条数（永不抛）。"""
+    try:
+        snap = reconcile_snapshot(conn)
+        return ("对账：kb\\trash\\ 归档 %d 条、共 %s　·　磁盘残留 %d 个 key / %d 个文件、共 %s"
+                % (len(snap["trash_keys"]), _human(snap["trash_size"]),
+                   len(snap["orphan_keys"]), len(snap["orphans"]),
+                   _human(snap["orphan_size"])))
+    except Exception as exc:        # noqa: BLE001 —— 面板显示不该因一项统计而崩
+        return "对账：统计失败（%s: %s）" % (type(exc).__name__, exc)
+
+
+def _confirm(prompt: str, assume_yes: bool = False) -> bool:
+    """逐条二次确认。**非交互终端一律按"否"**（要真做必须显式 --yes）。"""
+    if assume_yes:
+        return True
+    try:
+        if not (sys.stdin and sys.stdin.isatty()):
+            print("      （不是交互终端：未确认，跳过这一条。"
+                  "确实要执行请加 --yes）")
+            return False
+        ans = input("      %s [y/N] " % prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+    return ans in ("y", "yes", "是")
+
+
+def _parse_apply(spec) -> set:
+    """--apply 的取值：all/空 = 全部可动项；否则按逗号取项号。"""
+    if spec is None:
+        return set()
+    text = str(spec).strip().lower()
+    if text in ("", "all", "*"):
+        return set(RECONCILE_APPLICABLE)
+    out: set = set()
+    for part in text.replace("，", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
+
+
+def reconcile(apply=None, assume_yes: bool = False, as_json: bool = False) -> int:
+    """与 Zotero 对账巡检。默认**只读**；apply 里列出的项才动，且逐条确认。
+
+    五项见 RECONCILE_TITLES。第 2 项（合并映射的 relink）属后续任务、第 3 项
+    （经验失效引用）是用户手记 —— 这两项**永不被 --apply 改动**，只报出来。
+    """
+    import experience as EX
+    import keys as K
+    TR = _trash_mod()
+
+    report: dict = {"items": {}, "applied": [], "zotero_error": ""}
+    conn = S.connect(S.INDEX_DB)
+    try:
+        kb_keys = {r["key"] for r in conn.execute("SELECT key FROM items")}
+        live, trashed, zerr = _zotero_keys()
+        report["zotero_error"] = zerr
+
+        if not as_json:
+            print("=" * 68)
+            print("知识库 ↔ Zotero 对账巡检（默认只读；--apply 才会动数据）")
+            print("=" * 68)
+            print("  知识库条目：%d　Zotero：%s"
+                  % (len(kb_keys),
+                     ("读不到（%s）" % zerr) if zerr else "在线 %d 条" % len(live)))
+
+        # ---- 1) KB 有、Zotero 没有
+        to_delete = to_archive = []
+        if zerr:
+            report["items"]["1"] = {"error": zerr}
+            if not as_json:
+                print("\n  [1] %s" % RECONCILE_TITLES[1])
+                print("      读不到 Zotero：%s" % zerr)
+                print("      这一项只能跳过（Zotero 没装 / 数据目录不对时是正常的）")
+        else:
+            to_delete = sorted(kb_keys - live - trashed)
+            to_archive = sorted(kb_keys & trashed)
+            report["items"]["1"] = {"to_delete": to_delete,
+                                    "to_archive": to_archive}
+            if not as_json:
+                print("\n  [1] %s" % RECONCILE_TITLES[1])
+                print("      待彻底删除（Zotero 两处都没有）：%d 条" % len(to_delete))
+                print("        %s" % _preview(to_delete))
+                print("      待归档（Zotero 回收站里）：%d 条" % len(to_archive))
+                print("        %s" % _preview(to_archive))
+
+        # ---- 2) 未处理的合并映射
+        rows = K.merge_rows(conn)
+        pending = [r for r in rows if not r.get("applied_at")]
+        report["items"]["2"] = {"total": len(rows), "pending": len(pending),
+                                "rows": ["%s→%s" % (r["old_key"], r["new_key"])
+                                         for r in pending]}
+        if not as_json:
+            print("\n  [2] %s" % RECONCILE_TITLES[2])
+            print("      映射表共 %d 条，其中待处理 %d 条" % (len(rows), len(pending)))
+            for r in pending[:10]:
+                print("        %s → %s（记于 %s）"
+                      % (r["old_key"], r["new_key"], r["seen_at"]))
+            print("      （relink 与权重合并属后续任务；本命令只报，不动它）")
+
+        # ---- 3) 经验里的失效引用（只提示）
+        dead: list = []
+        n_exp = 0
+        for row in conn.execute("SELECT id, item_keys FROM experience ORDER BY id"):
+            n_exp += 1
+            ref = EX.item_refs(row["item_keys"], conn)
+            for it in ref["items"]:
+                if it["status"] != EX.REF_OK and it["status"] not in (EX.REF_CYCLE,
+                                                                      EX.REF_ERROR):
+                    dead.append({"exp": row["id"], "key": it["key"],
+                                 "status": it["status"], "text": it["text"]})
+        bad_exps = sorted({d["exp"] for d in dead})
+        report["items"]["3"] = {"experiences": n_exp, "dead_keys": len(dead),
+                                "bad_experiences": bad_exps,
+                                "dead": dead}
+        if not as_json:
+            print("\n  [3] %s" % RECONCILE_TITLES[3])
+            print("      经验 %d 条，其中 %d 条挂着失效引用（共 %d 个 key）"
+                  % (n_exp, len(bad_exps), len(dead)))
+            for d in dead[:12]:
+                print("        #%s  %s" % (d["exp"], d["text"]))
+            print("      （那是用户手记，只提示、绝不自动改）")
+
+        # ---- 4/5) 磁盘残留与 trash 占用（面板那一行用同一个快照）
+        snap = reconcile_snapshot(conn)
+        orphans = snap["orphans"]
+        report["items"]["4"] = {"count": len(orphans),
+                                "size": snap["orphan_size"],
+                                "keys": snap["orphan_keys"],
+                                "by_kind": sorted({o["kind"] for o in orphans})}
+        if not as_json:
+            print("\n  [4] %s" % RECONCILE_TITLES[4])
+            print("      残留 %d 个文件/目录，共 %s"
+                  % (len(orphans), _human(snap["orphan_size"])))
+            by_kind: dict = {}
+            for o in orphans:
+                by_kind.setdefault(o["kind"], []).append(o)
+            for kind in sorted(by_kind):
+                items = by_kind[kind]
+                keys = sorted({i["key"] for i in items})
+                print("        %-9s %d 个文件 / %d 个 key / %s　例：%s"
+                      % (kind, len(items), len(keys),
+                         _human(sum(i["size"] for i in items)),
+                         _preview(keys, 6)))
+            if not orphans:
+                print("        （没有残留）")
+
+        trash_keys = snap["trash_keys"]
+        recyclable = []
+        if live is not None:
+            recyclable = [k for k in trash_keys if k not in live and k not in trashed]
+        report["items"]["5"] = {"count": len(trash_keys), "size": snap["trash_size"],
+                                "keys": trash_keys, "recyclable": recyclable}
+        if not as_json:
+            print("\n  [5] %s" % RECONCILE_TITLES[5])
+            print("      归档 %d 条，共 %s" % (len(trash_keys),
+                                              _human(snap["trash_size"])))
+            for k in trash_keys[:20]:
+                kind = (TR.tombstone(conn, k) or {}).get("kind") or "(无墓碑)"
+                print("        %s  %s  墓碑 kind=%s"
+                      % (k, _human(TR.archived_size(k)), kind))
+            if not trash_keys:
+                print("        （没有归档）")
+            elif live is None:
+                print("      读不到 Zotero，分不清哪些还能还原 —— 一律不动")
+            else:
+                print("      其中可回收（Zotero 里已没有这条）：%d 条 / %s"
+                      % (len(recyclable),
+                         _human(sum(TR.archived_size(k) for k in recyclable))))
+                print("      其余 %d 条仍在 Zotero 里（进过回收站），随时可能还原，保留"
+                      % (len(trash_keys) - len(recyclable)))
+
+        # ---- --apply：按项执行，逐条确认
+        want = _parse_apply(apply)
+        if not want:
+            if not as_json:
+                print("\n" + "=" * 68)
+                print("  只读报告结束（没有改动任何东西）。")
+                print("  要处理某一项：--apply <项号>（逐条确认）或 --apply --yes")
+                print("=" * 68)
+            if as_json:
+                print(json.dumps(report, ensure_ascii=False, indent=1))
+            return 0
+
+        if not as_json:
+            print("\n" + "-" * 68)
+
+        for n in sorted(want):
+            if n == 2 or n == 3:
+                if not as_json:
+                    extra = ("经验是用户手记，只提示 —— 本命令永不改它" if n == 3
+                             else "relink 与权重合并属后续任务，本命令不动它")
+                    print("  [项 %d] %s：%s" % (n, RECONCILE_TITLES.get(n), extra))
+                continue
+            if n == 1:
+                if zerr:
+                    if not as_json:
+                        print("  [项 1] 读不到 Zotero，跳过")
+                    continue
+                acts = [("delete", k) for k in to_delete] \
+                    + [("archive", k) for k in to_archive]
+                if not acts:
+                    if not as_json:
+                        print("  [项 1] 没有要处理的条目")
+                    continue
+                if not as_json:
+                    print("  [项 1] 有 %d 条要处理（逐条确认）：" % len(acts))
+                for how, key in acts:
+                    word = ("归档到 kb\\trash\\<key>\\（可从回收站还原）"
+                            if how == "archive" else
+                            "彻底删除（清归档目录、墓碑改 deleted）")
+                    if not _confirm("%s：%s？" % (key, word), assume_yes):
+                        if not as_json:
+                            print("      跳过 %s" % key)
+                        continue
+                    res = (TR.archive(conn, key) if how == "archive"
+                           else TR.delete_archived(conn, key))
+                    ok = bool(res.get("ok"))
+                    if not as_json:
+                        print("      %s %s %s %s" % ("OK " if ok else "XX ", key,
+                                                     how,
+                                                     "" if ok else res.get("why")))
+                    if ok:
+                        report["applied"].append({"item": 1, "key": key,
+                                                  "action": how})
+                continue
+            if n == 4:
+                keys = snap["orphan_keys"]
+                if not keys:
+                    if not as_json:
+                        print("  [项 4] 没有磁盘残留")
+                    continue
+                if not as_json:
+                    print("  [项 4] 有 %d 个残留 key 要清理（逐条确认）：" % len(keys))
+                for key in keys:
+                    if not _confirm("%s：删除它的残留产物（views/papers/fulltext/"
+                                    "mineru，不动别的东西）？" % key, assume_yes):
+                        if not as_json:
+                            print("      跳过 %s" % key)
+                        continue
+                    # 复用"条目还在、只是没有 PDF"的那条清理路径：
+                    # 只删派生文件 + 派生行，**不留墓碑**（这些 key 本来就不在库里）
+                    res = TR.discard_live(conn, key)
+                    ok = bool(res.get("ok"))
+                    if not as_json:
+                        print("      %s %s %s" % ("OK " if ok else "XX ", key,
+                                                  "" if ok else res.get("why")))
+                    if ok:
+                        report["applied"].append({"item": 4, "key": key,
+                                                  "action": "discard"})
+                continue
+            if n == 5:
+                if live is None:
+                    if not as_json:
+                        print("  [项 5] 读不到 Zotero，无法判断哪些还能还原 —— 不动")
+                    continue
+                if not recyclable:
+                    if not as_json:
+                        print("  [项 5] 没有可回收的归档（其余都还可能需要还原）")
+                    continue
+                if not as_json:
+                    print("  [项 5] 有 %d 条可回收（Zotero 里已没有这条）：" %
+                          len(recyclable))
+                for key in recyclable:
+                    if not _confirm("清理归档 %s（%s）？Zotero 里已彻底没有它，"
+                                    "清掉不影响还原"
+                                    % (key, _human(TR.archived_size(key))),
+                                    assume_yes):
+                        if not as_json:
+                            print("      跳过 %s" % key)
+                        continue
+                    res = TR.delete_archived(conn, key)
+                    ok = bool(res.get("ok"))
+                    if not as_json:
+                        print("      %s %s 释放 %s" % ("OK " if ok else "XX ", key,
+                                                      _human(res.get("freed") or 0)))
+                    if ok:
+                        report["applied"].append({"item": 5, "key": key,
+                                                  "action": "purge"})
+                continue
+            if not as_json:
+                print("  [项 %d] 没有这一项（可动的是 %s）"
+                      % (n, "、".join(str(x) for x in RECONCILE_APPLICABLE)))
+
+        if not as_json:
+            print("-" * 68)
+            if report["applied"]:
+                print("  已处理 %d 项：" % len(report["applied"]))
+                for a in report["applied"]:
+                    print("    项%s  %s  %s" % (a["item"], a["key"], a["action"]))
+            else:
+                print("  这一次没有改动任何数据。")
+        if as_json:
+            print(json.dumps(report, ensure_ascii=False, indent=1))
+        return 0
+    finally:
+        conn.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="知识库维护")
     parser.add_argument("action",
                         choices=["check", "stats", "backup", "reindex-fst",
-                                 "vacuum", "views"],
+                                 "vacuum", "views", "reconcile"],
                         nargs="?", default="check")
     parser.add_argument("--key", default="",
                         help="views 用：只给这一篇补（默认全部）")
+    parser.add_argument("--apply", nargs="?", const="all", default=None,
+                        metavar="N",
+                        help="reconcile 用：处理第 N 项（可逗号分隔，如 1,4）；"
+                             "不带值 = 全部可动项。默认只读")
+    parser.add_argument("--yes", action="store_true",
+                        help="reconcile 用：跳过逐条确认（慎用；破坏性动作）")
+    parser.add_argument("--json", action="store_true",
+                        help="reconcile 用：输出 JSON（供面板/脚本消费）")
     args = parser.parse_args()
     if args.action == "check":
         return check()
@@ -464,6 +906,8 @@ def main() -> int:
         return reindex_fst()
     if args.action == "views":
         return views(args.key)
+    if args.action == "reconcile":
+        return reconcile(apply=args.apply, assume_yes=args.yes, as_json=args.json)
     return vacuum()
 
 

@@ -29,13 +29,15 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import schemas as S  # noqa: E402
+import procrun as PR  # noqa: E402 —— 面板/服务里跑子进程的唯一入口
 
 # 探测结果缓存：键是 exe 路径（"" = 自动探测），值 {"at": 时间戳, "data": {...}}
 _CACHE: dict[str, dict] = {}
 PROBE_TTL = 60.0
 
-# Windows 上别让子进程弹黑框（插件/服务是 pythonw 起的，弹一个 console 很丑）
-_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+# Windows 上别让子进程弹黑框（插件/服务是 pythonw 起的，弹一个 console 很丑）。
+# 已统一由 procrun 负责；这个别名留着给可能的外部引用，新代码请用 procrun。
+_NO_WINDOW = PR.CREATE_NO_WINDOW
 
 
 def _cache_get(key: str) -> dict | None:
@@ -63,20 +65,22 @@ def _run(args: list[str], timeout: float = 90.0,
     for k, v in (env_extra or {}).items():
         if v:
             env[k] = v
+    # ⚠ 走 procrun（stdin=DEVNULL 等）而不是裸 subprocess.run：面板/服务是
+    #   pythonw 起的、没有控制台，裸调用会让子进程继承坏句柄，
+    #   报 [WinError 61] 句柄无效（2026-10-10 用户报的）。
     try:
-        p = subprocess.run(
-            args, capture_output=True, timeout=timeout, env=env,
-            encoding="utf-8", errors="replace",
-            creationflags=_NO_WINDOW,
-        )
+        r = PR.run(args, timeout=timeout, env=env, merge_stderr=True)
     except subprocess.TimeoutExpired:
         return 124, f"超时（>{timeout:.0f} 秒）"
     except FileNotFoundError:
         return 127, "找不到可执行文件"
     except OSError as exc:
         return 126, f"{type(exc).__name__}: {exc}"
-    out = (p.stdout or "") + ("\n" + p.stderr if p.stderr else "")
-    return p.returncode, out
+    out = r.stdout or ""
+    if r.method and r.method != PR._METHOD_1:
+        # "用了哪一档"必须能看见：走了兜底档往往就是句柄/环境的线索
+        out = (out + "\n" if out else "") + f"（子进程档位：{r.method}）"
+    return r.returncode, out
 
 
 def kit_python(exe: str) -> str:
@@ -795,37 +799,12 @@ def _run_stream(args: list[str], timeout: float = 3600.0,
     ⚠ 超时用 `communicate(timeout=)` 兜底 + 杀进程树（子进程还有孙进程）。
     """
     env = dict(os.environ)
-    tail: list[str] = []
-    p = None
-    try:
-        p = subprocess.Popen(args, stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True,
-                             encoding="utf-8", errors="replace",
-                             creationflags=_NO_WINDOW, env=env)
-        deadline = time.time() + timeout
-        for line in p.stdout:                      # type: ignore[union-attr]
-            s = line.rstrip()
-            tail.append(s)
-            if len(tail) > 40:
-                tail.pop(0)
-            if log and s.strip():
-                try:
-                    log("    " + s[:200])
-                except Exception:      # noqa: BLE001
-                    pass
-            if time.time() > deadline:
-                raise subprocess.TimeoutExpired(args, timeout)
-        return p.wait(), "\n".join(tail)
-    except subprocess.TimeoutExpired:
-        if p:
-            try:
-                subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"],
-                               capture_output=True, creationflags=_NO_WINDOW)
-            except Exception:      # noqa: BLE001
-                p.kill()
-        return 124, "超时（>" + str(int(timeout)) + " 秒）：" + "\n".join(tail[-6:])
-    except Exception as exc:      # noqa: BLE001
-        return 126, f"{type(exc).__name__}: {exc}"
+    # 统一走 procrun.stream：stdin=DEVNULL（pythonw 下没有控制台，裸 Popen 会让
+    # 子进程继承坏句柄 → WinError 61），并自带超时杀进程树。
+    code, tail, method = PR.stream(args, timeout=timeout, env=env, log=log)
+    if method and method != PR._METHOD_1:
+        tail = (tail + "\n" if tail else "") + f"（子进程档位：{method}）"
+    return code, tail
 
 
 def shutil_rm(path: str) -> None:

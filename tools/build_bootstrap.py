@@ -71,6 +71,9 @@ SRC_ORDER = [
     #   这个是只读展示，不发请求、不改数据。所以 `ItemPaneManager` 重新出现是有意的，
     #   check_plugin.py 的反向清单里只保留"对话窗格"那批函数名（paneSend/chatOf…）。
     "20-kbview",
+    # 文献列表的两列「已建知识库」「分节纲要」（T0-8）—— 数据走
+    # 本地服务的 GET /col-status，一次全量进内存（同 16-weightcol 的套路）。
+    "21-kbcols",
     "99-bootstrap",
 ]
 

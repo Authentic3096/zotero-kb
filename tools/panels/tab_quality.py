@@ -357,17 +357,18 @@ class QualityTab:
 
         def work():
             sys.path.insert(0, offline)
-            import subprocess
+            import procrun as PR      # 面板是 pythonw 起的，统一走它（句柄安全）
             py = sys.executable
             root = os.path.dirname(offline)
             # ---- 第一步：重建
             self.say("[重建+修复] ① 全量重建中…（约 2~3 分钟）")
             try:
-                r = subprocess.run(
+                r = PR.run(
                     [py, "-X", "utf8", os.path.join(offline, "convert.py"),
                      "--full"],
-                    cwd=root, capture_output=True, text=True,
-                    encoding="utf-8", errors="replace", timeout=3600)
+                    cwd=root, merge_stderr=False, timeout=3600,
+                    on_tier=lambda m: self.say(
+                        f"[procrun] 子进程改用兜底档位：{m}"))
                 tail = (r.stdout or "").strip().split("\n")[-6:]
                 for ln in tail:
                     if ln.strip():

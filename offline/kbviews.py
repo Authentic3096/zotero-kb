@@ -29,7 +29,6 @@ items/figures/experience 都落库了）；想单独补齐用
 
 from __future__ import annotations
 
-import glob
 import os
 import re
 import sys
@@ -210,7 +209,9 @@ def _render_outline(key: str) -> str:
     if not data or not data.get("sections"):
         return (f"# {key} 还没有分节纲要\n\n"
                 f"纲要 = 全文与摘要之间的中间层（按章节给要点 + 页码范围）。\n"
-                f"生成一次：面板「分类建议」页点「生成纲要（分节）」，"
+                f"生成一次：在 Zotero 里右键这篇文献 →「连接到本地模型」"
+                f"→「生成分节纲要」，"
+                f"或用面板「AI」页的「生成纲要」按钮，"
                 f"或命令行 `python offline/digest.py {key}`。\n")
     return D.render(key, data)
 
@@ -495,14 +496,3 @@ def all_keys(s=None) -> list[str]:
             except Exception:  # noqa: BLE001
                 pass
 
-
-def purge(key: str) -> list[str]:
-    """删掉某篇的全部生成型视图（条目被彻底移除时调用）。"""
-    gone = []
-    for path in glob.glob(os.path.join(S.VIEWS_DIR, f"{key}.*.md")):
-        try:
-            os.remove(path)
-            gone.append(path)
-        except OSError:
-            pass
-    return gone

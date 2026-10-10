@@ -2,6 +2,12 @@
 
 只做一件事：把 Zotero 的 SQLite 结构翻译成 schemas.py 里的数据类型。
 不写任何文件、不碰原库 —— 构造时先做快照副本，后续全部读副本。
+
+除了条目元数据，本模块还负责读**生命周期信号**（都是 Zotero 自己写下的、不用猜）：
+  · `trashed_keys` —— 进了回收站（`deletedItems`）的 key，供两段式删除区分
+    "归档"与"彻底删"（offline/trash.py）；
+  · `merged_keys()` —— 合并留下的 `dc:replaces` 关系，供 `offline/keys.py` 落成
+    知识库里的权威映射（本机实测 6 条）。
 """
 
 from __future__ import annotations
@@ -79,6 +85,14 @@ class ZoteroReader:
         self.storage = S.ZOTERO_STORAGE
         # 已删除的条目不进知识库
         self.deleted = {r[0] for r in self.conn.execute("SELECT itemID FROM deletedItems")}
+        # 回收站里的条目 **key**（本次新加，不改上面那条"排除"语义）。
+        #
+        # 为什么要单独暴露：Zotero 侧"进回收站"和"在回收站里彻底删"是两件事
+        # ——前者 key 还在 items 表里、只是多了 deletedItems 一行；后者两处都没了。
+        # 知识库要按这两种情况分别做"归档"与"删除"（方案附录 H.1），所以除了
+        # itemID 还必须拿到 key。回收站里也可能躺着附件/笔记，它们的 key 一并返回，
+        # 对账那边只关心"这条 key 在不在知识库里"，多余的无害。
+        self.trashed_keys = self._keys_for_ids(self.deleted)
         # 上一次 `fulltext_for` 关于缓存的一句话结论（"异域脚本 12.3%" 之类）。
         # 正文是从哪来的只看得到 fulltext_src，看不出**为什么**没选另一条路；
         # 排障时要能回答"这篇为什么走了 PyMuPDF"，所以留这一格。
@@ -104,6 +118,73 @@ class ZoteroReader:
             """
         ).fetchall()
         return [r[0] for r in rows if r[0] not in self.deleted]
+
+    # ------------------------------------------------------------ 合并关系
+
+    def merged_keys(self, predicate: str = "dc:replaces") -> tuple[dict[str, str], int]:
+        """Zotero 的合并关系：`被合并掉的 key → 保留项 key`。
+
+        Zotero 做「Merge Items」时在**保留项**上写一条 `itemRelations` 行
+        （本机实测：6 条，谓词全是 `dc:replaces`）。读它就能拿到精确的
+        `old → new` 映射 —— 不用猜、不花钱（方案附录 G.1）。
+
+        ⚠ **谓词按名字取，不写死 predicateID**：`relationPredicates` 现在确实
+          只有一条（ID 挂在 1 上），但那是 Zotero 的实现细节；一旦库里出现第二种
+          关系，"取 ID=1"就会开始返回错的东西，而且不报错。
+        ⚠ object 是 **URI 不是 key**：`http://zotero.org/users/<uid>/items/<KEY>`。
+          路径倒数第二段必须是 `items`（群组库是 `/groups/<id>/items/<KEY>`），
+          尾段才是 key —— 直接 `rsplit("/")` 会把别的形态的 URI 也当成映射收进来。
+        ⚠ **形态意外的行跳过、不抛**：本方法是"补齐知识库"的一环，Zotero 里出现
+          没见过的关系形态不该让整轮构建挂掉。所以返回 `(映射, 跳过条数)`，
+          由调用方决定要不要报出来。
+
+        只读：不写 Zotero 库，也不碰知识库（落库是 `offline/keys.py` 的事）。
+        """
+        out: dict[str, str] = {}
+        try:
+            rows = self.conn.execute(
+                """
+                SELECT i.key AS holder, r.object AS object
+                FROM itemRelations r
+                JOIN items i ON i.itemID = r.itemID
+                JOIN relationPredicates p ON p.predicateID = r.predicateID
+                WHERE p.predicate = ?
+                """,
+                (predicate,),
+            ).fetchall()
+        except sqlite3.Error:
+            # 老库/精简库里没有这两张表：当"没有合并"处理，别让调用方炸
+            return {}, 0
+        skipped = 0
+        for row in rows:
+            # ⚠ 方向别搞反（本机实测踩到）：**保留项持有关系、object 指向被并掉的那条**。
+            #   所以 holder 才是 new_key、URI 尾段才是 old_key。反过来的话映射表会
+            #   写成 PALT487S → N38Y49NF，于是"合并后的项"被解析到一个已不存在的
+            #   key 上 —— 而且因为 old_key 是主键，两条关系还会撞成一行（6 条只剩 4 行）。
+            old_key = self._item_key_from_uri(row["object"])
+            new_key = str(row["holder"] or "")
+            if not old_key or not new_key:
+                skipped += 1
+                continue
+            out[old_key] = new_key
+        return out, skipped
+
+    @staticmethod
+    def _item_key_from_uri(uri: str) -> str:
+        """从 `…/items/<KEY>` URI 里取 key；形态对不上返回 ""（由调用方跳过）。"""
+        parts = [p for p in str(uri or "").split("/") if p]
+        if len(parts) >= 2 and parts[-2] == "items":
+            return parts[-1]
+        return ""
+
+    def _keys_for_ids(self, item_ids: set[int]) -> set[str]:
+        """itemID → key（只查 Zotero 的 items 表，不碰知识库）。"""
+        if not item_ids:
+            return set()
+        ids = sorted(item_ids)
+        ph = ",".join("?" * len(ids))
+        return {r["key"] for r in self.conn.execute(
+            f"SELECT key FROM items WHERE itemID IN ({ph})", ids)}
 
     def load_items(self, item_ids: list[int] | None = None) -> list[S.Item]:
         ids = self.top_level_items() if item_ids is None else [

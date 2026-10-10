@@ -15,13 +15,38 @@ import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
 from .common import (
-    CREATE_NO_WINDOW,
     ENV,
     PY,
     ROOT,
     apply_ui_fonts,
     ts,
 )
+
+# 面板/服务里跑子进程的统一入口（stdin=DEVNULL，绕开 pythonw 的坏句柄）
+import procrun as PR  # noqa: E402
+
+
+def env_status_label(ok: bool, path: str, meta: dict) -> str:
+    """运行环境页某一项后面那行小字（存在性 + 来源 + 谁盖住了谁）。
+
+    抽成模块级纯函数：面板显示与验收脚本要**同一份**措辞（用户 2026-10-10 的
+    要求：两边都写过时要明说谁被覆盖），界面文案不允许有两处实现。
+    """
+    label = "✓ 存在" if ok else ("✗ 找不到" if path else "（没填）")
+    # 来源必须**看得见**（用户要求）：默认/自动探测/运行时设置/.env/环境变量
+    # —— 否则"改了 .env 没生效"这类问题无从下手。
+    src = (meta or {}).get("source") or ""
+    if src:
+        label += f"（来源：{src}）"
+    # .env 与面板设置同为"用户可以手改"的档位，光看来源分不清"另一个地方也
+    # 写了但没生效" —— 逐个说清。
+    for sh in (meta or {}).get("shadowed") or []:
+        who = sh.get("source") or ""
+        if who == ".env":
+            label += f"（.env 里也写了，被『{src or '其他档'}』覆盖，未生效）"
+        else:
+            label += f"（{who}里也写过，被『{src or '.env'}』覆盖，未生效）"
+    return label
 
 
 class AppBase:
@@ -244,7 +269,15 @@ class AppBase:
         tip = {"win": None}
 
         def show(_e=None):
-            if tip["win"] or not text:
+            if tip["win"]:
+                return
+            # ⚠ 文案可以是字符串，也可以是**返回字符串的函数**：引导按钮
+            #   要等后台探测回来才知道本机装没装，文案是后到的（2026-10-10）。
+            try:
+                msg = text() if callable(text) else text
+            except Exception:      # noqa: BLE001
+                msg = ""
+            if not msg:
                 return
             try:
                 x = widget.winfo_rootx() + 12
@@ -252,7 +285,7 @@ class AppBase:
                 w = tk.Toplevel(widget)
                 w.wm_overrideredirect(True)
                 w.wm_geometry(f"+{x}+{y}")
-                tk.Label(w, text=text, background="#ffffe0",
+                tk.Label(w, text=msg, background="#ffffe0",
                          relief="solid", borderwidth=1,
                          font=(self.ui_font, 9), padx=8, pady=4,
                          justify="left").pack()
@@ -330,6 +363,9 @@ class AppBase:
         self.tab_parse, _ = self._tab_panes(nb, "  PDF 解析  ")
         self.tab_quality, _ = self._tab_panes(nb, "  损坏查询  ")
         self.tab_meta, _ = self._tab_panes(nb, "  元数据  ")
+        # 「分节纲要」（2026-10-10）：像「元数据」那样的管理入口 —— 一屏看清
+        # 全库谁有纲要、谁没有、文件在不在，能生成/强制重做/补渲染/删除。
+        self.tab_outline, _ = self._tab_panes(nb, "  分节纲要  ")
         self.tab_adv, self.adv_out = self._tab_panes(
             nb, "  高级  ", split=" 输出（拖分隔线调） ")
         self.tab_prompts, self.prompt_out = self._tab_panes(
@@ -346,6 +382,7 @@ class AppBase:
         self._build_ai_tab()
         self._build_quality_tab()
         self._build_meta_tab()
+        self._build_outline_tab()
 
         self._build_env_tab()
         self._build_parse_tab()
@@ -598,12 +635,11 @@ class AppBase:
 
         def worker():
             try:
-                self.proc = subprocess.Popen(
+                self.proc = PR.popen(
                     [PY, "-X", "utf8", *args],
-                    cwd=ROOT, env=ENV,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, encoding="utf-8", errors="replace",
-                    creationflags=CREATE_NO_WINDOW,
+                    cwd=ROOT, env=ENV, merge_stderr=True,
+                    on_tier=lambda m: self.out_queue.put(
+                        ("log", f"[procrun] 子进程改用兜底档位：{m}")),
                 )
                 for line in self.proc.stdout:  # type: ignore[union-attr]
                     self.out_queue.put(("log", line.rstrip()))
@@ -640,6 +676,8 @@ class AppBase:
                     self._apply_env(payload)
                 elif kind == "papers":
                     self._apply_paper_list(payload)
+                elif kind == "outline_rows":
+                    self._apply_outline_rows(payload)
                 elif kind == "dialog":
                     title, body = payload
                     self._show_dialog(title, body)
@@ -680,13 +718,14 @@ class AppBase:
         ⚠ 输入框里只放**裸路径**（不带 "✓/✗" 前缀）：这三个框现在是可编辑、
           可保存的，带前缀会把前缀一起写进配置。存不存在由旁边的小字说明。
         """
+        sources = info.get("_sources") or {}
         for key, var in self.env_vars.items():
             p = info.get(key) or ""
             ok = bool(p) and os.path.exists(p)
             var.set(p)
             if key in getattr(self, "env_ok", {}):
-                self.env_ok[key].set("✓ 存在" if ok else
-                                     ("✗ 找不到" if p else "（没填）"))
+                self.env_ok[key].set(
+                    env_status_label(ok, p, sources.get(key) or {}))
         hint = []
         if info.get("_server"):
             hint.append("这些值是正在运行的本机服务报的。")
@@ -694,6 +733,21 @@ class AppBase:
             hint.append("本机服务没在跑，上面是面板自己探测的结果"
                         "（点「启动本地服务」可以拉起它）。")
         hint.append(f"知识库位置：{info.get('_kb') or self.kb_dir()}")
+        # .env 覆盖层：位置 + 有没有生效（写错了要在这里看得见）
+        envfile = info.get("_envfile") or {}
+        if envfile:
+            keys = envfile.get("keys") or []
+            hint.append(
+                f"覆盖层 .env：{envfile.get('path') or '(未解析)'} —— "
+                + ("生效的键：" + "、".join(keys) if keys else "当前没有生效的键"))
+        # 被否掉的高优先档（例如 .env 里填了一个不存在的路径）**明说**，
+        # 别让用户以为"写了没用"。逐条列出来，值本身也带上。
+        warns = []
+        for key, meta in (sources or {}).items():
+            for bad in (meta or {}).get("rejected") or []:
+                warns.append(f"⚠ {key}：{bad.get('source')} 里填的 "
+                             f"{bad.get('value')} 已忽略（{bad.get('why')}）")
+        hint += warns
         # MinerU 是可选组件：只写"✓ 存在"没意义，要写它**能不能干活**
         # （版本/GPU/档位），否则用户没法判断该不该动它。
         if info.get("_mineru"):

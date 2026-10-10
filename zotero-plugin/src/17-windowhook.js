@@ -30,6 +30,10 @@ Object.assign(ZoteroKB, {
     try {
       if (!self.weightColumnKey) self.registerWeightColumn();
     } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里注册列失败：" + e); }
+    // 「已建知识库」「分节纲要」两列同理（窗口重建后列定义要重新交一遍）
+    try {
+      if (!self.kbColKeys || !self.kbColKeys.length) self.registerKbColumns();
+    } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里注册两列失败：" + e); }
     // 工具栏按钮与条目右键菜单也属于"与窗口相关的 UI"，必须在窗口钩子里做
     try { self.registerToolbarButton(win); }
     catch (e) { Zotero.debug("[zotero-kb] 加工具栏按钮失败：" + e); }

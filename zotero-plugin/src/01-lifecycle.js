@@ -22,6 +22,7 @@ Object.assign(ZoteroKB, {
     } catch (e) { /* ignore */ }
     try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
     try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
+    try { self.unregisterKbColumns(); } catch (e) { /* ignore */ }
       try { self.unregisterKbViewSection(); } catch (e) { /* ignore */ }
     // ⚠ 2026-10-05：内容窗格分区（ItemPaneManager）、退出提醒（quit guard）、
     //   以及"对话不落盘所以清掉 chatState"这三件事随窗格一起删了。

@@ -58,6 +58,7 @@ from panels.tab_experience import ExperienceTab
 from panels.tab_ai import AiTab
 from panels.tab_quality import QualityTab
 from panels.tab_meta import MetaTab
+from panels.tab_outline import OutlineTab
 from panels.tab_env import EnvTab
 from panels.tab_parse import ParseTab
 from panels.tab_advanced import AdvancedTab
@@ -65,7 +66,7 @@ from panels.tab_prompts import PromptsTab
 
 
 class App(AppBase, StructTab, ExperienceTab, AiTab, QualityTab,
-          MetaTab, EnvTab, ParseTab, AdvancedTab, PromptsTab):
+          MetaTab, OutlineTab, EnvTab, ParseTab, AdvancedTab, PromptsTab):
     """管理面板主窗口。
 
     方法按页签分在 panels/ 下的各个 mixin 里；这里只把它们拼起来 ——
@@ -217,6 +218,7 @@ def main() -> int:
         alias = {"struct": "知识库结构", "exp": "经验库", "ai": "分类建议",
                  "env": "运行环境", "parse": "PDF 解析",
                  "quality": "损坏查询", "meta": "元数据",
+                 "outline": "分节纲要",
                  "adv": "高级", "prompts": "提示词"}
         title = alias.get(want, want)
         titles = [app.notebook.tab(t, "text").strip()
@@ -255,6 +257,14 @@ def main() -> int:
     app.say(f"[{ts()}] 面板就绪。")
     app.say(f"[{ts()}] 项目目录：{ROOT}")
     app.say(f"[{ts()}] 知识库：  {App.kb_dir()}")
+    # 运行环境与**来源**：开机打一次（用户要求）。改了 .env / 环境变量却"没生效"
+    # 时，第一眼就该能在日志里看到每个值从哪来。
+    try:
+        import schemas as S
+        for line in S.env_report_lines():
+            app.say(f"[{ts()}] {line}")
+    except Exception as exc:      # noqa: BLE001 —— 环境报告不该挡面板启动
+        app.say(f"[{ts()}] [!!] 运行环境报告生成失败：{type(exc).__name__}: {exc}")
     app.say(f"[{ts()}] 提示：长任务在后台跑，日志会实时出现在这里。")
     root.mainloop()
     return 0

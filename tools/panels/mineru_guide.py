@@ -39,7 +39,10 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from tkinter import scrolledtext
 
-from .common import ROOT, CREATE_NO_WINDOW, ts
+from .common import ROOT, ts
+
+# 面板/服务里跑子进程的统一入口（stdin=DEVNULL，绕开 pythonw 的坏句柄）
+import procrun as PR  # noqa: E402
 
 # 装在哪：与 scripts/install-mineru.ps1 里的约定一致
 BASE = os.path.join(ROOT, ".mineru")
@@ -75,20 +78,121 @@ def _has_uv() -> str:
     return p if os.path.exists(p) else ""
 
 
-def _gpu_info() -> tuple[bool, str]:
-    """有没有 NVIDIA 显卡（有 → 顺便报型号与显存）。"""
+def _quiet_run(cmd: list, timeout: float = 15.0):
+    """跑一条只读命令并用 UTF-8 收回输出（不弹黑窗口）。
+
+    ⚠ 走 procrun：面板是 pythonw 起的、没有控制台，裸 subprocess.run 会让子进程
+      继承坏句柄，报 [WinError 61] 句柄无效（2026-10-10 用户报的：显卡那一行
+      "没取到显卡信息（… WinError 61 …）"，而本机其实是 RTX 4060）。
+    """
+    return PR.run(cmd, merge_stderr=True, timeout=timeout)
+
+
+def _nvidia_smi_candidates() -> list[str]:
+    """nvidia-smi 的常见落点。
+
+    **不能只靠 PATH**：进程被别的程序（Zotero / DSH）拉起、或用户改过 PATH 时
+    都可能找不到它，而它装完驱动本来就在 System32 下。
+    """
+    win = (os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+           or r"C:\Windows")
+    cands = [os.path.join(win, "System32", "nvidia-smi.exe")]
+    for pf in (os.environ.get("ProgramW6432"), os.environ.get("ProgramFiles"),
+               os.environ.get("ProgramFiles(x86)")):
+        if pf:
+            cands.append(os.path.join(pf, "NVIDIA Corporation", "NVSMI",
+                                      "nvidia-smi.exe"))
+    return [p for p in cands if p and os.path.exists(p)]
+
+
+def _gpu_via_smi():
+    """问 nvidia-smi（先 PATH、再常见落点）。返回 (找到?, 型号 或 失败原因)。"""
+    import shutil
+    exes: list[str] = []
+    found = shutil.which("nvidia-smi")
+    if found:
+        exes.append(found)
+    for p in _nvidia_smi_candidates():
+        if os.path.normcase(p) not in [os.path.normcase(x) for x in exes]:
+            exes.append(p)
+    note = ""
+    for exe in exes:
+        try:
+            out = _quiet_run([exe, "--query-gpu=name,memory.total",
+                              "--format=csv,noheader"])
+        except Exception as exc:      # noqa: BLE001 —— 超时/权限都算"这条路不通"
+            note = f"{type(exc).__name__}: {exc}"
+            continue
+        if out.returncode == 0:
+            lines = (out.stdout or "").strip().splitlines()
+            if lines:
+                return True, lines[0].strip()
+        tail = (out.stderr or out.stdout or "").strip().splitlines()
+        note = tail[0][:120] if tail else f"退出码 {out.returncode}"
+    return False, note
+
+
+def _gpu_via_wmi():
+    """退一步：枚举显示适配器（Get-CimInstance Win32_VideoController）。
+
+    为什么留着它：nvidia-smi 是"驱动自带的小工具"，PATH 不对、或它自己跑不起来
+    时，光凭它就会把**一台有 RTX 4060 的机器**判成"没显卡"（2026-10-10 用户报的
+    正是这个：同一个窗口上面写着「实测（本机 RTX 4060）」，体检却说没检测到
+    NVIDIA 显卡）。枚举适配器不依赖那个工具。
+
+    返回 (状态, 文本)：
+      "nvidia" 找到 NVIDIA 适配器，文本是型号（**不报显存** —— CIM 的
+               AdapterRAM 超过 4 GB 会截断，报了反而是错的）；
+      "none"   枚举到了适配器、但一个 NVIDIA 都没有 —— 这是**确定**结论；
+      "error"  连枚举都跑不起来，文本是原因 —— 这时不能下"没有显卡"的结论。
+    """
+    win = (os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+           or r"C:\Windows")
+    ps = os.path.join(win, "System32", "WindowsPowerShell", "v1.0",
+                      "powershell.exe")
+    cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+           "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }"]
+    if os.path.exists(ps):           # 用绝对路径，别赌 PATH
+        cmd[0] = ps
     try:
-        out = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name,memory.total",
-             "--format=csv,noheader"],
-            capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=15, creationflags=CREATE_NO_WINDOW)
-        line = (out.stdout or "").strip().splitlines()
-        if out.returncode == 0 and line:
-            return True, line[0].strip()
-    except Exception:      # noqa: BLE001
-        pass
-    return False, ""
+        out = _quiet_run(cmd, timeout=25.0)
+    except Exception as exc:         # noqa: BLE001
+        return "error", f"{type(exc).__name__}: {exc}"
+    names = [ln.strip() for ln in
+             ((out.stdout or "") + "\n" + (out.stderr or "")).splitlines()
+             if ln.strip()]
+    if out.returncode != 0 and not names:
+        return "error", f"退出码 {out.returncode}"
+    for name in names:
+        low = name.lower()
+        if any(k in low for k in ("nvidia", "geforce", "rtx", "quadro",
+                                  "tesla", "nvs")):
+            return "nvidia", name
+    if names:
+        return "none", ""
+    return "error", "没取到任何显示适配器"
+
+
+def _gpu_info() -> tuple[bool, str]:
+    """有没有 NVIDIA 显卡 + 型号。返回 (bool, 文本)，**三种**情况：
+
+      (True,  "型号, 显存")  —— 找到了；
+      (False, "")            —— **确定**没有 NVIDIA（枚举过适配器、没一个是），
+                                只有这时才能说"会用 ONNX/CPU 跑"；
+      (False, "为什么")      —— 探测本身取不到，**不能**替用户说"没有显卡"。
+
+    顺序：nvidia-smi（PATH + 常见落点）→ 枚举显示适配器 → 前者失败时如实报原因。
+    """
+    ok, note = _gpu_via_smi()
+    if ok:
+        return True, note
+    status, value = _gpu_via_wmi()
+    if status == "nvidia":
+        return True, value
+    if status == "none":
+        return False, ""
+    why = "；".join(x for x in (note, value) if x) or "nvidia-smi 与显卡枚举都不可用"
+    return False, why[:160]
 
 
 def _net_ok(url: str, timeout: float = 6.0) -> bool:
@@ -105,12 +209,63 @@ def _net_ok(url: str, timeout: float = 6.0) -> bool:
             return False
 
 
+def mineru_state() -> dict:
+    """本机 MinerU 状态：{installed, exe, version, why, summary}。**只读、不抛**。
+
+    为什么单独抽一个函数：`preflight()` 是纯函数、单测直接打桩，探测结果要
+    能一起被打桩（否则每条用例都会真去跑 1~4 秒的子进程）。所以 preflight
+    通过这个名字间接取，调用方（窗口/测试）都能替换它。
+
+    ⚠ `installed` 的含义是"**能用**"（probe.ok），不是"程序在不在" —— 两者
+      分开报：程序在、但跑不起来时 `exe` 非空而 installed=False，`why` 带原因。
+      安装引导必须靠这个区分说人话，否则"装了但没跑成"会被说成"还没装"
+      （用户 2026-10-10 报的正是这个：运行环境页明明检测到了，引导里说没装上）。
+    """
+    try:
+        import sys as _sys
+        if os.path.join(ROOT, "offline") not in _sys.path:
+            _sys.path.insert(0, os.path.join(ROOT, "offline"))
+        import mineru as MU
+        info = MU.probe()
+        exe = info.get("exe") or ""
+        # ⚠ installed 的判据是"**程序在不在**"（exe 存在），不是"跑没跑起来"
+        #   （probe.ok）。用户 2026-10-10 的规矩：已装 → 「开始安装」置灰；
+        #   "装是装了但跑不起来"另报一条 why，靠「重新体检」/「复制手动命令」修。
+        #   运行环境页判的也是 exe 存在 —— 两处必须同一口径，否则同一个窗口里
+        #   两句话会打架（用户报过）。
+        return {"installed": bool(exe),
+                "exe": exe,
+                "version": info.get("version") or "",
+                "why": info.get("why") or "",
+                "summary": MU.summary_line(info)}
+    except Exception as exc:      # noqa: BLE001
+        # 探测自己炸了：**不代表没装**，所以还要看一眼 exe 在不在
+        exe = ""
+        try:
+            import sys as _sys2
+            if os.path.join(ROOT, "offline") not in _sys2.path:
+                _sys2.path.insert(0, os.path.join(ROOT, "offline"))
+            import schemas as _S
+            exe = _S.resolve_mineru()
+        except Exception:      # noqa: BLE001
+            exe = ""
+        return {"installed": bool(exe), "exe": exe, "version": "",
+                "why": f"探测失败：{type(exc).__name__}: {exc}",
+                "summary": f"检测失败：{type(exc).__name__}: {exc}"}
+
+
 def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
     """装之前的体检。**纯函数**（只读环境），单测直接调它。
 
-    返回 `{"ok": bool, "items": [{"level": "ok|warn|bad", "text": str}],
-    "blockers": [str]}`。`ok=False` 表示有硬阻塞（例如磁盘不够）——
-    界面上这时把「开始安装」置灰。
+    返回 `{"ok": bool, "installed": bool,
+    "items": [{"level": "ok|warn|bad", "text": str}], "blockers": [str]}`。
+
+    `ok=False` 表示有硬阻塞（例如磁盘不够）—— 界面上这时把「开始安装」置灰。
+    `installed=True` 表示**程序在**（mineru-kit.exe 存在）—— 用户 2026-10-10 的
+    新规矩：这时也把「开始安装」置灰，文案写"已检测到，无需重装"。
+    它与"能不能跑起来"是两回事：exe 在但探测失败时 installed 仍是 True，
+    "为什么跑不起来"写在逐条 items 里。二者**语义独立**：
+    已装但磁盘不够时 ok 仍是 False、installed 仍是 True。
     """
     items: list[dict] = []
     blockers: list[str] = []
@@ -127,6 +282,29 @@ def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
         items.append({"level": "ok",
                       "text": f"磁盘剩余 {free} GB（需要约 {need} GB）"})
 
+    st = mineru_state()
+    exe = st.get("exe") or ""
+    # ⚠ "装没装"以 **exe 在不在** 为准（与「运行环境」页同一口径），
+    #   "能不能跑起来"另说。程序在、只是没跑起来时**绝不能说成"还没装"**
+    #   （用户 2026-10-10 报过这个：运行环境页明明检测到 exe 存在）。
+    if exe:
+        ver = f"（版本 {st['version']}）" if st["version"] else ""
+        items.append({"level": "ok",
+                      "text": f"已经装了 MinerU{ver}：{exe}"})
+        why = str(st.get("why") or "")
+        # 跑不起来 / 模型没下全时，把探测结论跟着摆出来，别只报"已装"
+        if why and not why.startswith("可用"):
+            items.append({"level": "warn",
+                          "text": f"装是装了，但没能跑起来：{why}"})
+            items.append({"level": "warn",
+                          "text": "这不是『没装』——「开始安装」已置灰；"
+                                  "可先看「运行环境」页与「PDF 解析」页的探测结果，"
+                                  "点「重新体检」刷新；要重装请用「复制手动命令」"
+                                  "跑脚本（已下载的会复用）"})
+    else:
+        items.append({"level": "warn",
+                      "text": "本机还没装 MinerU —— 这个窗口会帮你装"})
+
     uv = _has_uv()
     items.append({"level": "ok" if uv else "warn",
                   "text": ("uv 已就绪：" + uv) if uv else
@@ -134,7 +312,15 @@ def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
 
     has_gpu, gpu = _gpu_info()
     if has_gpu:
-        items.append({"level": "ok", "text": f"NVIDIA 显卡：{gpu}（会装 CUDA 版 torch）"})
+        items.append({"level": "ok",
+                      "text": f"NVIDIA 显卡：{gpu}（会装 CUDA 版 torch）"})
+    elif gpu:
+        # 探测**本身**取不到：不能替用户下"没有显卡"的结论（本机踩过 ——
+        # nvidia-smi 没被找到，于是把一台 RTX 4060 说成了没有显卡）。
+        items.append({"level": "warn",
+                      "text": f"没取到显卡信息（{gpu}）—— 有没有 NVIDIA 显卡说不准；"
+                              "不影响安装，装完后可在「PDF 解析」页复核，"
+                              "或自己跑一次 nvidia-smi"})
     else:
         items.append({"level": "warn",
                       "text": "没检测到 NVIDIA 显卡 —— 仍可安装，但会用 ONNX/CPU 跑，"
@@ -155,7 +341,9 @@ def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
             items.append({"level": "warn",
                           "text": "连不上：" + "、".join(bad) + "（可能仍然能装，脚本里有备用镜像）"})
 
-    return {"ok": not blockers, "items": items, "blockers": blockers}
+    # installed = "程序在不在"（exe 存在即已装，与「开始安装」置灰的判据一致）
+    return {"ok": not blockers, "installed": bool(exe),
+            "items": items, "blockers": blockers}
 
 
 def manual_command(with_vlm: bool = False) -> str:
@@ -264,11 +452,14 @@ class MineruGuide(tk.Toplevel):
             lines = [("✓ " if it["level"] == "ok" else
                       ("! " if it["level"] == "warn" else "✗ ")) + it["text"]
                      for it in res["items"]]
-            if res["ok"]:
-                lines.append("")
+            lines.append("")
+            if res.get("installed"):
+                lines.append("→ 已检测到本机装有 MinerU，无需重装"
+                             "（「开始安装」已置灰）。要重装请先卸载，"
+                             "或用「复制手动命令」。")
+            elif res["ok"]:
                 lines.append("→ 可以开始安装。")
             else:
-                lines.append("")
                 lines.append("→ 有阻塞项，先解决上面 ✗ 的那些。")
             self.after(0, lambda: self._apply_preflight(res, lines))
 
@@ -277,8 +468,13 @@ class MineruGuide(tk.Toplevel):
     def _apply_preflight(self, res: dict, lines: list[str]):
         self._set_pf(lines)
         try:
-            self.install_btn.configure(
-                state="normal" if res["ok"] else "disabled")
+            if res.get("installed"):
+                # 已装 → 即使没有阻塞项也不给点（用户 2026-10-10 的规矩：
+                # 已装则「开始安装」置灰，与「停止安装」同一种灰）。
+                self.install_btn.configure(state="disabled")
+            else:
+                self.install_btn.configure(
+                    state="normal" if res["ok"] else "disabled")
         except tk.TclError:
             pass
 
@@ -287,6 +483,15 @@ class MineruGuide(tk.Toplevel):
     def do_install(self):
         if self.proc and self.proc.poll() is None:
             messagebox.showinfo("正在安装", "已经在跑了。要停就点「停止安装」。")
+            return
+        st = mineru_state()
+        if st["installed"]:
+            # 按钮此时本来就是灰的；这条护栏是给"别处误调"兜底
+            messagebox.showinfo(
+                "已经装好了",
+                "本机已经装了 MinerU（" + (st["exe"] or st["summary"])
+                + "），无需重装。\n\n用不了的话，先点「重新体检」看具体原因；"
+                  "确实要重装，请先卸载，再用「复制手动命令」跑脚本。")
             return
         if not os.path.exists(SCRIPT):
             messagebox.showerror("找不到安装脚本", SCRIPT)
@@ -310,10 +515,11 @@ class MineruGuide(tk.Toplevel):
         def worker():
             code = -1
             try:
-                self.proc = subprocess.Popen(
-                    args, cwd=ROOT, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                    errors="replace", creationflags=CREATE_NO_WINDOW)
+                # procrun：stdin=DEVNULL，避免 pythonw 下子进程继承坏句柄
+                # （WinError 61）；异常时它会自动降档重试。
+                self.proc = PR.popen(args, cwd=ROOT, merge_stderr=True,
+                                     on_tier=lambda m: self.say(
+                                         f"[procrun] 子进程改用兜底档位：{m}"))
                 for line in self.proc.stdout:      # type: ignore[union-attr]
                     self.after(0, lambda ln=line: self.say(ln))
                 code = self.proc.wait()
@@ -325,7 +531,9 @@ class MineruGuide(tk.Toplevel):
 
     def _install_done(self, code: int):
         self.cancel_btn.configure(state="disabled")
-        self.install_btn.configure(state="normal")
+        # ⚠ 这里**不要**直接把按钮设成 normal：装完要按新探测结果重设
+        #   （已装 → 仍置灰）。下面 refresh_preflight() 会做这件事。
+        self.install_btn.configure(state="disabled")
         self.say(f"[{ts()}] ⏹ 安装进程结束，退出码 {code}"
                  + ("（0 = 成功；2 = 装好了但没有 CUDA，会用 CPU）"
                     if code in (0, 2) else "（失败，看上面的日志）"))
@@ -352,6 +560,14 @@ class MineruGuide(tk.Toplevel):
                 self.on_done()
             except Exception:      # noqa: BLE001
                 pass
+        # ⚠ 最后必须**重刷体检区**：原来装完之后这一格还停在"本机还没装 MinerU"
+        #   的那份结果上，而「运行环境」页已经检测到了 —— 同一个窗口里两句话打架
+        #   （用户 2026-10-10 报的正是这个）。refresh_preflight 会重新探测、
+        #   重设按钮，并把结果写回这一格。
+        try:
+            self.refresh_preflight()
+        except Exception as exc:      # noqa: BLE001
+            self.say(f"[体检] 复检失败：{type(exc).__name__}: {exc}")
 
     def do_cancel(self):
         if not (self.proc and self.proc.poll() is None):
@@ -361,10 +577,7 @@ class MineruGuide(tk.Toplevel):
         self.say(f"[{ts()}] ⏹ 请求停止（杀进程树 {pid}）")
         # ⚠ 必须连同**子进程树**一起杀：powershell 死了，它下面的 uv / pip / python
         #   还在下文件（实测父进程 terminate 之后下载仍在继续）。
-        try:
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                           capture_output=True, creationflags=CREATE_NO_WINDOW)
-        except Exception:      # noqa: BLE001
+        if not PR.kill_tree(pid):
             try:
                 self.proc.terminate()
             except Exception:  # noqa: BLE001

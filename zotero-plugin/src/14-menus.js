@@ -253,6 +253,274 @@ Object.assign(ZoteroKB, {
   },
 
 
+  // ================================================================ 分节纲要
+
+  /**
+   * 这一篇生成过「分节纲要」没有（右键菜单据此决定跳不跳）。
+   *
+   * 判据是**文件在不在**（views/<KEY>.outline.md），不是索引库里的行 ——
+   * 纲要刻意不入索引（见 offline/digest.py 开头那段），所以文件是唯一权威来源。
+   * 走 kbLevels 而不是自己拼路径：路径模板只有 KB_LEVELS 一份，再拼一次
+   * 就是第二份实现，早晚漂移（本项目吃过"两份实现必然漂移"的亏）。
+   *
+   * ⚠ 判不出来（知识库位置未知等）返回 false：交给服务端自己按节指纹复用，
+   *   那是诚实的兜底 —— 不能把"我不知道"说成"已经有纲要了"。
+   */
+  hasOutline: function (key) {
+    var self = ZoteroKB;
+    try {
+      const lv = (self.kbLevels(key) || []).find((x) => x.id === "outline");
+      return !!(lv && lv.exists);
+    } catch (e) {
+      return false;
+    }
+  },
+
+
+  /**
+   * 给选中的条目生成「分节纲要」（条目右键菜单 → 生成分节纲要）。
+   *
+   * 后端是服务端的 `POST /digest`（一个异步 job）→ `python offline/digest.py <KEY>`。
+   * 为什么不在插件里跑 Python：venv、MinerU 产物、模型全在服务端管 ——
+   * 与「重建本条目知识库」同一套分工（见上面 runPython 的说明）。
+   *
+   * 三条硬规则（都来自本机的实测条件）：
+   *   ① **串行**：纲要要一节一节调本地模型，本机是 4B 小模型 + 单 GPU，
+   *      并发提交只会让两篇都变慢，还可能把 Ollama 拖住；
+   *   ② **失败不中断整批**：一篇没解析过 PDF 的文献不该让后面几篇都不跑 ——
+   *      逐篇记结果，最后一起汇总（"失败 K 篇"连原因一起给）；
+   *   ③ **已有纲要的跳过**：省在学位论文上最明显（读 MinerU 产物 + 重渲染
+   *      + 写回档案都不便宜），而且用户的语义就是"我只要还没有的那些"。
+   *      真要重跑已有的一篇：管理面板「AI」页的「生成纲要」按钮（那条路
+   *      也是 force=False 的增量，已经跑过的节不会重问模型）。
+   *
+   * ⚠ 进度窗只有 Zotero.ProgressWindow 一个入口，而它**没有"改文字"的 API**
+   *   （只有 changeHeadline / addDescription），所以"更新进度"只能是"关掉旧的、
+   *   开一个新的"。为了不闪，只在"换篇"或"日志变了且距上次 ≥4 秒"时重画。
+   */
+  generateOutlines: async function (items) {
+    var self = ZoteroKB;
+    const list = (items || []).filter(Boolean);
+    if (!list.length) return;
+    // 同一时刻只跑一批：再点一次是"提示"而不是"叠第二批"
+    // （叠起来两批会同时打 Ollama，进度窗也会互相顶掉）。
+    if (self.digestActive) {
+      const cur = self.digestActive;
+      self.alertDialog(
+        "已经有一批在跑",
+        "正在生成：「" + (cur.currentLabel || cur.currentKey || "") + "」"
+        + "（" + (cur.i + 1) + "/" + cur.total + "）\n\n"
+        + "要停就再点一次右键菜单里的「停止生成纲要」。");
+      return;
+    }
+    try {
+      if (!(await self.healthCheck())) {
+        self.notify("知识库服务没启动",
+          "纲要要由本地服务调模型生成。\n"
+          + "先把它起起来：管理面板的「运行环境」页，或跑 scripts\\0-panel.vbs。",
+          null, true);
+        return;
+      }
+    } catch (e) {
+      // 探活失败也要往下走：真正的失败原因由 POST /digest 给（比这里编一句准）
+      Zotero.debug("[zotero-kb] 生成纲要前的探活失败：" + e);
+    }
+
+    const todo = [], skipped = [];
+    for (const it of list) {
+      if (self.hasOutline(it.key)) skipped.push(it);
+      else todo.push(it);
+    }
+    if (!todo.length) {
+      self.alertDialog("都已经有分节纲要了",
+        "选中的 " + list.length + " 篇都有纲要，这次没有要生成的。\n\n"
+        + "想重新生成某一篇：管理面板 →「AI」页 → 选中这篇 →「生成纲要」"
+        + "（已有的节按指纹复用，不会重复烧模型）。");
+      return;
+    }
+
+    const st = self.digestActive = {
+      total: todo.length, i: 0, currentKey: "", currentLabel: "",
+      generated: [], failed: [],
+      skipped: skipped, skippedByServer: [],
+      stopped: false, startedAt: Date.now(), lastPaint: 0, lastLog: "",
+    };
+    Zotero.debug("[zotero-kb] 开始生成分节纲要：" + todo.length + " 篇（已跳过 "
+                 + skipped.length + " 篇）");
+
+    const paint = (headline, text, force) => {
+      const now = Date.now();
+      if (!force && now - (st.lastPaint || 0) < 4000) return;
+      st.lastPaint = now;
+      try { self.newProgress(headline, text); } catch (e) { /* ignore */ }
+    };
+
+    /** 跑一篇：提交 → 轮询 job → 分类结果。**自己吞掉异常**（失败不中断整批）。 */
+    const runOne = async (it, idx) => {
+      st.i = idx;
+      st.currentKey = it.key;
+      st.currentLabel = self.itemLabel(it);
+      const head = "正在生成分节纲要（" + (idx + 1) + "/" + st.total + "）";
+      st.lastPaint = 0;                  // 换篇必须重画一次
+      paint(head, st.currentLabel + "\n" + it.key, true);
+      let job = null;
+      try {
+        const res = await self.request("POST", "/digest", { key: it.key });
+        const jobId = res && res.job;
+        if (!jobId) throw new Error((res && res.error) || "服务端没返回 job id");
+        // 学位论文几分钟，给到 30 分钟（真超时也只是"这一篇算失败"，
+        // 不中断后面的；服务端那个 job 仍在跑，下一次会命中的它的结果）。
+        const deadline = Date.now() + 30 * 60 * 1000;
+        while (Date.now() < deadline) {
+          if (st.stopped) {
+            // 用户点了停止：**每一轮都发一次**取消请求。服务端是"到下一节
+            // 边界才收工"，而这一篇可能正卡在一节几分钟的模型调用里，
+            // 只发一次不够稳（服务端可能刚好还没进循环）。
+            self.request("POST", "/digest/cancel", {}).catch(() => {});
+          }
+          await new Promise((r) => setTimeout(r, 2000));
+          job = await self.request("GET", "/jobs/" + jobId);
+          if (!job) break;
+          const log = job.log || [];
+          const tail = log.length ? String(log[log.length - 1]).trim() : "";
+          if (tail) st.lastLog = tail;
+          paint(head, st.currentLabel + "\n" + it.key
+            + "\n\n已跑 " + Math.round((Date.now() - st.startedAt) / 1000) + " 秒"
+            + (st.lastLog ? ("\n" + st.lastLog) : ""), false);
+          if (job.state === "done" || job.state === "failed") break;
+        }
+      } catch (e) {
+        st.failed.push({ key: it.key, label: self.itemLabel(it),
+                         why: String((e && e.message) || e) });
+        return;
+      }
+      if (!job || (job.state !== "done" && job.state !== "failed")) {
+        st.failed.push({ key: it.key, label: self.itemLabel(it),
+                         why: "等服务端超时（30 分钟）" });
+        return;
+      }
+      if (job.state === "failed") {
+        st.failed.push({ key: it.key, label: self.itemLabel(it),
+                         why: String(job.error || "任务失败") });
+        return;
+      }
+      // ---- 分类这一篇的结果
+      // 四种都出现过，所以逐个点名（别用 truthy 一把抓）：
+      //   · 真生成了几节；
+      //   · 服务端说"一节都没问"（全是节指纹复用）= 跳过；
+      //   · 被用户停掉（cancelled）；
+      //   · 失败（ok=false，why 里是"没有 MinerU 产物"这类可行动的原因）。
+      const r = job.result || {};
+      if (r.cancelled) {
+        // ⚠ 服务端给的 why 已经是以「已取消（…）」开头的整句，别再包一层
+        //   （本机验收第一版就是这么写出「已取消（已取消（4/8 节已跑完…））」的）。
+        st.failed.push({ key: it.key, label: self.itemLabel(it),
+                         why: String(r.why || "已取消") });
+      } else if (r.ok) {
+        // 「跳过」= **本来就有纲要、这次一节都没问模型**（asked=0 且文件本来就在）。
+        // ⚠ 只判 asked=0 是不够的：本机实测有 48 条「meta 里有纲要、但
+        //   views/<key>.outline.md 不在」的条目（2026-10-05 那批只落了 meta），
+        //   它们这次会把**文件补出来** —— 那是实打实的产出，不是跳过。
+        if (r.skipped && r.existed_before) {
+          st.skippedByServer.push({ key: it.key, n: r.n_sections || 0 });
+        } else {
+          st.generated.push({ key: it.key, label: self.itemLabel(it),
+                              n: r.n_sections || 0, asked: r.asked || 0,
+                              sec: r.seconds || 0 });
+        }
+      } else {
+        st.failed.push({ key: it.key, label: self.itemLabel(it),
+                         why: String(r.why || "未知原因") });
+      }
+    };
+
+    try {
+      for (let i = 0; i < todo.length; i++) {
+        if (st.stopped) break;
+        await runOne(todo[i], i);
+      }
+    } catch (e) {
+      Zotero.logError(e);
+    } finally {
+      self.digestActive = null;        // 菜单里的「停止」项随之消失
+    }
+
+    // ---- 汇总一句，口径就是用户要的原话：
+    //      「已生成 N 篇、跳过 M 篇（已有纲要）、失败 K 篇」
+    const nSkip = st.skipped.length + st.skippedByServer.length;
+    const parts = ["已生成 " + st.generated.length + " 篇",
+                   "跳过 " + nSkip + " 篇（已有纲要）",
+                   "失败 " + st.failed.length + " 篇"];
+    const secs = Math.round((Date.now() - st.startedAt) / 1000);
+    const lines = [parts.join("、") + "　·　共 " + secs + " 秒"];
+    // 明细只列前 6 条：进度窗太长了会顶到屏幕上边（它没有滚动条）。
+    const detail = [];
+    for (const g of st.generated.slice(0, 6)) {
+      detail.push("✓ " + (g.label || g.key) + "　" + g.n + " 节"
+                  + (g.asked
+                     ? ("（新跑 " + g.asked + " 节，" + g.sec + " 秒）")
+                     : "（全部复用已有内容，没调模型）"));
+    }
+    for (const s of st.skipped.slice(0, 3)) {
+      detail.push("– 跳过：" + (s.getField ? self.itemLabel(s) : s.key));
+    }
+    for (const f2 of st.failed.slice(0, 6)) {
+      detail.push("✗ " + (f2.label || f2.key) + "\n　　"
+                  + String(f2.why).split("\n")[0].slice(0, 90));
+    }
+    if (st.generated.length + st.failed.length > 12) {
+      detail.push("（明细只列前几条，完整结果在知识库的 plugin-status.json）");
+    }
+    if (st.stopped) detail.unshift("⏹ 中途停止（已经跑完的几篇是有效的）");
+    st.summary = lines.concat(detail).join("\n");
+    self.lastDigest = {
+      at: new Date().toISOString().slice(11, 19), seconds: secs,
+      generated: st.generated.length, skipped: nSkip, failed: st.failed.length,
+      stopped: !!st.stopped,
+      failedKeys: st.failed.map((x) => x.key),
+      failedWhy: st.failed.slice(0, 5).map((x) => x.why.slice(0, 120)),
+      summary: st.summary,
+    };
+    try {
+      self.notify(st.failed.length ? "分节纲要：有没跑成的" : "分节纲要生成完成",
+                  st.summary, null, !!st.failed.length);
+    } catch (e) { /* ignore */ }
+    // 两列立刻跟上 —— 不必等 15 个 tick（约 30 秒）那次轮询。
+    // ⚠ 这只是"提前一下"：轮询没变、列的数据源没变，所以即使这句失败
+    //   也不会让列永远停在 ✗。
+    try { await self.refreshKbCols(); } catch (e) { /* ignore */ }
+  },
+
+
+  /** 停止正在跑的那一批纲要生成（右键菜单里的「停止生成纲要」）。
+   *
+   * ⚠ 这不是"杀线程"，而是**置一个标记**：服务端在每节开始前看一眼
+   *   （见 localserver.do_digest 的 should_stop）。已经在跑的那一次模型
+   *   调用会跑完，所以点完可能还要等十几秒才真的停 —— 提示里要说清，
+   *   否则用户以为没点着。
+   */
+  stopDigest: function () {
+    var self = ZoteroKB;
+    const st = self.digestActive;
+    if (!st) {
+      self.notify("现在没有在跑的纲要生成", "", null, true);
+      return;
+    }
+    if (st.stopped) {
+      self.notify("已经在停了", "当前这一篇会在这一节跑完后停下。", null, false);
+      return;
+    }
+    st.stopped = true;
+    // 主循环里还会反复发（一篇可能正卡在一节长调用里），这里先发一次求快。
+    self.request("POST", "/digest/cancel", {}).catch((e) => {
+      Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e);
+    });
+    self.notify("正在停止生成纲要…",
+      "当前这一篇会在这一节的模型调用跑完后停下；\n"
+      + "已经跑完的几篇不受影响。", null, false);
+  },
+
+
   /** 启动管理面板（Python/Tkinter）。已开着就不重复启动。 */
   openPanel: function () {
     var self = ZoteroKB;
@@ -350,6 +618,8 @@ Object.assign(ZoteroKB, {
                             "zotero-kb-classify-item",
                             "zotero-kb-pin-item",
                             "zotero-kb-metafill-item",
+                            "zotero-kb-outline-item",
+                            "zotero-kb-digest-cancel",
                             "zotero-kb-rebuild-item",
                             "zotero-kb-open-menu",
                             "zotero-kb-sep-before",
@@ -684,6 +954,51 @@ Object.assign(ZoteroKB, {
                 + "写进 Zotero 之前要你先在弹窗里确认。",
             });
           metaFill.id = "zotero-kb-metafill-item";
+
+          // ---- 第七项：生成分节纲要（本地模型）
+          //
+          // 为什么放右键（用户 2026-10-10 的要求）：纲要原来只能在管理面板的
+          //   「AI」页点按钮生成；而在 Zotero 列表里看到「分节纲要」那一列是 ✗
+          //   的那一刻，右键是最短路径（同「分类建议」「补全元数据」）。
+          //
+          // ⚠ 不能用 disabled 表达"这篇已经有纲要了" —— menupopup 里只要有一个
+          //   disabled 的 menuitem，整个子菜单就点不开（本文件里记了两次的教训）。
+          //   所以标题永远可点，跳过逻辑放进命令里，跑完再汇总告诉用户跳过了几篇。
+          const missingN = real.filter((it) => !self.hasOutline(it.key)).length;
+          const outlineItem = mkIn(lmPopup,
+            "生成分节纲要"
+              + (real.length > 1
+                 ? ("· " + real.length + " 篇"
+                    + (missingN < real.length
+                       ? ("（跳过已有 " + (real.length - missingN) + "）") : ""))
+                 : (missingN ? "" : "（已有，会跳过）")),
+            () => {
+              Promise.resolve(self.generateOutlines(real))
+                .catch((e) => Zotero.logError(e));
+            },
+            {
+              image: self.rootURI + "toolbar-icon.svg",
+              ready: "",       // 它自己会弹进度/结果，不要那句"发送到 DSH"
+              tooltip: "按章节给这篇写「这一节在做什么 + 关键点/参数/结论」，"
+                + "每节带页码范围。\n"
+                + "要调本地模型：论文几十秒、学位论文几分钟，逐篇串行跑。\n"
+                + "已经有纲要的会跳过；跑完「分节纲要」这一列会变成 N 节。\n"
+                + "跑的过程中可以在本菜单里点「停止生成纲要」。",
+            });
+          outlineItem.id = "zotero-kb-outline-item";
+
+          // 停止项：**只在真有一批在跑时出现**。
+          // 用"出现 / 不出现"而不是 disabled —— 见上面的老坑。
+          if (self.digestActive) {
+            const stopItem = mkIn(lmPopup,
+              "停止生成纲要（" + (self.digestActive.i + 1) + "/"
+                + self.digestActive.total + "）",
+              () => { self.stopDigest(); },
+              { image: self.rootURI + "toolbar-icon.svg", ready: "",
+                tooltip: "当前这一篇会在这一节的模型调用跑完后停下；\n"
+                  + "已经跑完的那几篇不受影响。" });
+            stopItem.id = "zotero-kb-digest-cancel";
+          }
 
           // ---- 第六项：打开知识库（分级）
           //

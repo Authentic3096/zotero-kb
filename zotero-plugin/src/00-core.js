@@ -47,6 +47,13 @@ var ZoteroKB = {
   pending: {},          // itemID -> true，避免同一条重复处理
   weightsCache: {},     // item.key -> {weight, pinned, attempts, ...}（权重列用）
   weightColumnKey: null,// ItemTreeManager 返回的列 dataKey（注销时要）
+  kbColKeys: null,      // 「已建知识库」「分节纲要」两列的 dataKey（注销时要）
+  colStatusCache: {},   // item.key -> {in_kb, outline_sections}（21-kbcols.js 用）
+  colStatusReady: false,// 这份缓存是不是**完整**的一份 —— 只有完整，
+                        //    "映射里查不到"才能解释成"这篇还没建库"（见 refreshKbCols）
+  colStatusSig: "",     // 上次列状态的内容指纹（没变就不重画列表）
+  digestActive: null,   // 正在跑的「生成分节纲要」那一批（见 14-menus.js）
+  lastDigest: null,     // 上一批纲要生成的结果摘要（写进状态文件供排查）
   taskTimer: null,      // 任务轮询的 setTimeout 句柄
   _statusExtra: {},     // 状态文件的"累积字段"（见 writeStatusFile 的说明）
   taskPolling: false,   // 轮询开关（比 taskTimer 更能表达"是否在轮询"）
@@ -97,6 +104,9 @@ var ZoteroKB = {
       step("registerPrefPane", () => self.registerPrefPane());
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
+      // 文献列表的另外两列（21-kbcols.js）：与权重列同一套做法 ——
+      // 注册本身只是把列定义交出去，数据由 refreshKbCols 异步填。
+      step("registerKbColumns", () => self.registerKbColumns());
       step("startTaskPolling", () => self.startTaskPolling());
       // MinerU（可选组件）的首次安装引导：**延迟 8 秒**跑，且只在"没装过 +
       // 没问过"时才弹一次（见 19-mineruguide.js）。放在这里是为了让它跟别的
@@ -159,6 +169,9 @@ var ZoteroKB = {
       self.serverOnStartup()
         .then(() => self.healthCheck())
         .then(() => self.refreshWeights())
+        // 两列的数据同一次启动里也拉一份（不拉的话，要等轮询那 30 秒
+        // 才会第一次出现内容 —— 用户看到的是"列是空的"）。
+        .then(() => self.refreshKbCols())
         .then(() => self.writeStatusFile({ startupSteps: steps.join(" "),
                                            startupOk: true }))
         .catch((e) => {

@@ -16,11 +16,13 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .common import (
-    CREATE_NO_WINDOW,
     PY,
     ROOT,
     ts,
 )
+
+# 面板/服务里跑子进程的统一入口（stdin=DEVNULL，绕开 pythonw 的坏句柄）
+import procrun as PR  # noqa: E402
 
 
 def llm_sync_js(cfg: dict) -> str:
@@ -84,7 +86,11 @@ class EnvTab:
             wraplength=920,
             text="下面几个位置可以直接在这里改：填好（或点「浏览…」选）"
                  "再点「保存并重新检测」——写的是与 Zotero 插件设置同一份配置。"
-                 "留空 = 交回自动探测（例如 Python 留空就用项目里的 .venv）。\n"
+                 "留空 = 交回下层：先看项目根目录的 .env，再自动探测"
+                 "（例如 Python 留空就用项目里的 .venv）。\n"
+                 "优先级：这里保存的值 > .env > 自动探测；两边都写过时，"
+                 "每项后面会写明「被谁覆盖」（例如「.env 里也写了，被『运行时设置』"
+                 "覆盖，未生效」）。\n"
                  "⚠ 如果你在 Zotero 插件设置页里手填过某一项，插件会优先用那一份 —— "
                  "想让这里说了算，请把插件设置里对应那一项清空再保存。"
         ).pack(fill="x", padx=12, pady=(6, 4))
@@ -245,14 +251,19 @@ class EnvTab:
                 err = f"{type(exc).__name__}: {exc}"
                 info = {}
             # 服务不在线就自己探测（不依赖服务，页面照样有内容）
+            sources, envfile = {}, {}
             try:
                 import schemas as S
+                import settings as SETT
                 fallback = {
                     "project_root": S.resolve_project_root(),
                     "python": S.resolve_python(),
                     "ollama": S.resolve_ollama(),
                     "mineru": S.resolve_mineru(),
                 }
+                # "这个值从哪来"（默认/自动探测/运行时设置/.env/环境变量）
+                sources = S.resolve_sources()
+                envfile = {"path": SETT.path(), "keys": SETT.keys()}
             except Exception:  # noqa: BLE001
                 fallback = {"project_root": ROOT, "python": PY, "ollama": "",
                             "mineru": ""}
@@ -261,6 +272,10 @@ class EnvTab:
             out["_server"] = bool(info.get("ok"))
             out["_kb"] = info.get("kb_dir") or self.kb_dir()
             out["_err"] = err
+            # 来源：优先用**服务端**报的（值与来源出自同一进程，不会错位）；
+            # 服务端旧版本没有这一项、或服务没在跑时，用面板自己解析的。
+            out["_sources"] = info.get("sources") or sources
+            out["_envfile"] = info.get("env_file") or envfile
             # MinerU 状态栏：光有"✓ 存在"没用，用户要知道**它到底能不能干活**
             # （版本、GPU、档位）。探测自身缓存 60 秒，且**没装就不探**。
             if out.get("mineru") and out["mineru"] != "（没找到）":
@@ -334,10 +349,8 @@ class EnvTab:
               "Name='python.exe'\" | Where-Object { $_.CommandLine -like "
               "'*localserver.py*' } | Select-Object -ExpandProperty ProcessId")
         try:
-            r = subprocess.run(
-                ["powershell", "-NoProfile", "-Command", ps],
-                capture_output=True, text=True, encoding="utf-8",
-                errors="replace", timeout=25, creationflags=CREATE_NO_WINDOW)
+            r = PR.run(["powershell", "-NoProfile", "-Command", ps],
+                       merge_stderr=True, timeout=25)
             return [int(x) for x in (r.stdout or "").split() if x.strip().isdigit()]
         except Exception:      # noqa: BLE001
             return []
@@ -365,8 +378,7 @@ class EnvTab:
                 self.out_queue.put(("call", (self.refresh_env, None)))
                 return
             try:
-                subprocess.Popen(["wscript.exe", vbs],
-                                 creationflags=CREATE_NO_WINDOW)
+                PR.spawn(["wscript.exe", vbs])
                 self.out_queue.put(("log", f"[{ts()}] ▶ {title}：已拉起后台进程，"
                                            f"正在等它响应…"))
             except Exception as exc:      # noqa: BLE001
@@ -427,12 +439,7 @@ class EnvTab:
                 f"Zotero 里刚派出去还没领的任务会丢，其余不受影响。继续？"):
             return
         for pid in pids:
-            try:
-                subprocess.run(["taskkill", "/PID", str(pid), "/F"],
-                               capture_output=True, timeout=10,
-                               creationflags=CREATE_NO_WINDOW)
-            except Exception:      # noqa: BLE001
-                pass
+            PR.kill_tree(pid)      # 失败也无所谓，下面照样尝试重启
         if pids:
             self.say(f"[{ts()}] 已停 {len(pids)} 个 localserver 进程，准备重启…")
             time.sleep(1.5)
@@ -807,8 +814,7 @@ class EnvTab:
                     continue
                 try:
                     args = [cand, "serve"] if cand == exe else [cand]
-                    subprocess.Popen(args, cwd=os.path.dirname(cand),
-                                     creationflags=CREATE_NO_WINDOW)
+                    PR.spawn(args, cwd=os.path.dirname(cand))
                     started = f"{mode}（{os.path.basename(cand)}）"
                     break
                 except Exception as exc:      # noqa: BLE001
@@ -850,7 +856,8 @@ class EnvTab:
         而且插件在调 /classify 时会把设置里的模型一起传过去，服务端按它走 ——
         所以配置源只有一个。
         """
-        zotero = r"D:\Application\Zotero\zotero.exe"
+        import schemas as S              # 本方法自己 import（本文件其它方法也都这么写）
+        zotero = S.resolve_zotero()      # 自动探测；找不到时下面会提示写 .env
         if not os.path.exists(zotero):
             messagebox.showinfo(
                 "找不到 Zotero",

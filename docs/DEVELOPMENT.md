@@ -212,7 +212,7 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
       tab_env.py         「运行环境」页（服务、同步、侧载、诊断、升级）
       tab_advanced.py    「高级」页（全量重建、自检、备份、清理、补齐分级文件）
       browser.py         「打开知识库」的级别选择窗口
-    paper_picker.py      选文献的弹窗（列宽可拖、表头可排序）
+    paper_picker.py      选文献的弹窗（可拖宽、可排序；multi=True 多选）
     build_bootstrap.py   ★ 把 zotero-plugin\src\*.js 拼成 bootstrap.js
                          （改完插件源码必须跑它，否则打包会被拒绝）
     check_kb_levels.py   ★ 盯"知识库分级清单"在 Python 与 JS 两侧一致

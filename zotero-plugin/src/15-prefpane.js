@@ -115,6 +115,18 @@ Object.assign(ZoteroKB, {
         alive: !!self.alive,
         lastRequestError: self.lastRequestError || "",
         lastRequests: self.lastRequests || [],
+        // 「生成分节纲要」的现况与上一批结果。
+        // 为什么必须落盘：这项的 UI 只有一个 Zotero 进度窗（而且它**没有**
+        // 可查的历史），出问题（"点了没反应"/"列没变"）时，能从 Python 侧
+        // 读到"到底跑没跑、跑到第几篇、几篇失败"是唯一的排查入口。
+        digestBusy: self.digestActive ? {
+          total: self.digestActive.total,
+          i: self.digestActive.i,
+          currentKey: self.digestActive.currentKey || "",
+          currentLabel: self.digestActive.currentLabel || "",
+          stopped: !!self.digestActive.stopped,
+        } : null,
+        lastDigest: self.lastDigest || null,
         wroteAt: new Date().toISOString(),
       };
       if (extra) {

@@ -49,10 +49,19 @@ Object.assign(ZoteroKB, {
       return Promise.resolve(self.caps);
     }
     self.caps.at = now;
-    return Promise.all([
-      self.probeDsh(force).catch(function () { return null; }),
-      Promise.resolve(self.probeLocalModel()),
-    ]).then(function (r) {
+    // ⚠ 先刷一次 /health：`probeLocalModel` 读的是 `serverInfo`，而它只在
+    //   startup（以及权重列 401 重试）时取过 —— 不在这里刷新的话，
+    //   「先开 Zotero、再开 Ollama」永远等不到状态变对（本机 2026-10-10
+    //   实测：caps.localWhy 一直停在"没找到 Ollama"）。/health 是本机一次
+    //   HTTP，很便宜；失败也不抛（healthCheck 自己 try/catch）。
+    return Promise.resolve(
+      self.healthCheck ? self.healthCheck() : null
+    ).catch(function () { return null; }).then(function () {
+      return Promise.all([
+        self.probeDsh(force).catch(function () { return null; }),
+        Promise.resolve(self.probeLocalModel()),
+      ]);
+    }).then(function (r) {
       self.caps.dsh = r[0] === null ? self.caps.dsh : !!r[0];
       self.caps.localModel = r[1];
       return self.caps;
@@ -147,7 +156,23 @@ Object.assign(ZoteroKB, {
       self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境→模型接入）";
       return !!key && !!base;
     }
-    const info = (self.serverInfo && self.serverInfo.ollama) || null;
+    let info = null;
+    try {
+      // ⚠ 优先读**结构化**的 `ollama_info`（服务端 2026-10-10 新增）。
+      //   在那之前 `/health` 只回报 `ollama`（一个**路径字符串**），
+      //   而下面的判据按 `info.exists / info.api_up` 读 —— 于是 `info.exists`
+      //   恒为 undefined、永远走"没找到 Ollama"：明明连上了也显示「未连接」
+      //   （用户 2026-10-10 报的正是这个）。
+      const si = self.serverInfo || {};
+      info = si.ollama_info || null;
+      if (!info && typeof si.ollama === "string" && si.ollama) {
+        // 老服务：只证明"装过"，不知道 API 通不通、有哪些模型 → 按未知处理
+        info = { path: si.ollama, exists: true, api_up: null, models: null };
+      }
+      if (!info && si.ollama && typeof si.ollama === "object") {
+        info = si.ollama;    // 兼容"将来 ollama 直接给结构"的服务端
+      }
+    } catch (e) { info = null; }
     if (!info) {
       self.caps.localWhy = "还没拿到本地服务状态（点面板「服务状态」看一眼）";
       return null;
@@ -155,6 +180,10 @@ Object.assign(ZoteroKB, {
     if (!info.exists) {
       self.caps.localWhy = "没找到 Ollama（可选组件；也可改用 API 模型）";
       return false;
+    }
+    if (typeof info.api_up !== "boolean") {
+      self.caps.localWhy = "只拿到 Ollama 路径、拿不到运行状态（服务端版本较旧？）";
+      return null;
     }
     if (!info.api_up) {
       self.caps.localWhy = "Ollama 没在运行（面板「运行环境」页点「启动 Ollama」）";
@@ -187,7 +216,7 @@ Object.assign(ZoteroKB, {
                  + (st === false ? ("\n\n⚠ 现在没连上：" + (self.caps.dshWhy || "")) : "") };
     }
     return { label: "连接到本地模型",
-             tooltip: "用本地模型做「分类建议」和「补全元数据」"
+             tooltip: "用本地模型做「分类建议」「补全元数据」和「生成分节纲要」"
                + (st === false
                   ? ("\n\n⚠ 现在不可用：" + (self.caps.localWhy || "")) : "") };
   },

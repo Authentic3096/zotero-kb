@@ -37,6 +37,7 @@ item_weight 按 item_key、pending.jsonl 用的是会话号），所以重排是
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 
 # outcome 白名单（与 MCP 工具、learn.py 的 pending 一致）
@@ -505,6 +506,343 @@ def checkup_reason(row: dict) -> list:
     if hit:
         why.append("像是工具链/工程记录：" + ", ".join(hit[:4]))
     return why
+
+
+# ---------------------------------------------------------------- 关联文献的显示
+#
+# 「一条经验关联的文献该怎么显示」的**唯一实现**（"唯一写路径"的同类要求）：
+# 经验详情、权重列表、经验编辑器都调 item_refs()，谁都不许在自己那边 join(keys)。
+#
+# 为什么值得单独一层（不是面板里拼字符串的小事）：
+#   · key 是 8 位大写字母数字（22X9PMR6），唯一但认不出是哪篇（F.5 第 1 条，用户痛点）；
+#   · 更要紧的是**死引用**：文献被删（item_tombstone）或被合并（item_merge）之后，
+#     面板原来照样把那个 key 印出来 —— 看着像"这条经验还挂着这篇"，其实早就不在
+#     库里了（G.0 的「经验失效引用」盲区 / H.3 第 10 条）。
+#
+# 六种状态 = 四种判定（正常/已删除/已合并/库里没有）+ 两个异常态（成环/读不到库）。
+# 判据一律来自 `keys.resolve_key()`，**不在这里重写合并链与墓碑的判断**：
+#
+#   REF_OK       正常      `作者 年份 · 短标题  [KEY]`（schemas.human_label 现成的）
+#   REF_DELETED  已删除    `（已删除）  [KEY]`；名字有**两级回退**：先翻归档快照
+#                          （`trash/<key>/rows.json`），翻不到再用墓碑里留的那一份
+#                          （T0-13 的 title/first_author/year）——
+#                          `kind='deleted'` 的归档目录早被清掉了，墓碑是最后的来源
+#   REF_MERGED   已合并    **保留项**的可读名 + `（已合并到 保留项KEY）`；
+#                          方括号里仍是**用户当初记下的那个 key**（可追溯，不改历史）
+#   REF_MISSING  库里没有  `（无此条目：KEY）`（不静默显示成空）
+#   REF_CYCLE    合并成环  `（合并映射成环：A → B → A）  [KEY]`（数据错误，必须说出来）
+#   REF_ERROR    读不到库  `（读不到知识库：<原因>）  [KEY]`
+#
+# 批量取数：三条 `SELECT … WHERE key IN (…)`（① 输入的 key，② 合并链上的保留项 ——
+# 少查这一下，已合并的引用就只能显示成"保留项也不在库里"，③ **墓碑留名**，
+# 只对"已不在库里"的那几条查 —— 正常引用一个字都不多查），
+# 之后每条只过一遍 resolve_key()（它读的是进程内缓存，不再查库）。
+# **别在渲染循环里逐条查库** —— 面板是 Tk 主线程，查一次库就少一帧。
+#
+# 只读：本层**一个字都不写回** experience.item_keys（G.4 第 5 条：那是用户手记，
+# 改写等于篡改历史）。失效引用只标注，清不清、改不改由用户自己判断。
+
+REF_OK = "ok"
+REF_DELETED = "deleted"
+REF_MERGED = "merged"
+REF_MISSING = "missing"
+REF_CYCLE = "cycle"
+REF_ERROR = "error"
+
+
+def _ref_conn(obj):
+    """把 None / 库路径 / sqlite 连接 / Searcher / ConnWriter 统一成 (连接, 是不是本函数开的)。
+
+    为什么要认这么多种：调用点手里拿的东西不一样 —— 经验详情位什么都不拿（None）、
+    权重列表拿的是 Searcher、经验编辑器拿的是 ConnWriter。让**显示层**去适配它们，
+    而不是让每个面板各自准备连接。
+    """
+    import sqlite3
+
+    import schemas as S
+
+    if isinstance(obj, sqlite3.Connection):
+        return obj, False
+    inner = getattr(obj, "conn", None)       # Searcher / ConnWriter 都是包一层的
+    if isinstance(inner, sqlite3.Connection):
+        return inner, False
+    path = obj if isinstance(obj, str) and obj else S.INDEX_DB
+    # ⚠ sqlite3.connect() 对**不存在的路径**会当场建一个空库出来 —— 显示层不该有
+    #   这种副作用，也免得把"知识库没了"显示成"这些 key 都不存在"。先查存在性。
+    if path and not path.startswith(":") and not os.path.exists(path):
+        raise FileNotFoundError(f"索引库不存在：{path}")
+    return S.connect(path), True
+
+
+def _ref_row(row, names) -> dict:
+    """把一行（sqlite3.Row 或普通元组）按**钉死的列名**取成 dict。
+
+    ⚠ 两种都要支持：连接是自己开的（schemas.connect 设了 row_factory=Row），
+      但调用方可能塞一个裸 sqlite3.connect() 进来（测试里就有）。
+      T0-2 踩过的坑是"SELECT 一列却读 r[1]"—— 这里按列名取，且 SELECT 列表
+      就在调用处上面几行，不会漂。
+    """
+    try:
+        return {n: row[n] for n in names}
+    except (TypeError, IndexError, KeyError):
+        return dict(zip(names, tuple(row)))
+
+
+def _ref_rows(conn, keys: list) -> dict:
+    """一次问库：`{key: {title, first_author, year}}`（查不到的 key 不在返回里）。
+
+    分批是怕 key 太多撞上 SQLite 的变量上限（默认 999 个 ?）。读不到（老库缺表、
+    库文件坏了）时返回 {} —— 上层会把它显示成"无此条目"，而不是抛进 Tk 回调里。
+    """
+    import sqlite3
+
+    names = ("key", "title", "first_author", "year")
+    out: dict = {}
+    for i in range(0, len(keys), 400):
+        part = keys[i:i + 400]
+        sql = ("SELECT key, title, first_author, year FROM items "
+               "WHERE key IN (%s)" % ",".join("?" * len(part)))
+        try:
+            rows = conn.execute(sql, tuple(part)).fetchall()
+        except sqlite3.Error:
+            return out
+        for r in rows:
+            got = _ref_row(r, names)
+            out[str(got["key"])] = {"title": got["title"] or "",
+                                    "first_author": got["first_author"] or "",
+                                    "year": got["year"]}
+    return out
+
+
+def _ref_snapshot(key: str) -> dict:
+    """墓碑那条**历史上**的可读名：归档快照 `trash/<key>/rows.json` 里的 items 行。
+
+    kind='trashed' 的条目归档目录还在，能翻出标题/作者/年份；kind='deleted' 的
+    归档目录已被"彻底删除"清掉，读不到就返回 {}（没有别的历史记录可翻）—— 那时
+    界面上只剩 `（已删除）  [KEY]`，虽然认不出是哪篇，但**明确说了它没了**，
+    比继续显示一个死 key 强。
+    读文件只发生在**失效的那几条**上（正常引用不碰磁盘），而且每条只读一次。
+    """
+    try:
+        import trash as TR
+        with open(os.path.join(TR.trash_dir(key), TR.ROWS_JSON),
+                  encoding="utf-8") as fh:
+            snap = json.load(fh)
+    except Exception:        # noqa: BLE001 —— 缺了/坏了/没装 trash 都按"没有"处理
+        return {}
+    it = (snap or {}).get("items") or {}
+    if not isinstance(it, dict):
+        return {}
+    return {"title": it.get("title") or "",
+            "first_author": it.get("first_author") or "",
+            "year": it.get("year")}
+
+
+def _ref_tombstones(conn, keys: list) -> dict:
+    """墓碑里留的"删前叫什么"（T0-13）：`{key: {title, first_author, year}}`。
+
+    为什么需要它：`kind='deleted'` 的条目归档目录已被"彻底删除"清掉，
+    `_ref_snapshot()` 翻不到 —— 而归档那一刻抄进墓碑的这三个字段还在，
+    是**唯一**还能认出是哪篇的地方（老墓碑三列是空的，那就继续"认不出"）。
+
+    读不到（老库还没补这三列、表坏了）返回 {} —— 上层退回只显示"（已删除）"，
+    绝不因此把整条引用报成错误。同样按列名取，兼容裸 sqlite3 连接的元组行。
+    """
+    import sqlite3
+
+    import schemas as S
+
+    names = ("key",) + tuple(S.TOMBSTONE_NAME_COLS)
+    out: dict = {}
+    for i in range(0, len(keys), 400):
+        part = keys[i:i + 400]
+        sql = ("SELECT %s FROM item_tombstone WHERE key IN (%s)"
+               % (", ".join(names), ",".join("?" * len(part))))
+        try:
+            rows = conn.execute(sql, tuple(part)).fetchall()
+        except sqlite3.Error:
+            return out
+        for r in rows:
+            got = _ref_row(r, names)
+            # 与 _ref_rows() 同一个形状（title/first_author 兜成空串，year 原样）
+            out[str(got["key"])] = {"title": got["title"] or "",
+                                    "first_author": got["first_author"] or "",
+                                    "year": got["year"]}
+    return out
+
+
+def _ref_resolve(conn, key: str) -> tuple:
+    """resolve_key() 的一层包装：把异常变成"状态"，而不是抛进 Tk 回调里。
+
+    返回 (解析结果, 出错状态, 出错文案)；一切正常时后两项都是 ""。
+    解析结果是 None = 命中墓碑（这条已不在库里）。
+    """
+    import keys as K
+
+    try:
+        return K.resolve_key(key, conn), "", ""
+    except K.MergeCycle as exc:
+        # 环是**数据错误**：静默取根会把一条错的映射当成权威，之后所有引用都跟着错
+        return None, REF_CYCLE, f"（合并映射成环：{' → '.join(exc.cycle)}）"
+    except Exception as exc:     # noqa: BLE001 —— 解析不了也别让详情/列表空白
+        return None, REF_ERROR, f"（查不了这个 key：{type(exc).__name__}: {exc}）"
+
+
+def _ref_one(key: str, res: tuple, rows: dict, snaps: dict, tombs: dict,
+             limit: int) -> dict:
+    """一条 key 的显示（内部用，状态见上面那张表）。
+
+    res 是 _ref_resolve() 的结果；rows 里**已经含有合并链上的保留项**
+    （item_refs 分趟批量补齐，所以这里不必、也不该再查库）。
+    snaps 是归档快照里翻出来的历史名（懒读、按 key 缓存），tombs 是墓碑里留的名
+    （T0-13）—— 后者已经批量查好，只有"已不在库里"的 key 才会用到。
+    """
+    import schemas as S
+
+    resolved, err_status, err_text = res
+    out = {"key": key, "status": REF_MISSING, "resolved": "",
+           "title": "", "first_author": "", "year": "", "text": ""}
+    if err_status:
+        out["status"] = err_status
+        out["text"] = f"{err_text}  [{key}]"
+        return out
+    live = rows.get(key)
+
+    if resolved is not None and resolved != key:
+        # 有合并映射：显示**保留项**的可读名（dc:replaces 链取根由 resolve_key 做）
+        root = rows.get(resolved)
+        out["status"] = REF_MERGED
+        out["resolved"] = resolved
+        if root:
+            for f in ("title", "first_author", "year"):
+                out[f] = root.get(f) or ""
+            ref = S.human_ref(root["title"], root["first_author"], root["year"],
+                              limit)
+            out["text"] = f"{ref}  [{key}]（已合并到 {resolved}）"
+        else:
+            # 并过去的那条后来被彻底删了（resolve_key 的说明里点名过这种边界）
+            out["text"] = f"（已合并到 {resolved}，但该条目也已不在库里）  [{key}]"
+        return out
+
+    if resolved is None:
+        if live:
+            # 墓碑说它已删、索引库里却还有它 —— 只可能是"刚还原、墓碑还没清"的
+            # 中间态（trash.restore() 会清墓碑）。按**还在库里**显示，但把矛盾说出来。
+            out["status"] = REF_OK
+            out["resolved"] = key
+            for f in ("title", "first_author", "year"):
+                out[f] = live.get(f) or ""
+            out["text"] = S.human_label(live["title"], live["first_author"],
+                                        live["year"], key, limit) \
+                + "（墓碑里记着已删除，但索引库里还在）"
+            return out
+        if key not in snaps:
+            snaps[key] = _ref_snapshot(key)
+        snap = snaps[key] or {}
+        tomb = tombs.get(key) or {}
+        out["status"] = REF_DELETED
+        # 名字两级回退（T0-13）：归档快照（kind='trashed' 时归档目录还在）→
+        # 墓碑里留的那一份（kind='deleted' 时归档目录已被清掉，只剩它）。
+        # 两处都没有（老墓碑三列是空的）就回落到只显示"（已删除）"——
+        # 缺哪一段都可能是 ""，所以逐字段取第一个非空，不会写出 None/nan。
+        for f in ("title", "first_author", "year"):
+            out[f] = snap.get(f) or tomb.get(f) or ""
+        head = (S.human_ref(out["title"], out["first_author"], out["year"], limit)
+                if out["title"] else "")
+        out["text"] = f"{head}（已删除）  [{key}]" if head else f"（已删除）  [{key}]"
+        return out
+
+    if live:
+        out["status"] = REF_OK
+        out["resolved"] = key
+        for f in ("title", "first_author", "year"):
+            out[f] = live.get(f) or ""
+        out["text"] = S.human_label(live["title"], live["first_author"],
+                                    live["year"], key, limit)
+        return out
+
+    # 库里没有、也没有墓碑/映射：很久以前（T0-1 之前）被清掉的，或者根本是笔误。
+    # 两者在数据上分不开，所以只报"库里没有"，不猜是哪种。
+    out["status"] = REF_MISSING
+    out["text"] = f"（无此条目：{key}）"
+    return out
+
+
+def item_refs(value, conn=None, *, limit: int = 40) -> dict:
+    """把经验的 `item_keys`（或任意 key 列表）解析成**能给人看**的一组标签。
+
+    返回的键（调用方直接用这些，别再自己拼 key 或另写判断）：
+
+        items    `[{key, status, resolved, title, first_author, year, text}]`，顺序 = 输入顺序
+        text     单行形态：`甲；乙`（对话框预览、日志这类窄处用）
+        lines    每条的 text（要自己排版时用）
+        block    多行形态，**自带换行**、每行以「· 」开头（空列表时是 ""）：
+                 直接接在「关联文献：」后面就是一段列表 —— 详情位与编辑器用它
+        total    key 条数（去重后）；注意 0 不是错误（这条经验就是没关联文献）
+        live     **还在库里**的条数（已合并、且保留项在库里的也算）
+        dead     已不在库里的条数（已删除 + 无此条目 + 并到一条已删文献）
+        summary  全失效/部分失效时的一句话提示（正常时是 ""）——
+                 只提示，**绝不自动清空** item_keys（那是用户手记）
+        error     读不到知识库时的原因（正常时是 ""）
+
+    `value` 容忍历史脏值：`None`、空串、库里那一列的 JSON 字符串、列表、重复 key、
+    两头空白、非字符串 —— 全部交给 `keys_of()` 规整。
+
+    `conn` 可以是 None（用默认库，函数自己开关连接）、库路径、sqlite 连接，
+    或 Searcher / ConnWriter（见 `_ref_conn`）。
+    """
+    keys: list = []
+    for raw in keys_of(value):
+        k = str(raw or "").strip()
+        if k and k not in keys:            # 去重但保持顺序（库里有重复的历史值）
+            keys.append(k)
+    out = {"items": [], "text": "", "lines": [], "block": "",
+           "total": len(keys), "live": 0, "dead": 0, "summary": "", "error": ""}
+    if not keys:
+        return out
+    try:
+        conn_, own = _ref_conn(conn)
+        try:
+            # 两趟取数，**都是批量的**（别在渲染循环里逐条查库）：
+            #   ① 解析每个 key（resolve_key 读的是进程内缓存，不查库）；
+            #   ② 一次把"输入 key + 合并链上的保留项"全查出来 —— 少了这一下，
+            #      已合并的引用就只能显示成"保留项也不在库里"（第一版实测踩到）。
+            plan = {k: _ref_resolve(conn_, k) for k in keys}
+            rows = _ref_rows(conn_, keys)
+            extra = [r for (r, _s, _t) in plan.values() if r and r not in rows]
+            if extra:
+                rows.update(_ref_rows(conn_, extra))
+            # ③ 墓碑留名（T0-13）：只有解析结果是 None（= 这条已不在库里）的 key 才要，
+            #    正常引用一个字都不多查（面板是 Tk 主线程，少一次查询就少一帧）。
+            tombs = _ref_tombstones(conn_, [k for k in keys if plan[k][0] is None])
+            snaps: dict = {}
+            out["items"] = [_ref_one(k, plan[k], rows, snaps, tombs, limit)
+                            for k in keys]
+        finally:
+            if own:
+                conn_.close()
+    except Exception as exc:      # noqa: BLE001 —— 读不到库要报出来，不是显示成空
+        out["error"] = f"{type(exc).__name__}: {exc}"
+        out["items"] = [{"key": k, "status": REF_ERROR, "resolved": "",
+                         "title": "", "first_author": "", "year": "",
+                         "text": f"（读不到知识库：{out['error']}）  [{k}]"}
+                        for k in keys]
+
+    out["lines"] = [it["text"] for it in out["items"]]
+    out["text"] = "；".join(out["lines"])
+    out["block"] = "".join("\n  · " + t for t in out["lines"])
+    if out["error"]:
+        out["summary"] = f"读不到知识库：{out['error']}"
+        return out
+    out["dead"] = sum(1 for it in out["items"]
+                      if it["status"] in (REF_DELETED, REF_MISSING)
+                      or (it["status"] == REF_MERGED and not it["title"]))
+    out["live"] = len(out["items"]) - out["dead"]
+    if out["dead"]:
+        out["summary"] = (f"关联的 {out['total']} 篇都已不在库里 —— 只标注，不自动清空"
+                          if not out["live"] else
+                          f"关联的 {out['total']} 篇里有 {out['dead']} 篇已不在库里")
+    return out
 
 
 class ConnWriter:

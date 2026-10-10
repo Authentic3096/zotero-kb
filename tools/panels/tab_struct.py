@@ -47,15 +47,39 @@ class StructTab:
                    command=self.open_folder).pack(side="right")
         ttk.Button(head, text="刷新", command=self.refresh_struct).pack(
             side="right", padx=6)
-        # 可选组件的安装引导：**只在没检测到那个组件时才出现**（用户定的规矩：
-        # "如果检测到 minerU 就没这个按键"；Ollama 同理）。检测放后台线程，
-        # 结果回主线程决定按钮要不要 pack —— 所以先建好、默认不显示。
+        # 对账（用户 2026-10-10 要的）：一条**只读报告**，把"知识库 vs Zotero
+        # 的差异"列出来（KB 有/Zotero 没有、未处理的合并映射、经验里的失效引用、
+        # 磁盘残留、归档占用）。报告走子进程、渲染在下面的运行日志区。
+        b_rec = ttk.Button(head, text="对账", command=self.do_reconcile)
+        b_rec.pack(side="right", padx=6)
+        self._tip(b_rec, "只读巡检：列出知识库与 Zotero 的差异（不改任何数据）。"
+                         "要清理残留/归档再点旁边的「清理可回收项」")
+        b_clean = ttk.Button(head, text="清理可回收项",
+                             command=self.do_reconcile_apply)
+        b_clean.pack(side="right", padx=6)
+        self._tip(b_clean, "只清理两类：没有对应条目的磁盘残留、Zotero 里已彻底"
+                           "没有的可回收归档（会先弹窗确认；不碰条目与经验库）")
+        # 可选组件的安装引导：**两个按钮一直显示**（用户 2026-10-10 改的规矩：
+        # 原来是"检测到装了就把按钮收起来"，现在按钮常显 —— 装没装由引导窗
+        # 自己把「开始安装」置灰来说明，面板这边只在 tooltip 里写一句探测结果）。
+        # 探测仍然放后台线程（约 1~4 秒），文案回主线程更新；tooltip 是**点开时
+        # 才取文案**的，所以探测晚一点到也不影响按钮可用。
         self.mineru_btn = ttk.Button(
             head, text="MinerU 安装引导", command=self.open_mineru_guide)
-        self._mineru_btn_shown = False
         self.ollama_btn = ttk.Button(
             head, text="Ollama 安装引导", command=self.open_ollama_guide)
-        self._ollama_btn_shown = False
+        self.mineru_btn.pack(side="right", padx=6)
+        self.ollama_btn.pack(side="right", padx=6)
+        # 探测结果（写进 tooltip）：{"installed": bool|None, "summary": str}
+        self._mineru_btn_info = {"installed": None,
+                                 "summary": "正在检测本机是否已装 MinerU…"}
+        self._ollama_btn_info = {"installed": None,
+                                 "summary": "正在检测本机是否已装 Ollama…"}
+        self._tip(self.mineru_btn, lambda: self._mineru_btn_info["summary"])
+        self._tip(self.ollama_btn, lambda: self._ollama_btn_info["summary"])
+        # 兼容旧字段名（原来表示"按钮显示出来了没有"）：现在按钮常显，恒为 True
+        self._mineru_btn_shown = True
+        self._ollama_btn_shown = True
         # ⚠ 用 `self.root.after` 而不是 `self.after`：App 是"混入类的组合"，
         #   本身不是 Tk 控件（面板冒烟测试里就是在没有真 root 的情况下装配的，
         #   写 self.after 会 AttributeError —— 本机测试逮到）。
@@ -99,39 +123,44 @@ class StructTab:
     # ---------------------------------------------------------- MinerU 引导
 
     def _check_mineru_button(self):
-        """后台探一次 MinerU，决定「MinerU 安装引导」按钮显不显示。
+        """后台探一次 MinerU，把结果写进「MinerU 安装引导」按钮的 tooltip。
 
-        用户规矩：**检测到就不显示**（装了就不该再被引导）。探测要跑子进程
+        用户 2026-10-10 改的规矩：**按钮一直显示**（原来"检测到就不显示"），
+        装没装由引导窗自己把「开始安装」置灰来说明。探测要跑子进程
         （约 1~4 秒，`offline/mineru.py` 有 60 秒缓存），所以放线程里，
-        结果回主线程改界面（Tk 控件只能主线程碰）。
-        `refresh_struct()` 之后也会再调一次（用户点「刷新」时重新判断）。
+        结果回主线程更新文案（Tk 控件只能主线程碰）。
+        `refresh_struct()` 之后也会再调一次。
         """
         def work():
-            ok = False
+            installed = False
+            summary = ""
             try:
                 import sys as _sys
                 if os.path.join(ROOT, "offline") not in _sys.path:
                     _sys.path.insert(0, os.path.join(ROOT, "offline"))
                 import mineru as MU
-                ok = bool(MU.probe().get("ok"))
-            except Exception:      # noqa: BLE001
-                ok = False
-            self.after(0, lambda: self._apply_mineru_button(ok))
+                info = MU.probe()
+                installed = bool(info.get("ok"))
+                summary = MU.summary_line(info)
+            except Exception as exc:      # noqa: BLE001
+                installed = False
+                summary = f"检测失败：{type(exc).__name__}: {exc}"
+            # ⚠ T0-14 缺陷 2：这里在 worker 线程里，self 是 App（混入类的组合），
+            #   它**不是 Tk 控件**、没有 after —— 必须走 self.root.after
+            #   （与 _build_struct_tab 里那两行同一写法）。
+            self.root.after(
+                0, lambda: self._apply_mineru_button(installed, summary))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply_mineru_button(self, installed: bool):
-        want = not installed
-        if want == self._mineru_btn_shown:
-            return
-        try:
-            if want:
-                self.mineru_btn.pack(side="right", padx=6)
-            else:
-                self.mineru_btn.pack_forget()
-        except tk.TclError:
-            return
-        self._mineru_btn_shown = want
+    def _apply_mineru_button(self, installed: bool, summary: str = ""):
+        """主线程：只更新 tooltip 文案（按钮常显，不再 pack/unpack）。"""
+        self._mineru_btn_info["installed"] = bool(installed)
+        self._mineru_btn_info["summary"] = (
+            "本机已装：" + (summary or "（探测不到细节）")
+            if installed else
+            "本机未检测到 MinerU —— 点它打开安装引导"
+            "（可选组件，不装也能用）")
 
     def open_mineru_guide(self):
         """打开安装引导窗口（与插件首启对话框进的是同一个）。"""
@@ -143,36 +172,44 @@ class StructTab:
     # ---------------------------------------------------------- Ollama 引导
 
     def _check_ollama_button(self):
-        """后台探一次 Ollama，决定「Ollama 安装引导」按钮显不显示。
+        """后台探一次 Ollama，把结果写进按钮 tooltip。
 
-        与 MinerU 同一套规矩：**检测到就不显示**。判据用
+        与 MinerU 同一套新规矩：**按钮一直显示**。判据用
         `panels.ollama_guide.ollama_paths()`（找 exe + 问 API），它内部走
         `schemas.resolve_ollama()` 与 `judge.ollama_models()`，都是已有的判据。
         """
         def work():
             installed = False
+            summary = ""
             try:
                 from .ollama_guide import ollama_paths
                 st = ollama_paths()
                 installed = bool(st.get("exe"))
-            except Exception:      # noqa: BLE001
+                if installed:
+                    summary = st["exe"]
+                    if st.get("api_up"):
+                        summary += ("（正在运行，模型："
+                                    + ("、".join(st["models"]) if st["models"]
+                                       else "还没有模型") + "）")
+                    else:
+                        summary += "（程序在，但 Ollama 没在响应）"
+            except Exception as exc:      # noqa: BLE001
                 installed = False
-            self.after(0, lambda: self._apply_ollama_button(installed))
+                summary = f"检测失败：{type(exc).__name__}: {exc}"
+            # 同上（缺陷 2）：worker 里只能用 self.root.after。
+            self.root.after(
+                0, lambda: self._apply_ollama_button(installed, summary))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply_ollama_button(self, installed: bool):
-        want = not installed
-        if want == self._ollama_btn_shown:
-            return
-        try:
-            if want:
-                self.ollama_btn.pack(side="right", padx=6)
-            else:
-                self.ollama_btn.pack_forget()
-        except tk.TclError:
-            return
-        self._ollama_btn_shown = want
+    def _apply_ollama_button(self, installed: bool, summary: str = ""):
+        """主线程：只更新 tooltip 文案（按钮常显，不再 pack/unpack）。"""
+        self._ollama_btn_info["installed"] = bool(installed)
+        self._ollama_btn_info["summary"] = (
+            "本机已装：" + (summary or "（探测不到细节）")
+            if installed else
+            "本机未检测到 Ollama —— 点它打开安装引导"
+            "（可选组件，也可以用 API 模型）")
 
     def open_ollama_guide(self):
         """打开 Ollama 安装引导（下载 → 静默装 → 启动 → 拉模型）。"""
@@ -282,6 +319,7 @@ class StructTab:
 
         self.struct_note.set(
             f"知识库根目录：{kb}    ·    合计 {human(used)}\n"
+            + self._reconcile_line() + "\n"
             "说明：papers/、fulltext/、views/ 都是可重建的派生物，删了跑一次"
             "「手动更新」就回来；index.db 里的经验层和权重是攒出来的，"
             "重建索引不会恢复它们 —— 所以定期点「备份」。\n"
@@ -290,6 +328,92 @@ class StructTab:
             "跟用哪个模型无关 —— 用 Ollama 不需要任何模型 key，"
             "这三个文件也一直会在。模型那边的 key（如果用 API）"
             "存在 llm-config.json 里。")
+
+    # ---------------------------------------------------------- 对账
+
+    @staticmethod
+    def _offline_on_path():
+        """确保 offline\\ 在 sys.path 上（面板能直接 import maintain/schemas）。
+
+        ⚠ 与 panels/common.py 做的是同一件事，但这里宁可自己再确认一次：
+          只有这样才能保证"这个页签单独被装配"（冒烟测试）时也能工作。
+        """
+        import sys as _sys
+        path = os.path.join(ROOT, "offline")
+        if path not in _sys.path:
+            _sys.path.insert(0, path)
+
+    def _reconcile_line(self) -> str:
+        """「知识库结构」页那一行：trash 体积 + 磁盘残留条数（只读、永不抛）。
+
+        口径**只有一份**（offline/maintain.py::reconcile_summary_line）——
+        面板不自己重算，否则两处迟早漂移。
+        """
+        try:
+            self._offline_on_path()
+            import maintain as MT
+            import schemas as S
+            if not os.path.exists(S.INDEX_DB):
+                return "对账：还没有索引（先点「手动更新」）"
+            conn = S.connect(S.INDEX_DB)
+            try:
+                return MT.reconcile_summary_line(conn)
+            finally:
+                conn.close()
+        except Exception as exc:      # noqa: BLE001 —— 一行统计不该让整页崩
+            return f"对账：统计失败（{type(exc).__name__}: {exc}）"
+
+    def do_reconcile(self):
+        """「对账」：跑 offline/maintain.py reconcile（**只读**），报告进日志区。"""
+        self.run("对账巡检（只读）",
+                 [os.path.join(ROOT, "offline", "maintain.py"), "reconcile"],
+                 on_done=self.refresh_struct)
+
+    def do_reconcile_apply(self):
+        """「清理可回收项」：只处理第 4、5 两项，**先弹窗确认**。
+
+        为什么面板上不给第 1 项（KB 有、Zotero 没有）：那会**删条目**，而它通常
+        是因为 Zotero 那边刚删、还没跑「手动更新」—— 跑一次增量或
+        maintain.py reconcile --apply 1 更稳妥。第 2 项属后续任务、第 3 项是
+        用户手记，两者本命令永不改。
+        """
+        try:
+            self._offline_on_path()
+            import maintain as MT
+            import schemas as S
+            if not os.path.exists(S.INDEX_DB):
+                messagebox.showinfo("对账", "还没有索引，先点「手动更新」建一次。")
+                return
+            conn = S.connect(S.INDEX_DB)
+            try:
+                snap = MT.reconcile_snapshot(conn)
+            finally:
+                conn.close()
+        except Exception as exc:      # noqa: BLE001
+            messagebox.showerror("对账失败", f"读不了对账快照：{exc}")
+            return
+
+        n_orphan = len(snap["orphan_keys"])
+        n_trash = len(snap["trash_keys"])
+        if not n_orphan and not n_trash:
+            messagebox.showinfo("对账", "没有可清理的磁盘残留或归档，不需要处理。")
+            return
+        if not messagebox.askyesno(
+                "确认清理（对账）",
+                "将处理：\n"
+                f"  · 磁盘残留 {n_orphan} 个 key：views / papers / fulltext /\n"
+                f"    mineru 里没有对应条目的产物\n"
+                f"  · 可回收归档 {n_trash} 条：kb\\trash\\ 下、且 Zotero 里\n"
+                f"    已彻底没有这条的归档\n\n"
+                "⚠ 不碰条目（第 1 项）、不碰经验库（第 3 项）。\n"
+                "残留产物都是可重建的派生物，删掉不影响检索。\n"
+                "仍在 Zotero 回收站里的归档会保留（随时可能还原）。\n\n"
+                "继续？"):
+            return
+        self.run("对账 · 清理可回收项",
+                 [os.path.join(ROOT, "offline", "maintain.py"), "reconcile",
+                  "--apply", "4,5", "--yes"],
+                 on_done=self.refresh_struct)
 
     # ---------------------------------------------------------- 打开知识库
 

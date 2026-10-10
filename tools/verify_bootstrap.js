@@ -48,6 +48,7 @@ const check = (name, cond, detail) => {
 const calls = {
   sections: [], readers: [], observers: [], prefs: {}, status: [], notes: 0,
   http: [], ftlLinks: [], ftlResourceIds: [],
+  columns: [],       // ItemTreeManager.registerColumn 收到的列定义（T0-8 的两列）
 };
 
 
@@ -131,6 +132,18 @@ const Zotero = {
       calls.readers.push({ type, fn, pluginID });
     },
     getByTabID: () => null,
+  },
+  // 自定义列（16-weightcol.js / 21-kbcols.js）：把注册进来的列定义记下来。
+  // ⚠ 真机里 registerColumn 返回的 dataKey 会带 pluginID 前缀，桩里按原样
+  //   返回即可 —— 下面的断言只看列定义本身，不看前缀。
+  // ⚠ 权重列那一步在桩里是**被替换掉的**（见下面 KB.registerWeightColumn），
+  //   所以这里记到的是 T0-8 新加的两列。
+  ItemTreeManager: {
+    registerColumn(opts) { calls.columns.push(opts); return opts.dataKey; },
+    unregisterColumn() { return true; },
+    refreshColumns() {},
+    isCustomColumn: () => false,
+    getCustomCellData: () => "",
   },
   Items: { get: () => null },
   HTTP: { request: async () => ({ response: "{}" }) },
@@ -217,6 +230,83 @@ if (KB) {
   const steps = (calls.status.find((s) => s.startupSteps) || {}).startupSteps || "";
   check("startup 各步全过（含 initLocale）",
     steps.indexOf("FAIL") < 0 && steps.indexOf("initLocale=ok") >= 0, steps);
+
+  // ---- ⑧ 文献列表两列（T0-8）：「已建知识库」「分节纲要」
+  //
+  // 这两列的数据全部来自本地服务的 GET /col-status。桩里把缓存直接填好，
+  // 逐条断言**取值规则**（✓/✗、补零的节数、拿不到服务时留空）——
+  // 真机上"列是空的"是没有任何报错的，只能在这里钉死。
+  const colBuilt = calls.columns.find((c) => c.dataKey === "kbBuilt");
+  const colOutline = calls.columns.find((c) => c.dataKey === "kbOutline");
+  const dp = (col, key) =>
+    (col && col.dataProvider ? col.dataProvider({ key }) : "<没有这一列>");
+  check("startup 里有 registerKbColumns 这一步",
+    steps.indexOf("registerKbColumns=ok") >= 0, steps);
+  check("注册了 kbBuilt / kbOutline 两列",
+    !!colBuilt && !!colOutline,
+    JSON.stringify(calls.columns.map((c) => c.dataKey)));
+  check("两列的 label / enabledTreeIDs / flex / minWidth 都对",
+    !!colBuilt && !!colOutline
+    && colBuilt.label === "已建知识库" && colOutline.label === "分节纲要"
+    && colBuilt.enabledTreeIDs.join() === "main"
+    && colOutline.enabledTreeIDs.join() === "main"
+    && colBuilt.flex === 1 && colOutline.flex === 1
+    && colBuilt.minWidth > 0,
+    JSON.stringify([colBuilt, colOutline].map((c) => c && [c.label, c.flex])));
+  KB.colStatusCache = {
+    ABCD1234: { in_kb: true, outline_sections: 12 },
+    IJKL9012: { in_kb: true, outline_sections: 4 },
+    EFGH5678: { in_kb: true, outline_sections: 0 },
+    NOPE0001: { in_kb: false, outline_sections: 0 },
+  };
+  KB.colStatusReady = true;
+  check("已建知识库列：在库 ✓ / 不在库 ✗",
+    dp(colBuilt, "ABCD1234") === "✓" && dp(colBuilt, "NOPE0001") === "✗",
+    dp(colBuilt, "ABCD1234") + dp(colBuilt, "NOPE0001"));
+  check("分节纲要列：有纲要给节数 / 没有给 ✗",
+    dp(colOutline, "ABCD1234") === "012" && dp(colOutline, "EFGH5678") === "✗",
+    dp(colOutline, "ABCD1234") + dp(colOutline, "EFGH5678"));
+  check("节数补零 → 字典序等于数值序（4 节排在 12 节前）",
+    dp(colOutline, "IJKL9012") === "004"
+    && dp(colOutline, "IJKL9012") < dp(colOutline, "ABCD1234"),
+    dp(colOutline, "IJKL9012") + " vs " + dp(colOutline, "ABCD1234"));
+  check("给人看的文案去掉补零、带上「节」",
+    KB.kbColText("012", "outline") === "12 节"
+    && KB.kbColText("004", "outline") === "4 节"
+    && KB.kbColText("✗", "outline") === "✗"
+    && KB.kbColText("✓", "built") === "✓",
+    KB.kbColText("012", "outline"));
+  KB.colStatusReady = false;
+  check("一次都没拉到服务时两列留空（不把「没数据」画成「没建库」）",
+    dp(colBuilt, "ABCD1234") === "" && dp(colOutline, "ABCD1234") === "");
+  check("没有 item / 没有 key 时不抛",
+    !!colBuilt && colBuilt.dataProvider(null) === ""
+    && colBuilt.dataProvider({}) === "");
+  KB.colStatusReady = true;
+  // 渲染结构：className 含 cell + 文字在**内层** span 里 ——
+  // 外层这个 title 不会被虚拟表格的 _handleMouseOver 清掉，就靠这一层
+  // （见 21-kbcols.js 的 kbColCell 说明）。
+  const cell = colOutline && colOutline.renderCell(0, "012", { className: "kb-x" });
+  check("renderCell 复刻标准单元格结构（class 含 cell、文字在内层 span）",
+    !!cell && /(^|\s)cell(\s|$)/.test(cell.className)
+    && cell.children.length === 1
+    && cell.children[0].textContent === "12 节",
+    cell ? cell.className + " / "
+      + JSON.stringify(cell.children.map((c) => c.textContent)) : "没有 renderCell");
+  check("renderCell 在外层给了 title（悬停提示）",
+    !!cell && typeof cell.title === "string" && cell.title.indexOf("纲要") >= 0,
+    cell ? String(cell.title) : "");
+  check("这两列没有用 htmlLabel 之类没人读的字段去冒充表头 tooltip",
+    !!colBuilt && !!colOutline
+    && colBuilt.htmlLabel === undefined && colOutline.htmlLabel === undefined);
+  // ⚠ 这条是**真机踩出来的回归**：不写 defaultIn 时，列注册成功、_columns 里也有，
+  //   但列表上就是看不见（被 _getColumns 算成 hidden）—— 用户只能自己去右键
+  //   "列"菜单里把它勾出来。桩环境抓不到"看得见看不见"，所以在这里把字段钉死。
+  check("两列都带 defaultIn（否则注册了也不会显示）",
+    !!colBuilt && !!colOutline
+    && String(colBuilt.defaultIn) === "*" && String(colOutline.defaultIn) === "*",
+    JSON.stringify([colBuilt && colBuilt.defaultIn,
+                    colOutline && colOutline.defaultIn]));
 
   // ---- ⑤ 界面文案那套挂载还在（2026-10-05 用户报"按钮全是空框"的根因）
   check("initLocale 把 ftl 挂到了窗口（MozXULElement.insertFTLIfNeeded）",
@@ -412,6 +502,34 @@ if (KB) {
     KB.caps.localWhy);
   KB.serverInfo = { ollama: { exists: false, api_up: false, models: [] } };
   check("没装 ollama → false", KB.probeLocalModel() === false);
+
+  // ---- 2026-10-10 修复：/health 的 ollama 是**路径字符串**（面板拿它填输入框），
+  //   插件要的结构化状态在新增的 ollama_info 里。修复前 probeLocalModel 直接读
+  //   `serverInfo.ollama`（字符串）→ `info.exists` 恒 undefined → 明明连上也写
+  //   「没找到 Ollama」。下面四条把新契约钉住。
+  KB.serverInfo = {
+    ollama: "C:\\x\\ollama.exe",
+    ollama_info: { path: "C:\\x\\ollama.exe", exists: true,
+                   api_up: true, models: ["qwen3:4b-instruct"] },
+  };
+  check("优先读 ollama_info：已连上 → true",
+    KB.probeLocalModel() === true, KB.caps.localWhy);
+  KB.serverInfo = {
+    ollama: "C:\\x\\ollama.exe",
+    ollama_info: { path: "C:\\x\\ollama.exe", exists: true,
+                   api_up: false, models: [] },
+  };
+  check("ollama_info 说没在跑 → false 且原因具体",
+    KB.probeLocalModel() === false
+    && KB.caps.localWhy.indexOf("启动 Ollama") >= 0, KB.caps.localWhy);
+  KB.serverInfo = { ollama: "C:\\x\\ollama.exe" };   // 老服务：只有路径字符串
+  check("只有路径字符串（老服务）→ null 未知，不再误报「没找到 Ollama」",
+    KB.probeLocalModel() === null
+    && KB.caps.localWhy.indexOf("拿不到运行状态") >= 0, KB.caps.localWhy);
+  KB.serverInfo = { ollama: { exists: true, api_up: true,
+                             models: ["qwen3:4b-instruct"] } };
+  check("兼容「ollama 直接给结构」的服务端 → true",
+    KB.probeLocalModel() === true);
   KB.getPref = (k, d) => (k === KB.PREFS.provider ? "openai" : d);
   KB.serverInfo = null;
   check("选 API 但没填 key → false", KB.probeLocalModel() === false);

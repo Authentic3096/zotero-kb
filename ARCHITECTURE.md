@@ -553,12 +553,13 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 #### B7. Zotero 插件的几个关键机制
 
 插件是 **bootstrapped extension**（Zotero 7~10）。
-**源码在 `zotero-plugin/src/*.js`，按功能分 20 个文件**；`zotero-plugin/bootstrap.js`
+**源码在 `zotero-plugin/src/*.js`，按功能分 24 个文件**；`zotero-plugin/bootstrap.js`
 是它们拼出来的**生成物**（`tools/build_bootstrap.py`，xpi 里装的就是它）——
 原因见「五、目录与归属」里那一段。
 
 **启动是"分步执行 + 逐步记录"**：`registerPrefs → registerPrefObserver →
-registerPrefPane → registerNotifier → registerWeightColumn → startTaskPolling`，
+registerPrefPane → registerNotifier → registerWeightColumn → registerKbColumns →
+startTaskPolling`，
 每步成败进 `steps` 并写进状态文件 —— 因为 Zotero 的调试日志重启即失
 （`src/00-core.js` 的 `startup`）。
 
@@ -570,6 +571,21 @@ registerPrefPane → registerNotifier → registerWeightColumn → startTaskPoll
 ItemTree 的 `dataProvider` **同步且逐行调用**，不能在里头发网络请求
 （几百行会打爆服务）—— 所以启动/刷新时拉一次 `GET /weights` 全量进 `weightsCache`，
 provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`）。
+
+**「已建知识库」「分节纲要」两列**（T0-8）：同一套做法 —— 数据走
+`GET /col-status` 一次全量进 `colStatusCache`（provider 仍然只查表，
+见上面那条约束）。两条取值规则写在 `src/21-kbcols.js` 里：
+① 一份**完整**的映射里查不到某个 key 才算"没建库"（拿不到服务时整列留空，
+不把"我不知道"画成"这篇没建库"）；② 纲要节数按 `views/<key>.outline.md` 的
+`## ` 行数算，补零成三位再交给 Zotero —— 它给自定义列排序用的是
+`_sortCollation` 比较字符串（实测这一版 collation 认数字，补零是兜底：
+哪天换回普通字典序，"13" 就会排到 "4" 前面），显示时由 `renderCell` 去掉前导零。
+
+> ⚠ 新列**必须**在列定义里写 `defaultIn: ["*"]`，否则会出现"注册成功、
+> `_columns` 里也有、但列表上看不见"——因为只要任何一列带 `defaultIn`
+> （内置的 title / firstCreator / hasAttachment 都带），`_getColumns()`
+> 就把没声明它的新列算成 `hidden=true`，用户只能自己去右键"列"菜单里勾
+> （本机实测踩到，装完第一版两列全是隐藏的）。
 
 **右键菜单六组**（每次 `popupshowing` 重建，并判断 `event.target !== popup`
 以免子菜单冒泡把自己的菜单拆掉，`src/14-menus.js` 的 `registerItemMenu`）：
@@ -812,8 +828,13 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   ⚠ 缓存判据里带 `tried`：有些节本来就产出不了要点（正文过短/模型没给结果），
   只认"有 summary"的话这些节会**每次构建都被重问**（实测第二次仍有 1 节被重问）。
 - **只读不生成**：`kbviews._render_outline` / MCP 资源 `zotero-kb://item/outline/<KEY>`
-  只读现成产物；生成入口是面板按钮与 `python offline/digest.py <KEY>` ——
-  一篇学位论文要几分钟，不能挂在"随手点一下"的读路径上。
+  只读现成产物；生成入口是 **Zotero 条目右键菜单（`POST /digest` → 后台 job，
+  `digest.build(should_stop=…)` 可中断）**、面板按钮与 `python offline/digest.py <KEY>`
+  —— 一篇学位论文要几分钟，不能挂在"随手点一下"的读路径上。
+- **批量入口在插件侧**（T0-9，2026-10-10）：条目右键 →「生成分节纲要」逐篇**串行**
+  提交（单 GPU 不能并发打 Ollama）、失败不中断整批、已有纲要的直接跳过，结束时汇总
+  「已生成 / 跳过（已有纲要）/ 失败」并立刻刷一次两列；进度与每篇结果落在
+  `plugin-status.json` 的 `digestBusy` / `lastDigest` 里。
 - **不写进索引、不改排序**（用户明确"检索分层算了吧"）。
 
 #### B18. 提示词注册表：话术只有一份，且用户改得动
@@ -841,7 +862,10 @@ draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/promp
 - **`history` 留档**：`-- 经验层：只追加，永不覆盖` 对**自动流程**仍然成立，
   只对用户显式编辑开口子，且旧值 push 进 `history`。
 - **新增两个写入口**：面板「修改/增添经验」（口述 + 表单两条路，表单任何时候都能用）
-  与 CLI `kb_admin.py add/edit`。
+  与 CLI `kb_admin.py add/edit`。面板里「选文献…」走 `PaperPicker` 的**多选模式**
+  （`multi=True` + `selected_keys`：已选排最前且默认勾选、点一行勾/取消、双击或回车确认，
+  回调的是**完整集合**、空列表合法）；保存仍走 `add_experience/update_experience`，
+  面板不自己写库（回归在 `tests/test_picker_multi.py`）。
 - **id 连续编号**：删除后自动把 id 重排成 1..N（`renumber()`；两段式写 ——
   先把整表改成负数再写成目标值，否则主键会当场撞车）。批量删走
   `delete_experiences()` **一次事务 + 只重排一次**：循环调单条删除会边删边重排，
@@ -880,7 +904,7 @@ draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/promp
 │   ├── tools\                       管理工具（面板、升级、同步、打包、诊断…）
 │   │   ├── gui.py                   面板**入口**（组装 App + 命令行自检 + mainloop）
 │   │   ├── panels\                  ★ 面板各页签（base / tab_* / browser / common）
-│   │   ├── paper_picker.py          选文献的弹窗（列宽可拖、可排序）
+│   │   ├── paper_picker.py          选文献的弹窗（可拖宽、可排序；multi=True 多选）
 │   │   ├── build_bootstrap.py       ★ 把 src\*.js 拼成 bootstrap.js
 │   │   ├── check_kb_levels.py       ★ 盯分级清单在 Python 与 JS 两侧一致
 │   ├── zotero-plugin\               ★ Zotero 插件源码 + 诊断脚本
