@@ -10,7 +10,11 @@ $ErrorActionPreference = "Stop"
 
 $root = Split-Path $PSScriptRoot -Parent          # …\zotero-kb
 $skillsDir = Join-Path $root "skills"
-$destRoot = Join-Path $env:USERPROFILE ".dsh\skills"
+# USERPROFILE 正常都有；但它被清掉/异常时会让 Join-Path 直接抛错（实测踩到），
+# 所以回退到系统 API 取用户目录。
+$homeDir = $env:USERPROFILE
+if (-not $homeDir) { $homeDir = [Environment]::GetFolderPath("UserProfile") }
+$destRoot = Join-Path $homeDir ".dsh\skills"
 
 if (-not (Test-Path $skillsDir)) {
     Write-Host "[XX] 找不到技能目录 $skillsDir"

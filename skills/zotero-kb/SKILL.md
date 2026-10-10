@@ -33,6 +33,9 @@ description: 检索和阅读本机 Zotero 文献知识库，并记录使用经�
 | 资源 `zotero-kb://item/full/{key}` | 全文（篇幅大，慎用） |
 | 资源 `zotero-kb://collections` | 分类清单 |
 
+— 「**找新文献**」那 4 个工具（`kb_paper_info` / `kb_acquire` / `kb_acquire_progress` /
+`kb_attach`）由 **`zotero-acquire` 技能**负责；本技能只管"读知识库 + 记经验"。
+
 **同一份内容在磁盘上也是文件**（给了 key 就能直接用 read 工具读，
 不必绕 MCP）—— 这在"用户要自己打开某一篇的某一层"时最方便，
 面板的「打开知识库」和 Zotero 的右键「打开知识库」读的就是同一批路径：
@@ -40,6 +43,7 @@ description: 检索和阅读本机 Zotero 文献知识库，并记录使用经�
 | 层面 | 文件（相对知识库目录） |
 |---|---|
 | 摘要与要点 | `views\<key>.tldr.md` |
+| 分节纲要 | `views\<key>.outline.md`（**没生成过就不存在**；生成要在面板「分节纲要」页点，或在 Zotero 条目右键「连接到本地模型 → 生成分节纲要」） |
 | 完整档案 | `papers\<key>.md` |
 | 按页正文 | `fulltext\<key>.md` |
 | 图注与表格 | `views\<key>.figures.md`（这篇没有图表时不存在） |
@@ -94,8 +98,9 @@ description: 检索和阅读本机 Zotero 文献知识库，并记录使用经�
 
 ## 边界
 
-- 知识库是 Zotero 的**只读快照**。不要试图写回 Zotero，也不要直接改
-  `zotero.sqlite`（Zotero 的本地 API 是只读的）。
+- 知识库读 Zotero 是**只读快照**。插件自己会通过 Zotero 10 的本地 API 写回三类低风险的
+  东西（**分类、标签、回收站状态**：删除 / 还原），**但 MCP 侧的工具不写 Zotero** ——
+  你手里没有写入口。任何情况下都不要直接改 `zotero.sqlite`。
 - AI 产出的分析、总结、笔记写到 `<知识库>\notes\`（或会话目录），
   并在回答里说明落在哪了。`<知识库>` 用 `kb_stats` 或 `kb_item` 返回的
   路径，不要凭记忆写。
