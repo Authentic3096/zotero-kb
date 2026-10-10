@@ -104,7 +104,7 @@ D:\zotero-kb\scripts\1-convert.cmd
 | [INSTALL.md](INSTALL.md) | 从零装到能用：安装四步、验证、日常使用、常见问题、卸载 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构与关键实现：三块怎么分工、四条链路、正文从哪来、检索怎么算分、插件机制 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 设计与用法详解：各功能怎么用、为什么这么做、边界与已知限制 |
-| [docs/知识库层级设计.md](docs/知识库层级设计.md) | 知识库的层级结构（原始/正文/档案/视图/图片）与后续方案 |
+| [docs/知识库层级设计.md](docs/知识库层级设计.md) | 知识库的层级结构：索引 / 原始 / 正文 / 档案 / 视图 / **归档**各是什么、谁生成、能不能删 |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 给要改这个项目的人：目录结构、构建与测试、发版流程、排错入口 |
 
 ## 许可证
