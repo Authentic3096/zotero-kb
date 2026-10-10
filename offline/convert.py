@@ -139,6 +139,16 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
         #     （Zotero 改分类/标签**不更新 items.version**，只比 version 会漏掉）
         # 解析器（定义在这里：下面增量判断与逐条处理都要用）
         want_parser = str(getattr(args, "parser", "") or "zotero").strip().lower()
+        # ⚠ 默认档现在就是 MinerU 的 basic，但 MinerU 仍是**可选组件**：没装的时候
+        #   不该让每一篇都去试一遍再回落（那等于把"可选"变成"每篇白试一次"）。
+        #   这里用**纯路径解析**做一次轻量预检（不跑子进程，毫秒级），不可用就整轮
+        #   降级成 zotero 档 —— 这正是 resolve_mineru() 文档里对调用方的要求。
+        #   装了但跑不起来（模型没下全等）不在这里拦：那种情况交给下面的"按篇回落"，
+        #   因为它可能只是一部分 PDF 有问题。
+        if want_parser != "zotero" and not S.resolve_mineru():
+            log(f"  [!!] 没找到 MinerU（可选组件）→ 本次自动改用 zotero 档"
+                f"（Zotero 缓存 + PyMuPDF）；要装 MinerU 见面板「PDF 解析」页")
+            want_parser = "zotero"
 
         known: dict[str, tuple[int, str, str]] = {}
         for row in conn.execute(
@@ -982,9 +992,10 @@ def main(argv: list[str] | None = None) -> int:
     # 入库解析校验：缓存文本 vs PyMuPDF 的取舍策略（见 zreader.cache_model_mode）
     parser.add_argument(
         "--parser", choices=["zotero", "flash", "basic", "standard", "advanced"],
-        default="zotero",
-        help="正文来源：zotero（默认，Zotero 缓存 + PyMuPDF）或 MinerU 档位"
-             "（flash/basic/standard/advanced，需先装 MinerU）")
+        default="basic",
+        help="正文来源：basic（默认，MinerU 的 basic 档 —— 实测解析质量最好；"
+             "**没装 MinerU 时会自动回落到 zotero 档**，不报错）"
+             "；也可显式指定 zotero（Zotero 缓存 + PyMuPDF）/ flash / standard / advanced")
     parser.add_argument(
         "--force-parse", action="store_true",
         help="MinerU 重解析时忽略已有产物（默认按 PDF+档位指纹跳过）")
