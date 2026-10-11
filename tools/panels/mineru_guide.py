@@ -233,11 +233,15 @@ def mineru_state() -> dict:
         #   "装是装了但跑不起来"另报一条 why，靠「重新体检」/「复制手动命令」修。
         #   运行环境页判的也是 exe 存在 —— 两处必须同一口径，否则同一个窗口里
         #   两句话会打架（用户报过）。
+        tiers = dict(info.get("tier_ready") or {})
         return {"installed": bool(exe),
                 "exe": exe,
                 "version": info.get("version") or "",
                 "why": info.get("why") or "",
-                "summary": MU.summary_line(info)}
+                "summary": MU.summary_line(info),
+                # VLM 档 = MinerU 的 standard 档。None = 探测没给出档位信息
+                # （**未知**），别把未知当成"没装"（会误启用按钮 / 说错话）。
+                "standard_ready": (bool(tiers.get("standard")) if tiers else None)}
     except Exception as exc:      # noqa: BLE001
         # 探测自己炸了：**不代表没装**，所以还要看一眼 exe 在不在
         exe = ""
@@ -251,7 +255,8 @@ def mineru_state() -> dict:
             exe = ""
         return {"installed": bool(exe), "exe": exe, "version": "",
                 "why": f"探测失败：{type(exc).__name__}: {exc}",
-                "summary": f"检测失败：{type(exc).__name__}: {exc}"}
+                "summary": f"检测失败：{type(exc).__name__}: {exc}",
+                "standard_ready": None}
 
 
 def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
@@ -301,6 +306,14 @@ def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
                                   "可先看「运行环境」页与「PDF 解析」页的探测结果，"
                                   "点「重新体检」刷新；要重装请用「复制手动命令」"
                                   "跑脚本（已下载的会复用）"})
+        # VLM（standard）档有没有 —— 它决定"勾了 VLM 后「开始安装」能不能点"。
+        srdy = st.get("standard_ready")
+        if srdy is True:
+            items.append({"level": "ok", "text": "VLM（standard）档已就绪"})
+        elif srdy is False:
+            items.append({"level": "warn",
+                          "text": "没装 VLM（standard）档 —— 勾上「额外装 VLM 档」"
+                                  "后点「开始安装」即可补装（约 1.24 GB）"})
     else:
         items.append({"level": "warn",
                       "text": "本机还没装 MinerU —— 这个窗口会帮你装"})
@@ -343,6 +356,7 @@ def preflight(with_vlm: bool = False, check_net: bool = True) -> dict:
 
     # installed = "程序在不在"（exe 存在即已装，与「开始安装」置灰的判据一致）
     return {"ok": not blockers, "installed": bool(exe),
+            "vlm_installed": st.get("standard_ready"),
             "items": items, "blockers": blockers}
 
 
@@ -459,9 +473,16 @@ class MineruGuide(tk.Toplevel):
                      for it in res["items"]]
             lines.append("")
             if res.get("installed"):
-                lines.append("→ 已检测到本机装有 MinerU，无需重装"
-                             "（「开始安装」已置灰）。要重装请先卸载，"
-                             "或用「复制手动命令」。")
+                if res.get("vlm_installed") is False and with_vlm:
+                    lines.append("→ 已装 basic 档、但不含 VLM 档：点「开始安装」"
+                                 "即可补装 VLM 档（约 1.24 GB）。")
+                elif res.get("vlm_installed") is False:
+                    lines.append("→ 已装 basic 档，但不含 VLM 档。要补装，"
+                                 "先勾上「额外装 VLM 档」再点「开始安装」。")
+                else:
+                    lines.append("→ 已检测到本机装有 MinerU，无需重装"
+                                 "（「开始安装」已置灰）。要重装请先卸载，"
+                                 "或用「复制手动命令」。")
             elif res["ok"]:
                 lines.append("→ 可以开始安装。")
             else:
@@ -472,14 +493,17 @@ class MineruGuide(tk.Toplevel):
 
     def _apply_preflight(self, res: dict, lines: list[str]):
         self._set_pf(lines)
+        # 允许点「开始安装」的两种情形（都要没有阻塞项）：
+        #   ① 还没装 —— 正常安装；
+        #   ② 已装 basic、勾了「额外装 VLM 档」、且 VLM 档**明确没装** —— 补装。
+        # 其余（已装且不要 VLM / VLM 已就绪 / 档位未知）一律置灰。
+        want_vlm = bool(self.with_vlm.get())
+        enabled = bool(res.get("ok")) and (
+            (not res.get("installed"))
+            or (want_vlm and res.get("vlm_installed") is False))
         try:
-            if res.get("installed"):
-                # 已装 → 即使没有阻塞项也不给点（用户 2026-10-10 的规矩：
-                # 已装则「开始安装」置灰，与「停止安装」同一种灰）。
-                self.install_btn.configure(state="disabled")
-            else:
-                self.install_btn.configure(
-                    state="normal" if res["ok"] else "disabled")
+            self.install_btn.configure(
+                state="normal" if enabled else "disabled")
         except tk.TclError:
             pass
 
@@ -490,8 +514,10 @@ class MineruGuide(tk.Toplevel):
             messagebox.showinfo("正在安装", "已经在跑了。要停就点「停止安装」。")
             return
         st = mineru_state()
-        if st["installed"]:
-            # 按钮此时本来就是灰的；这条护栏是给"别处误调"兜底
+        want_vlm = bool(self.with_vlm.get())
+        vlm_missing = st.get("standard_ready") is False
+        # 已装 → 一般拦下；**例外**：已装 basic、勾了 VLM 且 VLM 明确没装 → 放行补装。
+        if st["installed"] and not (want_vlm and vlm_missing):
             messagebox.showinfo(
                 "已经装好了",
                 "本机已经装了 MinerU（" + (st["exe"] or st["summary"])
@@ -501,12 +527,15 @@ class MineruGuide(tk.Toplevel):
         if not os.path.exists(SCRIPT):
             messagebox.showerror("找不到安装脚本", SCRIPT)
             return
-        if not messagebox.askyesno(
-                "开始安装",
-                "会下载并安装 MinerU（basic 档约 5 GB"
-                + ("，含 VLM 档约 9 GB" if self.with_vlm.get() else "")
-                + "）。\n过程中可以点「停止安装」中止，已下载的部分会保留，"
-                  "下次继续。\n\n现在开始吗？"):
+        if st["installed"] and want_vlm:
+            head = ("会给已装的 MinerU **补下 VLM（standard）档**（约 1.24 GB）。\n"
+                    "过程中可以点「停止安装」中止，已下载的部分会保留。\n\n现在开始吗？")
+        else:
+            head = ("会下载并安装 MinerU（basic 档约 5 GB"
+                    + ("，含 VLM 档约 9 GB" if want_vlm else "")
+                    + "）。\n过程中可以点「停止安装」中止，已下载的部分会保留，"
+                      "下次继续。\n\n现在开始吗？")
+        if not messagebox.askyesno("开始安装", head):
             return
         os.makedirs(BASE, exist_ok=True)
         args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
