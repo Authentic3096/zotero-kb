@@ -334,7 +334,33 @@ Object.assign(ZoteroKB, {
     hint.setAttribute("style", "opacity:0.65; font-size:11px; flex:1 1 auto;"
       + " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;");
     hint.setAttribute("title", "");
-    bar.append(sel, fontSel, btn, hint);
+    // 「导出草稿」：把整份**有效正文**写成 edits\<key>.draft.md，给外部编辑器改。
+    // 只在「按页正文」这一级显示（别的级别没有逐页正文）。存回时服务端逐页比对，
+    // 只有真变了的页进修订层 —— 所以重解析不会把整篇冻在旧稿上。
+    const draftBtn = self.kbviewEl(doc, "button");
+    draftBtn.textContent = "导出草稿";
+    draftBtn.setAttribute("style", "padding:1px 6px; flex:0 0 auto; white-space:nowrap;");
+    draftBtn.setAttribute("title", "导出整份正文为 edits 下的草稿文件（供外部编辑器修改）");
+    draftBtn.style.display = "none";
+    draftBtn.addEventListener("click", async () => {
+      draftBtn.disabled = true;
+      hint.textContent = "正在导出草稿…";
+      try {
+        const r = await self.request("POST", "/doc-edit",
+                                     { key: item.key, action: "draft" });
+        if (r && r.path) {
+          hint.textContent = "草稿已写出：" + r.path;
+          try { self.openKbPath(r.path, "正文草稿"); } catch (e) { /* 打不开也不影响导出 */ }
+        } else {
+          hint.textContent = "导出失败：" + JSON.stringify(r == null ? {} : r).slice(0, 120);
+        }
+      } catch (e) {
+        hint.textContent = "导出失败：" + ((e && e.message) ? e.message : e);
+      }
+      hint.setAttribute("title", hint.textContent);
+      draftBtn.disabled = false;
+    });
+    bar.append(sel, fontSel, draftBtn, btn, hint);
     wrap.append(bar);
 
     const view = self.kbviewEl(doc, "div");
@@ -394,6 +420,7 @@ Object.assign(ZoteroKB, {
           text = "";
         }
       }
+      draftBtn.style.display = picked.levelId === "fulltext" ? "" : "none";
       const lvLabel = (byId[picked.levelId] || {}).label || picked.levelId;
       const hintText = lvLabel
         + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
@@ -401,13 +428,28 @@ Object.assign(ZoteroKB, {
         + (isHtml ? "　公式已渲染" : "　公式为原文文本");
       hint.textContent = hintText;
       hint.setAttribute("title", hintText);   // 截断了也能悬停看全
-      self.kbviewSetHtml(doc, view, (isHtml ? text : self.md2html(text))
+      // 图片路径是相对 <kb>/mineru/<key>/ 的（kb 文件里不写本机路径）——
+      // 注入前改写成绝对 file://，否则窗格里全是裂图。
+      let html = isHtml ? text : self.md2html(text);
+      html = self.kbviewFixImgs(html, item.key);
+      self.kbviewSetHtml(doc, view, html
         || "<p style='opacity:0.75'>（这一级是空的）</p>");
       // 注入后如果容器是空的（极少数解析失败），说明白，别让用户对着空白猜
       if (!view.firstChild) {
         self.kbviewSetHtml(doc, view,
           "<p style='opacity:0.75'>这一级的内容没渲染出来（"
           + text.length + " 字已读到）—— 请把这一行报给维护者。</p>");
+      }
+      // 「按页正文」这一级：每页挂「改这一页」+ 图片缩略图/点击打开原图。
+      // 只在正文这一级做（别的级别没有 ## p.N 页锚点）。
+      // ⚠ 渲染路径必须**同步**返回（用户反馈"菜单要立刻弹出来"）：这里只接线，
+      //   真正的网络请求都在用户点按钮之后。
+      if (picked.levelId === "fulltext") {
+        self.kbviewWirePages(doc, view, item, path, function () {
+          return paint(sel.value);
+        }).catch(function (e) {
+          Zotero.debug("[zotero-kb] 正文编辑接线失败：" + e);
+        });
       }
     };
 
@@ -423,11 +465,245 @@ Object.assign(ZoteroKB, {
 
 
   /**
+   * 把正文 markdown 按 `## p.N` 切成 {页码: 该页 markdown}（**纯函数**，桩测试直接测）。
+   *
+   * 为什么在插件侧再切一次：服务端渲染好的 HTML 里拿不回 markdown 源文本，而
+   * 「改这一页」要编辑的正是 markdown（图片行、公式、表格都是 markdown）。
+   */
+  kbviewSplitMd: function (md) {
+    var out = {};
+    var cur = null;
+    var buf = [];
+    var lines = String(md == null ? "" : md).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var m = lines[i].match(/^##\s*p\.(\d+)\s*$/);
+      if (m) {
+        if (cur !== null) out[cur] = buf.join("\n").replace(/^\n+|\n+$/g, "");
+        cur = parseInt(m[1], 10);
+        buf = [];
+      } else if (cur !== null) {
+        buf.push(lines[i]);
+      }
+    }
+    if (cur !== null) out[cur] = buf.join("\n").replace(/^\n+|\n+$/g, "");
+    return out;
+  },
+
+
+  /** 轮询一个 job 直到结束（最多约 6 分钟）。返回 job 对象，拿不到返回 {}。 */
+  kbviewWaitJob: async function (jobId, onTick) {
+    var self = ZoteroKB;
+    if (!jobId) return {};
+    for (var i = 0; i < 240; i++) {
+      var job = {};
+      try { job = await self.request("GET", "/jobs/" + encodeURIComponent(jobId)); }
+      catch (e) { return {}; }
+      if (onTick) onTick(job);
+      if (job && job.state && job.state !== "running") return job;
+      await new Promise(function (r) { setTimeout(r, 1500); });
+    }
+    return { state: "timeout" };
+  },
+
+
+  /**
+   * 保存/恢复一页正文：POST /doc-edit -> 等 job -> 返回是否成功。
+   *
+   * 保存之后服务端会**重切重向量**（用户口径"改完立即"），所以这里必须等它跑完
+   * 再重绘，否则窗格读到的还是旧内容。
+   */
+  kbviewRunDocEdit: async function (body, onStatus) {
+    var self = ZoteroKB;
+    var note = onStatus || function () {};
+    note("正在重建切片…");
+    var res = null;
+    try {
+      res = await self.request("POST", "/doc-edit", body);
+    } catch (e) {
+      note("请求失败：" + ((e && e.message) ? e.message : e));
+      return false;
+    }
+    if (!res || !res.job) {
+      note("服务没有返回任务：" + JSON.stringify(res == null ? {} : res).slice(0, 120));
+      return false;
+    }
+    var done = await self.kbviewWaitJob(res.job, function (j) {
+      var lg = (j && j.log) || [];
+      note("正在重建切片… " + String(lg[lg.length - 1] || "").slice(0, 60));
+    });
+    if (done && done.state === "done") { note("已重建，正在刷新…"); return true; }
+    note("重建失败：" + ((done && done.error) || "未知"));
+    return false;
+  },
+
+
+  /**
+   * 「按页正文」接线：给每个 `## p.N` 页块挂上「改这一页 / 恢复原版」+ 图片交互。
+   *
+   * 页块由 mdhtml / md2html 渲染成 `<div class="kb-page" data-kbpage="N">`，
+   * 所以这里只要 query 一遍 DOM 就能拿到每页；markdown 源文本另外从 `.md` 读。
+   * 全过程只读，不阻塞渲染。
+   */
+  kbviewWirePages: async function (doc, view, item, mdPath, repaint) {
+    var self = ZoteroKB;
+    var els = [];
+    try { els = Array.from(view.querySelectorAll(".kb-page")); }
+    catch (e) { return; }
+    if (!els.length) return;
+    // 图片：限高 + 点击打开原图（不引 lightbox 依赖）
+    try {
+      Array.from(view.querySelectorAll("img")).forEach(function (img) {
+        img.setAttribute("style", "max-width:100%; max-height:180px;"
+          + " height:auto; display:block; margin:4px 0; cursor:zoom-in;");
+        img.addEventListener("click", function () {
+          var src = String(img.getAttribute("src") || "");
+          var path = src.indexOf("file:///") === 0
+            ? decodeURIComponent(src.slice(8)).replace(/\//g, "\\") : "";
+          if (path) self.openKbPath(path, "正文原图");
+        });
+      });
+    } catch (e) { /* 图片接线失败不影响编辑 */ }
+
+    var mdText = "";
+    try { mdText = await IOUtils.readUTF8(mdPath); } catch (e) { mdText = ""; }
+    var mdPages = self.kbviewSplitMd(mdText);
+    var meta = {};
+    try {
+      meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(item.key));
+    } catch (e) { meta = {}; }
+    var edited = {};
+    (meta && meta.edited || []).forEach(function (n) { edited[n] = true; });
+    var stale = {};
+    (meta && meta.stale || []).forEach(function (n) { stale[n] = true; });
+    els.forEach(function (el) {
+      var n = parseInt(el.getAttribute("data-kbpage"), 10);
+      if (!n) return;
+      self.kbviewDecoratePage(doc, el, item, n, mdPages[n] || "",
+                              !!edited[n], !!stale[n], repaint);
+    });
+  },
+
+
+  /** 给一个页块加工具条与编辑态（工具条在页块内部顶部）。 */
+  kbviewDecoratePage: function (doc, el, item, page, mdText, edited, stale, repaint) {
+    var self = ZoteroKB;
+    var busy = false;
+    var bar = self.kbviewEl(doc, "div");
+    bar.setAttribute("style", "display:flex; gap:6px; align-items:center;"
+      + " flex-wrap:wrap; border-bottom:1px dashed rgba(127,127,127,0.4);"
+      + " margin:2px 0 4px; padding-bottom:2px; font-size:11px;");
+    var tag = self.kbviewEl(doc, "span");
+    tag.textContent = "p." + page
+      + (edited ? " · 已修订" : "") + (stale ? " · 基于旧解析" : "");
+    tag.setAttribute("style", (edited ? "background:rgba(255,196,0,0.35);"
+      + " padding:0 4px; border-radius:3px;" : "opacity:0.7;"));
+    if (stale) tag.setAttribute("title", "这一页的解析结果变过，你改的是旧版 —— 仍用你的版本，请核对一下");
+    var editBtn = self.kbviewEl(doc, "button");
+    editBtn.textContent = edited ? "修改这一页" : "改这一页";
+    editBtn.setAttribute("style", "padding:0 5px; font-size:11px;");
+    var restoreBtn = self.kbviewEl(doc, "button");
+    restoreBtn.textContent = "恢复原版";
+    restoreBtn.setAttribute("style", "padding:0 5px; font-size:11px;");
+    restoreBtn.disabled = !edited;
+    var status = self.kbviewEl(doc, "span");
+    status.setAttribute("style", "opacity:0.7;");
+    bar.append(tag, editBtn, restoreBtn, status);
+    el.insertBefore(bar, el.firstChild);
+
+    var setBusy = function (b) {
+      busy = b;
+      editBtn.disabled = b;
+      restoreBtn.disabled = b || !edited;
+    };
+    var submit = function (body) {
+      if (busy) return;
+      setBusy(true);
+      self.kbviewRunDocEdit(body, function (msg) { status.textContent = msg; })
+        .then(function (ok) {
+          if (ok) {
+            repaint().catch(function () {});
+          } else {
+            setBusy(false);
+          }
+        })
+        .catch(function (e) {
+          status.textContent = "失败：" + ((e && e.message) ? e.message : e);
+          setBusy(false);
+        });
+    };
+    var openEditor = function () {
+      if (busy) return;
+      if (el.querySelector(".zotero-kb-page-edit")) return;
+      var ta = self.kbviewEl(doc, "textarea");
+      ta.className = "zotero-kb-page-edit";
+      ta.setAttribute("style", "width:100%; min-height:220px; font-family:monospace;"
+        + " font-size:12px; white-space:pre-wrap; box-sizing:border-box;");
+      ta.value = mdText;
+      var save = self.kbviewEl(doc, "button");
+      save.textContent = "保存";
+      var cancel = self.kbviewEl(doc, "button");
+      cancel.textContent = "取消";
+      var row = self.kbviewEl(doc, "div");
+      row.setAttribute("style", "display:flex; gap:6px; margin:4px 0;");
+      row.append(save, cancel);
+      var holder = self.kbviewEl(doc, "div");
+      holder.append(ta, row);
+      el.appendChild(holder);
+      save.addEventListener("click", function () {
+        submit({ key: item.key, page: page, text: ta.value });
+      });
+      cancel.addEventListener("click", function () {
+        repaint().catch(function () {});
+      });
+    };
+    editBtn.addEventListener("click", openEditor);
+    restoreBtn.addEventListener("click", function () {
+      submit({ key: item.key, page: page, action: "restore" });
+    });
+  },
+
+
+  /**   * 把 `<img src="相对路径">` 改写成能加载的绝对 `file://`。
+   *
+   * kb 文件里图片是 `images/xxx.jpg`（相对 `<kb>/mineru/<key>/`），这样知识库
+   * 整体搬家不用重写任何文件。窗格是特权 chrome 文档，`file://` 一般可加载；
+   * 绝对/协议相对的 src 原地不动（幂等），没有 kbDir 时原样返回（宁可裂图，
+   * 也不要拼出半个坏 URL）。
+   */
+  kbviewFixImgs: function (html, key) {
+    var self = ZoteroKB;
+    var s = String(html == null ? "" : html);
+    if (s.indexOf("<img") < 0) return s;
+    var base = "";
+    try {
+      var kb = self.kbDir();
+      if (kb && key) {
+        base = String(kb).replace(/[\\/]+$/, "") + "\\mineru\\" + key + "\\";
+      }
+    } catch (e) { base = ""; }
+    if (!base) return s;
+    var uriOf;
+    try {
+      uriOf = function (rel) {
+        var abs = base + String(rel).replace(/\//g, "\\");
+        return Services.io.newFileURI(Zotero.File.pathToFile(abs)).spec;
+      };
+    } catch (e) { return s; }
+    return s.replace(/(<img\b[^>]*?\bsrc=")([^"]*)(")/g,
+      function (m, pre, src, post) {
+        // 已经是绝对 URL（http:/file:/data:/…）、协议相对、或锚点 → 不动
+        if (!src || /^(?:[a-z][a-z0-9+.\-]*:|\/\/|#)/i.test(src)) return m;
+        try { return pre + uriOf(src) + post; } catch (e) { return m; }
+      });
+  },
+
+
+  /**
    * 最小 markdown → HTML（**纯函数**，桩测试直接测它）。
    *
    * 覆盖知识库 md 里真正用到的语法：`#` 标题、`-`/数字列表、`>` 引用、
    * `**粗**`、`*斜*`、`` `代码` ``、`[文字](链接)`、`$$公式$$`、`![图注](图片)`、
-   * 空行分段。**不做表格/嵌套列表** —— 我们的视图里没有。
+   * **管道表**（MinerU 的表格块就是它）、空行分段。**不做嵌套列表**。
    *
    * ⚠ 先转义 HTML 再套标记：md 是我们自己生成的，但笔记原文里有 `<`、`&`
    *   （用户笔记里就有），不转义会让窗格渲染坏掉甚至注入。
@@ -443,13 +719,18 @@ Object.assign(ZoteroKB, {
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-      // 图片：窗格里不加载本地图片（路径是 KB 相对路径），只留图注
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, "[图：$1]")
+      // 图片：渲染成真的 <img>（用户要"侧边栏能看正文并渲染里面的图表"）。
+      // 路径**保持相对**（kb 文件里就是 images/xxx.jpg），由 kbviewFixImgs 在注入前
+      // 改写成绝对 file:// —— 知识库搬家不用重写文件。自闭合，窗格可能按 XML 解析。
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
+               '<img src="$2" alt="$1" style="max-width:100%; height:auto;'
+               + ' display:block; margin:4px 0;" />')
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
     const out = [];
     let list = "";
     let buf = [];
+    let pageOpen = false;
     const flushBuf = () => {
       if (buf.length) {
         out.push("<p>" + buf.join("<br>") + "</p>");
@@ -459,11 +740,62 @@ Object.assign(ZoteroKB, {
     const closeList = () => {
       if (list) { out.push("</" + list + ">"); list = ""; }
     };
+    const cell = (tag, text) => "<" + tag + " style=\"border:1px solid"
+      + " rgba(127,127,127,0.45); padding:2px 5px; text-align:left;"
+      + " vertical-align:top;\">" + inline(text) + "</" + tag + ">";
+    const splitRow = (line) => {
+      let s = String(line).trim();
+      if (s.charAt(0) === "|") s = s.slice(1);
+      if (s.charAt(s.length - 1) === "|") s = s.slice(0, -1);
+      return s.split("|").map((c) => c.trim());
+    };
     const lines = String(md == null ? "" : md).split(/\r?\n/);
-    for (const raw of lines) {
+    for (let i = 0; i < lines.length; i++) {
+      const rawI = lines[i];
+      // 管道表：本行 |...| + 下一行 |---| → 画成 <table>（MinerU 的表格块就是它）
+      if (/^\s*\|.*\|\s*$/.test(rawI)
+          && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?/.test(lines[i + 1])) {
+        flushBuf(); closeList();
+        const rows = [splitRow(rawI)];
+        i += 2;
+        while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+          rows.push(splitRow(lines[i]));
+          i++;
+        }
+        i--;
+        const head = rows[0] || [];
+        let html = "<table style=\"border-collapse:collapse; margin:6px 0;"
+          + " font-size:0.95em; max-width:100%;\"><thead><tr>"
+          + head.map((c) => cell("th", c)).join("") + "</tr></thead>";
+        if (rows.length > 1) {
+          html += "<tbody>";
+          for (const r of rows.slice(1)) {
+            const cells = r.slice(0, head.length);
+            while (cells.length < head.length) cells.push("");
+            html += "<tr>" + cells.map((c) => cell("td", c)).join("") + "</tr>";
+          }
+          html += "</tbody>";
+        }
+        out.push(html + "</table>");
+        continue;
+      }
+      const raw = rawI;
       const line = raw.replace(/\s+$/, "");
       if (!line.trim()) { flushBuf(); closeList(); continue; }
       let m;
+      // 页码锚点：把 ## p.N 包成 <div class="kb-page" data-kbpage="N">，
+      // 窗格靠它把「按页正文」切成可编辑的页块（与 mdhtml.render 同一套 DOM）。
+      if ((m = line.match(/^(#{1,6})\s+p\.(\d+)\s*$/))) {
+        flushBuf(); closeList();
+        if (pageOpen) out.push("</div>");
+        out.push('<div class="kb-page" data-kbpage="' + m[2] + '">');
+        pageOpen = true;
+        const pLvl = m[1].length;
+        const pSize = { 1: "1.35em", 2: "1.18em", 3: "1.06em" }[pLvl] || "1em";
+        out.push('<div style="font-weight:600; font-size:' + pSize
+                 + '; margin:6px 0 2px;">p.' + m[2] + "</div>");
+        continue;
+      }
       if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
         flushBuf(); closeList();
         const lvl = m[1].length;
@@ -503,6 +835,7 @@ Object.assign(ZoteroKB, {
       buf.push(inline(line));
     }
     flushBuf(); closeList();
+    if (pageOpen) out.push("</div>");
     return out.join("\n");
   },
 });

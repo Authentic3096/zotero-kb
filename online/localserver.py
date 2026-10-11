@@ -206,6 +206,71 @@ def do_reindex(keys: list[str] | None, full: bool) -> dict:
     return {"exit_code": proc.returncode, "output_tail": tail}
 
 
+def do_doc_rebuild(key: str, progress=None) -> dict:
+    """按**修订后的正文**把一篇重切重向量（POST /doc-edit 的后台 job）。
+
+    为什么不复用 do_reindex：那条路给增量构建加了 `--no-vectors`（交互式补抽
+    不想等向量），而用户的口径是「改完立即重切**重向量**」（设计方案 J.5）。
+    这里显式只处理 `--item <key>` 这一篇、**带向量** —— 单篇几十个块，几秒钟。
+    """
+    args = [sys.executable, "-X", "utf8",
+            os.path.join(ROOT, "offline", "convert.py"), "--item", str(key)]
+    log("重建单篇（含向量）：" + " ".join(args[2:]))
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8",
+           "HF_ENDPOINT": "https://hf-mirror.com"}
+    proc = PR.run(args, merge_stderr=True, cwd=ROOT, env=env, timeout=1800,
+                  on_tier=lambda m: log(f"[procrun] 重建子进程改用兜底档位：{m}"))
+    tail = (proc.stdout or "").strip().split("\n")[-12:]
+    log(f"单篇重建结束，退出码 {proc.returncode}")
+    return {"exit_code": proc.returncode, "key": str(key), "output_tail": tail}
+
+
+def do_doc_edit(body: dict) -> tuple:
+    """正文修订（POST /doc-edit 的业务实现）。返回 (HTTP 码, 响应体)。
+
+    {key, page: n, text}             -> 保存这一页的修订，并派一次单篇重建；
+    {key, page: n, action:"restore"} -> 恢复这一页的机器稿（同样重建）；
+    {key, action:"draft"}            -> 把整份**有效正文**写成 edits/<key>.draft.md。
+
+    ⚠ 保存/恢复之后**必须**重切重向量，否则 chunks 还是旧文本 —— 用户要的就是
+    「改完立即」（设计方案 J.5）。这里复用任务队列：start_job -> GET /jobs/<id>。
+    """
+    import edits as ED
+    import mineru as M
+    key = str(body.get("key") or "").strip()
+    if not key:
+        return 400, {"error": "需要 key",
+                     "hint": "POST /doc-edit {key, page, text}"}
+    action = str(body.get("action") or "save").strip().lower()
+    machine = M.load_pages(key)
+    if action == "draft":
+        if not machine:
+            return 400, {"error": "这一篇还没有逐页正文（没建过索引？）", "key": key}
+        path = ED.write_draft(key, ED.apply(key, machine))
+        return 200, {"ok": True, "key": key, "path": path, "pages": len(machine)}
+    try:
+        page = int(body.get("page"))
+    except (TypeError, ValueError):
+        return 400, {"error": "需要整数 page", "key": key}
+    if not machine:
+        return 400, {"error": "这一篇还没有逐页正文（没建过索引？）", "key": key}
+    if page < 1 or page > len(machine):
+        return 400, {"error": f"页码越界（1..{len(machine)}）", "key": key,
+                     "page": page}
+    if action == "restore":
+        res = ED.restore_page(key, page)
+    elif action in ("save", ""):
+        if body.get("text") is None:
+            return 400, {"error": "需要 text", "key": key, "page": page}
+        res = ED.save_page(key, page, str(body.get("text") or ""), machine)
+    else:
+        return 400, {"error": f"不认识的 action：{action}", "key": key}
+    job = start_job("重建正文 " + key, do_doc_rebuild, key)
+    res.update({"ok": True, "job": job, "state": "running",
+                "machine_pages": len(machine)})
+    return 202, res
+
+
 # 「生成分节纲要」的停止标记。
 #
 # 为什么要有它：纲要要一节一节调本地模型（论文几十秒、学位论文几分钟），
@@ -2354,6 +2419,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, s.stats())
             finally:
                 s.close()
+        if path == "/doc-edit":
+            # 修订层的**只读**状态：哪几页被改过、哪几页「基于旧解析」。
+            # 插件渲染「按页正文」时用它给每页打标记。
+            import edits as ED
+            import mineru as M
+            qs = parse_qs(urlparse(self.path).query)
+            key = (qs.get("key") or [""])[0].strip()
+            if not key:
+                return self._send(400, {"error": "需要 key",
+                                        "hint": "GET /doc-edit?key=<KEY>"})
+            return self._send(200, ED.meta(key, M.load_pages(key)))
+
         if path == "/pending":
             return self._send(200, {"pending": _read_pending()})
         if path == "/jobs":
@@ -2546,6 +2623,12 @@ class Handler(BaseHTTPRequestHandler):
             job = start_job("重建知识库索引" + ("（全量）" if full else "（增量）"),
                             do_reindex, keys, full)
             return self._send(202, {"job": job, "state": "running"})
+
+        if path == "/doc-edit":
+            # 正文修订层（插件侧边栏「按页正文」里的「改这一页」用它）。
+            # 保存/恢复之后**必须**重切重向量 —— 见 do_doc_edit 的说明。
+            code, payload = do_doc_edit(body)
+            return self._send(code, payload)
 
         if path == "/digest":
             # 给一篇生成「分节纲要」（插件右键菜单「生成分节纲要」用它）。
@@ -3075,6 +3158,18 @@ def self_test(port: int) -> int:
     ok5 = not _DIGEST_CANCEL.is_set()
     print(f"  {'PASS' if ok5 else 'FAIL'}  新的 /digest 会清掉上一次的停止标记")
     passed, failed = (passed + 1, failed) if ok5 else (passed, failed + 1)
+
+    print("\n[5d] 正文修订层（/doc-edit：插件窗格的「改这一页」靠它）")
+    # ⚠ 自检**不许有副作用**：这里只打错误分支与只读的 GET，不造真实修订。
+    call("GET", "/doc-edit", expect=400)
+    call("POST", "/doc-edit", {}, expect=400)
+    call("POST", "/doc-edit", {"key": "NOSUCHK1", "page": 1, "text": "x"},
+         expect=400)
+    dmeta = call("GET", "/doc-edit?key=NOSUCHK1", expect=200)
+    okd = (dmeta.get("edited") == [] and dmeta.get("stale") == []
+           and dmeta.get("count") == 0)
+    print(f"  {'PASS' if okd else 'FAIL'}  没有修订时 edited/stale/count 都是空")
+    passed, failed = (passed + 1, failed) if okd else (passed, failed + 1)
 
     print("\n[6] 异步任务：分类建议（纯确定性部分，不调模型）")
     job = call("POST", "/collection-suggest", {"use_model": False}, expect=202)

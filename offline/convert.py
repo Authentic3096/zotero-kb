@@ -32,6 +32,7 @@ import converter as C  # noqa: E402
 import extrafill as XF  # noqa: E402
 # MinerU 是**可选组件**：`import mineru` 只是导入这个探测/解析包装模块
 # （纯标准库），没装 MinerU 也能 import —— 真正的可用性由 probe() 判。
+import edits as ED  # noqa: E402 —— 正文修订层的唯一实现（按页覆盖，见该模块头部）
 import keys as K  # noqa: E402 —— 合并映射与 resolve_key 的唯一实现（见该模块头部）
 import mineru as M  # noqa: E402
 import trash as TR  # noqa: E402 —— 归档/还原/删除三动作的唯一实现（见该模块头部）
@@ -42,6 +43,32 @@ DEFAULT_EMBED_MODEL = "BAAI/bge-small-zh-v1.5"
 
 def log(msg: str) -> None:
     print(msg, flush=True)
+
+
+def _write_html_twins(item, has_pages: bool, log) -> None:
+    """给 papers/<key>.md 与 fulltext/<key>.md 写同名 .html（窗格优先读它）。
+
+    为什么会漏：`kbviews.write_levels` 只给**生成型**级别写 html，而 fulltext /
+    papers 是 convert 直接落盘的，不在那条路上 —— 2026-10-11 实测 6 篇 fulltext、
+    30 篇 papers 的 .html 比 .md 旧（窗格优先读 html，于是显示旧内容）。
+
+    单独 try：html 是派生物，渲染失败不该让这一条文献进不了库。
+    """
+    try:
+        import mdhtml
+    except Exception as exc:      # noqa: BLE001
+        log(f"    [!!] 载入 mdhtml 失败，跳过 html 孪生：{exc}")
+        return
+    paths = [item.paper_path()]
+    if has_pages:
+        paths.append(item.fulltext_path())
+    for path in paths:
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            mdhtml.write_html(path)
+        except Exception as exc:      # noqa: BLE001
+            log(f"    [!!] 写 {os.path.basename(path)}.html 失败：{exc}")
 
 
 def build(args: argparse.Namespace) -> tuple[int, dict]:
@@ -238,6 +265,11 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
             "extra_cleared": 0,       # 本次删掉的陈旧行（extra 变空了的条目）
             "extra_items": 0,         # 本次有结构化字段的条目数
             "extra_errors": [],       # 写失败的那些（只记，不中断）
+            # 各类块的个数（index / aside_text / code 这些**先不动**，
+            # 但要在报告里看得见 —— 2026-10-11 实测 21 / 16 / 10 个）
+            "block_types": {},
+            # 本次吃到人工修订的条目数（修订层 = 用户资产，见 offline/edits.py）
+            "edited_items": 0,
         }
         all_chunks: list[dict] = []
         built_at = C.now_iso()
@@ -297,6 +329,14 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                         source = source + "+fallback"
                 else:
                     pages, source = reader.fulltext_for(item, **ft_kw)
+                # ---- 人工修订层：按页覆盖机器稿（**唯一**入口，见 offline/edits.py）
+                # 位置有硬约束：必须在「正文来源」之后、`item.fulltext_pages = pages`
+                # 之前 —— 下游三处（fulltext 落盘 / collect_chunks / fulltext_chars）
+                # 一起吃到修订，检索、溯源、视图都不用知道有修订层这回事（附录 J.1）。
+                # **不要**在别处另写一份"有效正文"的逻辑。
+                if ED.has_edits(item.key, kb_dir=S.kb_dir()):
+                    pages = ED.apply(item.key, pages, kb_dir=S.kb_dir())
+                    stats["edited_items"] += 1
                 # ⚠ 必须把正文回填到 item 上。`Item.fulltext_chars` 是
                 # `sum(len(p) for p in fulltext_pages)`，而 fulltext_pages 默认是空列表 ——
                 # 只把正文留在局部变量 `pages` 里的话，`_upsert_item` 写进库的
@@ -338,39 +378,47 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 # 并在 fulltext 的**那一页末尾**渲染出来（见
                 # converter.figures_for_page）—— AI 读到那页就能看见
                 # "这里有个图叫什么"，需要深究时自己去看。
+                # ---- 图注与表格
+                #
+                # ⚠ 2026-10-11 口径（设计方案附录 J.3）：**MinerU 可用时全部走
+                #   MinerU** —— 正文、图注、表格都从 structured_content.json 来。
+                #   两路混用会让同一张图的图注**出现两次**（MinerU 的 captions 在
+                #   页面正文里，PyMuPDF 又抽一份附在页尾；本机 22X9PMR6 的图1/2/3
+                #   实测一一对应），而表格早就做过对称处理、图注漏了。
+                #   只有 MinerU 不可用（没装 / 模型没下全 / 这一篇解析失败回落）
+                #   才回落到 Zotero 缓存 + PyMuPDF。
                 figs = {"captions": [], "tables": []}
-                # 开关三级：命令行 > 环境变量 > kb-location.json > 默认开
-                _want = None
-                if getattr(args, "figures", False):
-                    _want = True
-                elif getattr(args, "no_figures", False):
-                    _want = False
-                FG = None
-                try:
-                    import figures as _FG
-                    if S.figures_enabled(_want):
-                        FG = _FG
-                    else:
-                        log("    （按设置跳过图注与表格提取）")
-                except Exception as exc:  # noqa: BLE001
-                    log(f"    [!!] 载入 figures 模块失败：{exc}")
-                try:
-                    for pdf in (item.pdfs if FG else []):
-                        if pdf.exists and pdf.path.lower().endswith(".pdf"):
-                            fr = FG.extract_document(pdf.path)
-                            figs["captions"] += fr.get("captions") or []
-                            # ⚠ 表格只留一路：正文来自 MinerU 时，表格已经以 HTML
-                            #   形式进了逐页正文（见 mineru.render_block），这里再收
-                            #   一份就等于同一张表在正文里出现两次。正文走 Zotero
-                            #   缓存 / PyMuPDF 的篇才需要它来补表格。
-                            if str(source or "").startswith("mineru-"):
-                                log("    （正文来自 MinerU：表格已在正文里，"
-                                    "跳过 PyMuPDF 表格抽取）")
-                            else:
+                mineru_source = str(source or "").startswith("mineru-")
+                if mineru_source:
+                    struct = M.load_structured(item.key, kb_dir=S.kb_dir())
+                    figs = M.figures_from_structured(struct)
+                    for _t, _n in M.count_block_types(struct).items():
+                        stats["block_types"][_t] =                             stats["block_types"].get(_t, 0) + _n
+                else:
+                    # 开关三级：命令行 > 环境变量 > kb-location.json > 默认开
+                    _want = None
+                    if getattr(args, "figures", False):
+                        _want = True
+                    elif getattr(args, "no_figures", False):
+                        _want = False
+                    FG = None
+                    try:
+                        import figures as _FG
+                        if S.figures_enabled(_want):
+                            FG = _FG
+                        else:
+                            log("    （按设置跳过图注与表格提取）")
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"    [!!] 载入 figures 模块失败：{exc}")
+                    try:
+                        for pdf in (item.pdfs if FG else []):
+                            if pdf.exists and pdf.path.lower().endswith(".pdf"):
+                                fr = FG.extract_document(pdf.path)
+                                figs["captions"] += fr.get("captions") or []
                                 figs["tables"] += fr.get("tables") or []
-                            break      # 只取第一个可用 PDF
-                except Exception as exc:  # noqa: BLE001
-                    log(f"    [!!] {item.key} 抽图注/表格失败：{exc}")
+                                break      # 只取第一个可用 PDF
+                    except Exception as exc:  # noqa: BLE001
+                        log(f"    [!!] {item.key} 抽图注/表格失败：{exc}")
                 if figs["captions"] or figs["tables"]:
                     stats["figures"] = stats.get("figures", 0) + len(
                         figs["captions"])
@@ -383,8 +431,15 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 with open(item.paper_path(), "w", encoding="utf-8") as fh:
                     fh.write(C.item_markdown(item, pages, source, conn))
                 if pages:
+                    # ⚠ 正文来自 MinerU 时**不附页尾图注**（figs 里那两份已经
+                    #   在页面正文里了）；只有回落来源才需要它补图注/表格。
                     with open(item.fulltext_path(), "w", encoding="utf-8") as fh:
-                        fh.write(C.fulltext_markdown(item, pages, figs))
+                        fh.write(C.fulltext_markdown(
+                            item, pages, None if mineru_source else figs))
+                # .html 孪生：窗格**优先读 html**，而这两级以前根本不在构建里，
+                # 于是显示的是上一次（甚至更早）的内容（2026-10-11 实测：6 篇
+                # fulltext、30 篇 papers 的 html 比 md 旧）。这里和 md 一起写。
+                _write_html_twins(item, bool(pages), log)
 
                 # 结论层写库（写前先删旧 chunk，保留经验层不动）
                 _upsert_item(conn, item, source, built_at)
@@ -429,7 +484,8 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                     conn.execute(
                         "INSERT INTO figures(item_key, page, kind, label, text,"
                         " n_rows, n_cols, built_at) VALUES(?,?,?,?,?,?,?,?)",
-                        (item.key, t.get("page"), "table", "",
+                        (item.key, t.get("page"), "table",
+                         t.get("label") or "",     # MinerU 的表注里有「表 2.3」
                          t.get("markdown") or "", t.get("rows"),
                          t.get("cols"), built_at))
                 conn.execute(
@@ -443,20 +499,38 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 )
                 conn.execute("DELETE FROM chunks WHERE item_key = ?", (item.key,))
 
+                # 父子切块：collect_chunks 返回**全部父块在前、子块在后**，
+                # 按顺序插入即可保证 parent_id 指向已存在的行（父块先插）。
+                # FTS 只给 level=1 且 indexable 的块（toc/refs/ack/appendix 不进）。
+                ref_ids: dict[str, int] = {}
                 for chunk in C.collect_chunks(item, pages):
+                    parent_id = None
+                    ref = chunk.get("parent_ref") or ""
+                    if ref:
+                        parent_id = ref_ids.get(ref)
                     cur = conn.execute(
-                        "INSERT INTO chunks(item_key, page, seq, text, n_chars) "
-                        "VALUES(?,?,?,?,?)",
-                        (item.key, chunk["page"], chunk["seq"], chunk["text"],
-                         len(chunk["text"])),
+                        "INSERT INTO chunks(item_key, page, seq, text, n_chars,"
+                        " level, parent_id, section_path, section_kind,"
+                        " page_from, page_to) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        (item.key, chunk.get("page"), chunk.get("seq"),
+                         chunk["text"], len(chunk["text"]),
+                         int(chunk.get("level", 1)), parent_id,
+                         chunk.get("section_path") or "",
+                         chunk.get("section_kind") or "",
+                         chunk.get("page_from"), chunk.get("page_to")),
                     )
                     chunk_id = cur.lastrowid
+                    if chunk.get("ref"):
+                        ref_ids[chunk["ref"]] = chunk_id
                     chunk["chunk_id"] = chunk_id
                     chunk["item_key"] = item.key
-                    # FTS 与 chunks 用同一个 rowid，随写随建，避免"先全删后全建"
-                    conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
-                                 (chunk_id, chunk["text"]))
-                    all_chunks.append(chunk)
+                    chunk["parent_id"] = parent_id
+                    if int(chunk.get("level", 1)) == 1 and chunk.get("indexable", True):
+                        # FTS 与 chunks 用同一个 rowid，随写随建，避免"先全删后全建"
+                        conn.execute(
+                            "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
+                            (chunk_id, chunk["text"]))
+                        all_chunks.append(chunk)
 
                 if idx % 20 == 0 or idx == len(items):
                     log(f"  [{idx}/{len(items)}] 已处理；累计切片 {len(all_chunks)}")
@@ -480,11 +554,15 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
         if args.no_vectors:
             log("--no-vectors：跳过向量计算")
         else:
+            # 向量**只给子块**（level=1）且**只给进了 FTS 的**：父块是上下文载体、
+            # toc/refs/ack/appendix 是噪声，都不该占向量（附录 J.4）。
             pending = conn.execute(
                 """
                 SELECT c.chunk_id, c.text FROM chunks c
                 LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id
-                WHERE e.chunk_id IS NULL
+                WHERE e.chunk_id IS NULL AND c.level = 1
+                  AND COALESCE(c.section_kind, '') NOT IN
+                      ('toc', 'refs', 'ack', 'appendix')
                 """
             ).fetchall()
             if not pending:
@@ -607,6 +685,10 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
             # 本次用的解析器（写进 MANIFEST：否则"库里这批正文到底是哪来的"
             # 只能靠 items.fulltext_src 猜）
             "parser": want_parser,
+            # 各类块的个数（index / aside_text / code 这些先不动，但报告里看得见）
+            "block_types": stats.get("block_types") or {},
+            # 修订层：本次有几篇吃到人工修订（没有修订层时恒 0）
+            "edited_items": stats["edited_items"],
             "fulltext": {
                 "parser": want_parser,
                 "from_mineru": stats["fulltext_from_mineru"],
@@ -961,7 +1043,11 @@ def _build_term_df(conn) -> None:
     cjk_re = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
     word_re = re.compile(r"[A-Za-z][A-Za-z0-9_\-]{1,30}")
     counts: dict[str, int] = {}
-    for row in conn.execute("SELECT text FROM chunks"):
+    # 只统计**进了 FTS 的那一层**（level=1 且非 toc/refs/ack/appendix）——
+    # 词元稀有度是给关键词路做 idf 的，统计口径必须与 FTS 语料一致。
+    for row in conn.execute(
+            "SELECT text FROM chunks WHERE level = 1"
+            " AND COALESCE(section_kind, '') NOT IN ('toc', 'refs', 'ack', 'appendix')"):
         text = row["text"]
         seen = set(cjk_re.findall(text))
         seen.update(w.lower() for w in word_re.findall(text))

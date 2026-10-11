@@ -78,12 +78,18 @@
 ### 链路 1：文献进库（离线管道）
 
 ```
-Zotero 库 ──只读快照(含 -wal/-shm)──> zreader ──清洗/HTML转MD/按页切──> converter
-                                                                        │
+Zotero 库 ──只读快照(含 -wal/-shm)──> zreader ──清洗/HTML转MD/按页切──> mineru/basic
+                                                                        │ 逐页 markdown
                           ┌─────────────────────────────────────────────┤
-                          ↓                      ↓                      ↓
-                  chunks + FTS5 索引        向量(bge-small-zh)      全文 Markdown
-                          └──────────┬───────────┘                kb/papers/*.md
+                          ↓                                             ↓
+                  edits.py 按页覆盖（人工修订层）  ←── 插件侧边栏「改这一页」
+                          │  有效正文 = 修订 ⊕ 机器稿
+                          ↓
+                  chunks：父块(节/章，level=0) + 子块(300 字，level=1)
+                          │
+                          ↓
+                  chunks_fts(FTS5) + 向量(bge-small-zh)   全文/档案 Markdown
+                          └──────────┬───────────┘        kb/fulltext|papers/*.md
                                      ↓
                               kb/index.sqlite  ← 单一事实来源
 ```
@@ -91,7 +97,9 @@ Zotero 库 ──只读快照(含 -wal/-shm)──> zreader ──清洗/HTML转
 **要点**：
 - 快照**必须**连 `-wal`/`-shm` 一起拷（Zotero 10 起启用 WAL，只拷主库会读到过时数据）
 - 增量判定比 **`version` + `collections_sig`**（分类/标签改动不动 `version`）
-- 全量重建约 100 秒，增量 0.3 秒
+- 全量重建约 2~3 分钟（含父子切块与全库向量），增量 0.3 秒
+- **图片/表格进正文、图注只出现一次**：MinerU 可用时正文/图注/表格**全部**取自它，
+  不再叠加 PyMuPDF 的那一份（同一张图的图注曾经出现两次）
 
 ### 链路 2：DSH 读知识库（MCP）
 
@@ -361,6 +369,52 @@ parts = re.split(r"(?<=[。！？；.!?;])\s*", para)
 （已删条目不在读取结果里，增量永远看不到它），且有"一条都没读到就不清理"的防误删保险
 （`convert.py:80-96`）；`term_df` 每次从**全量** chunks 重算，否则增量跑一次会把
 词元稀有度算成"只剩这一批"（`convert.py:364-369`）。
+
+#### A8. 正文修订层（人工改过的正文优先，且永不覆盖 MinerU 原版）
+
+用户在 Zotero 侧边栏「知识库预览 → 按页正文」里对着原文 PDF 发现解析错的地方，
+点「改这一页」就地改。落盘是 `<kb>/edits/<key>.md`（**只存被改过的页**，与 fulltext
+同形的 `## p.N` 分节）+ 同名 `.json` 边车（每页记一个 `base` = 该页**机器稿**的 sha1）。
+
+```
+structured_content.json（原版，只读） ──> pages.json（机器稿）
+                                              ⊕ edits/<key>.md（人工修订）
+                                              ↓
+                          有效正文 = edits.apply(key, pages)
+                          ├─ fulltext/<key>.md   ├─ chunks / FTS / 向量
+                          └─ items.fulltext_chars
+```
+
+- **唯一读写路径**是 `offline/edits.py`（`apply/save_page/restore_page/meta/save_draft`）；
+  接缝在 `convert.py` 的「正文来源」之后、`item.fulltext_pages = pages` 之前一行 ——
+  下游三处（fulltext、切片、字符数）一起生效，检索与视图都不用知道有修订层。
+- 机器稿变了（重解析/换 PDF）而 `base` 不符 → **仍然用用户版本**，界面标「基于旧解析」
+  （静默丢掉用户的修正比提示冲突糟得多）。
+- 外部编辑器走 `.draft.md` 整份导出，存回时**逐页 diff**，只有真变了的页进覆盖
+  （否则重解析后整篇被冻在旧稿上）。
+- 服务端入口：`POST /doc-edit`（保存/恢复/导出草稿）→ `start_job` 跑
+  `convert.py --item <KEY>`（带向量）→ 插件轮询 `/jobs/<id>` 后重绘。
+
+#### A9. 父子切块（small-to-big）
+
+`chunks` 自引用两层（不给 `parent_id` 声明外键：还原/批量插入的顺序会坑）：
+
+| 层 | 内容 | 用途 |
+|---|---|---|
+| `level=0` 父块 | 节 / 章的**整节全文**（≤3000 字，超了按段落拆「（续 N）」） | 只作「命中子块时返回上下文」的载体；**不进 FTS、不建向量** |
+| `level=1` 子块 | 节内 300 字、重叠 60，文本前缀挂 `section_path` | **FTS 与向量都建在这一层** |
+
+- 分节（`converter.sectionize_pages`）吃**有效正文**（不是 structured_content），层级只从
+  标题**编号**推（`第N章`/`1`/`1.1`/`1.1.1`）—— MinerU 的 `paragraph_title.level` 实测
+  **全是 2**，照它推会把「0 引言」与「1.1 …」判成同级。
+- `section_kind`：`body|review|refs|toc|appendix|ack`。目录/参考文献/致谢/附录**存库但不进
+  FTS/向量**（开关 `ZOTERO_KB_INDEX_NONBODY=1`）；综述章（`review`）检索侧小幅加权
+  （`ZOTERO_KB_REVIEW_BOOST`，默认 +10%）。
+- 检索侧（`searcher`）：同一个 `parent_id` 只留**最佳子块**（避免一节里多块重复占分，
+  开关 `ZOTERO_KB_PARENT_DEDUPE=0`）；命中子块时把父块正文截断 1500 字随结果返回
+  （`context` 字段，`kb_search` 会带给模型；开关 `ZOTERO_KB_PARENT_CONTEXT=0`）。
+- 归档/还原（`trash.py`）的快照带齐新列并按 `level` 排序：**父块先插**，否则
+  `parent_id` 会悬空（还原后检索照样跑、只是上下文没了，属静默错误）。
 
 ### B. 在线检索与交互
 
@@ -1047,14 +1101,17 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 
 | 部件 | 状态 | 证据 |
 |---|---|---|
-| 知识库 | ✅ 94 条目 / 4588 切片 / 4588 向量 / 经验 9 条 / 分级视图 366 份 | `offline/maintain.py check` |
-| 正文来源 | ✅ 94/94 篇都有 MinerU 产物；88 篇正文走 `mineru-basic` | `items.fulltext_src` |
-| 混合检索 | ✅ 中文短语召回 + 向量 + RRF + 权重上浮 | 关键词与语义两路实测均可用 |
+| 知识库 | ✅ 94 条目 / 16552 切片（父 2410 + 子 13985，可索引 11778）/ 11778 向量 / 经验 10 条 / 分级视图 380 份 | `offline/maintain.py check` |
+| 正文来源 | ✅ 94/94 篇都有 MinerU 产物；93 篇正文走 `mineru-basic`，1 篇 PDF 损坏按篇回落 `zotero-cache+fallback` | `items.fulltext_src` |
+| 图片与表格 | ✅ 89 篇正文含图片引用（2115 处）；管道表渲染成 `<table>`；页尾不再附第二份图注 | `pages.json` / 侧边栏真机 5 篇 |
+| 正文修订层 | ✅ 按页覆盖 + 改完立即重切重向量 + 「基于旧解析」提示 + 草稿导入导出 | 真机：改一页 → 15s 内 fulltext 与 chunks 变；重跑全量后修订仍在、`structured_content.json` sha256 不变 |
+| 父子切块 | ✅ 父块（节/章）不进 FTS/向量；子块 300 字带 `section_path`；命中子块返回父块上下文 | `maintain.py check`（FTS 与应索引子块一一对应）+ 归档→还原 `parent_id` 无悬空 |
+| 混合检索 | ✅ 中文短语召回 + 向量 + RRF + 权重上浮 + small-to-big 上下文 | 关键词与语义两路实测均可用 |
 | MCP 接入 | ✅ **13 工具 + 4 资源** | AI 里 `kb_search` 等可直接调用 |
-| Zotero 插件 | ✅ 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** + 右侧栏预览 | 真机验收（v1.8.0） |
-| 条目生命周期 | ✅ 归档 / 还原 / 彻底删 + 对账巡检 | `trash_acceptance.py` 真机六步 |
-| 本地服务 | ✅ 91 项自检 | `online/localserver.py --test` |
-| 测试 | ✅ 35 个测试文件全过（0 失败） | `tools/run_tests.py`（工作文件夹） |
+| Zotero 插件 | ✅ 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** + 右侧栏预览（图片/表格/按页改正文） | 真机验收（v1.8.0 / v1.9.0） |
+| 条目生命周期 | ✅ 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `trash_acceptance.py` 真机六步 + `tests/test_sections.py` |
+| 本地服务 | ✅ 96 项自检 | `online/localserver.py --test` |
+| 测试 | ✅ 37 个测试文件全过（0 失败） | `tools/run_tests.py`（工作文件夹） |
 | DSH 侧接入 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
 | 提示词注册表 | ✅ 话术可看可改可还原 | `tools/panels/tab_prompts.py` |
 | ~~内容窗格「本地模型」~~ | **已删除**：没用而且 bug 多；`check_plugin.py` 有反向检查盯着它别回来 | — |

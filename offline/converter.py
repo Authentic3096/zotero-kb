@@ -42,6 +42,17 @@ CHUNK_TARGET = 1000
 CHUNK_OVERLAP = 150
 CHUNK_MIN = 120
 
+# 父子切块（2026-10-11 口径，设计方案附录 J.4）：
+#   父块（level=0）= 节/章的整节全文，≤3000 字（超了按段落拆「（续 N）」），
+#     只作「命中子块时返回上下文」的载体，**不进 FTS、不建向量**；
+#   子块（level=1）= 节内 300 字、重叠 60，**FTS 与向量都建在这一层**。
+# 堆缩点：父块能吃下整节（信息全），子块短（关键词路精度高、向量不过饱和），
+# 两头的好处都要 —— 见附录 J.4 为什么推翻「FTS 建在父块」。
+CHILD_TARGET = 300
+CHILD_OVERLAP = 60
+CHILD_MIN = 20
+PARENT_MAX = 3000
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -121,45 +132,360 @@ def chunk_text(text: str, target: int = CHUNK_TARGET, overlap: int = CHUNK_OVERL
     return [c for c in (c.strip() for c in chunks) if len(c) >= CHUNK_MIN]
 
 
-def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
-    """把一篇文献切成块，带页码溯源信息。
+# ---------------------------------------------------------------- 分节（父子切块）
 
-    来源优先级：正文 → 用户标注 → 用户笔记。
-    标注和笔记是**人工高信号**，单独成块并标记来源，检索时更容易被看重。
+RE_HEAD = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+RE_CHAP = re.compile(r"^第\s*[0-9一二三四五六七八九十百]+\s*[章节]")
+# 开头的编号：1 / 1.2 / 1.2.3 / 1.2.3.4 …（后面必须跟空白或标点，免得把
+# 「3D 打印」这种开头的正文当成标题）
+RE_NUM_LEAD = re.compile(r"^(\d+(?:\.\d+)*)(?=\s|[.、,，:：)）(（]|$)")
+RE_SENT_END = re.compile(r"[。！？；!?;]\s*")
+# 目录行：一串点线/省略号后跟页码（"... 5" / "……9" / "· · · 12"）
+RE_TOC_LINE = re.compile(r"\.{2,}\s*\d+\s*$|…{2,}\s*\d*\s*$|[·．]{2,}")
+
+# 节的语义类别（附录 F.4：参考文献/致谢/附录/目录默认不进检索；综述章加权）
+KIND_RULES = (
+    (re.compile(r"参考文献|references?", re.I), "refs"),
+    (re.compile(r"致\s*谢|acknowledg", re.I), "ack"),
+    (re.compile(r"攻读学位期间|科研成果|发表论文|成果清单"), "ack"),
+    (re.compile(r"附\s*录|appendix", re.I), "appendix"),
+    (re.compile(r"目\s*录|table of contents", re.I), "toc"),
+    (re.compile(r"研究现状|综述|related work|literature review|国内外.{0,6}(进展|现状)", re.I),
+     "review"),
+)
+# 这些类别里的「标题行」多半是参考文献条目/成果清单，别再分节（否则几百个假节）
+FLAT_KINDS = ("refs", "ack", "toc")
+# 只有这些类别会被子节**继承**（review 不继承：它会顺着传染整篇正文）
+INHERIT_KINDS = ("refs", "ack", "toc", "appendix")
+# 默认不进 FTS/向量（开关：ZOTERO_KB_INDEX_NONBODY=1）
+NONBODY_KINDS = ("toc", "refs", "ack", "appendix")
+
+
+def heading_level(title: str) -> int:
+    """从标题**编号**推层级：第N章/1 -> 1、1.1 -> 2、1.1.1 -> 3、其余 0（继承）。
+
+    ⚠ 不能用 MinerU 的 `paragraph_title.level` —— 本机实测 94 篇 1756 个标题的
+    level **全是 2**，照它推会把「0 引言」与「1.1 …」判成同级（附录 J.4）。
     """
-    out: list[dict] = []
+    t = str(title or "").strip()
+    if RE_CHAP.match(t):
+        return 1
+    m = RE_NUM_LEAD.match(t)
+    if not m:
+        return 0
+    # 1 -> 1、1.2 -> 2、1.2.3 -> 3；四层以上按 3 级算（再深就没有父块负担了）
+    parts = m.group(1).count(".") + 1
+    return min(3, parts)
 
-    # 正文
-    for page_no, page_text in enumerate(pages, start=1):
-        for piece in chunk_text(page_text):
-            out.append({"page": page_no, "kind": "fulltext", "text": piece})
 
-    # 标注：一条一个块（通常很短，但信号强）
+def section_kind_of(title: str, inherit: str = "body") -> str:
+    """标题 -> section_kind；匹配不到就继承上一节（子节跟着「参考文献」走）。"""
+    t = str(title or "")
+    for rx, kind in KIND_RULES:
+        if rx.search(t):
+            return kind
+    return inherit or "body"
+
+
+def _index_nonbody() -> bool:
+    """是否把 refs/ack/appendix/toc 也建进 FTS 与向量（默认关）。"""
+    return str(os.environ.get("ZOTERO_KB_INDEX_NONBODY") or "").strip().lower() \
+        in ("1", "true", "yes", "on")
+
+
+def sectionize_pages(pages: list, item_type: str = "") -> list:
+    """把**有效正文**（逐页 markdown，已过修订层）分节。
+
+    返回**扁平**的节列表（顺序 = 原文顺序），每节：
+        {title, level, kind, page_from, page_to, text, parent}
+    `parent` 是父节在列表里的下标（-1 = 顶层）。
+
+    为什么吃 pages 而不是 structured_content：修订层改的是 pages 这一层，
+    绕回 structured_content 等于把用户的修订架空（附录 J.4 明确要求）。
+    `item_type` 目前只作记录 —— 学位论文的「章 -> 节」与期刊的「节 -> 小节」
+    在编号规则下是同一件事（章/节都是 level<=2 的父块）。
+    """
+    secs: list = []
+    stack: list = []          # [(level, index)]
+    cur = [-1]
+
+    def open_sec(title, level, kind):
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent = stack[-1][1] if stack else -1
+        # 类别继承只认**结构性非正文**的父节（参考文献/致谢/目录/附录）。
+        # ⚠ 别让它从"上一节"顺着传下去：目录里冒出来的一个 review 小节会把
+        #   后面整篇正文都染成 review（本机实测：学位论文第 2 章全被判成综述）。
+        if (kind or "body") == "body" and parent >= 0 \
+                and secs[parent]["kind"] in INHERIT_KINDS:
+            kind = secs[parent]["kind"]
+        idx = len(secs)
+        secs.append({"title": str(title or ""), "level": int(level),
+                     "kind": kind or "body", "page_from": 0, "page_to": 0,
+                     "text": "", "parent": parent})
+        stack.append((int(level), idx))
+        cur[0] = idx
+
+    prev_level = [1]
+
+    def append_body(raw, pno):
+        if cur[0] < 0:
+            open_sec("", 1, "body")
+            prev_level[0] = 1
+        s = secs[cur[0]]
+        s["text"] = (s["text"] + "\n" + raw) if s["text"] else raw
+        if not s["page_from"]:
+            s["page_from"] = pno
+        s["page_to"] = pno
+
+    for pno, page_text in enumerate(pages or [], start=1):
+        for raw in str(page_text or "").splitlines():
+            m = RE_HEAD.match(raw)
+            if not m:
+                append_body(raw, pno)
+                continue
+            title = m.group(2).strip()
+            kind_here = section_kind_of(title, "")
+            lvl = heading_level(title)
+            if lvl <= 0:
+                # 无编号标题：**继承上一节的层级**（规范：其余继承上一节）
+                lvl = prev_level[0]
+            # 处在「扁平区」（目录/参考文献/致谢）里时：比它更深的标题一律当正文
+            # —— 那些是目录行 / 文献条目，不是节。点线+页码的目录行更是无条件当正文。
+            # 只有不深于扁平区、且不像目录行的标题才走出扁平区（例：目录后的「第1章 绪论」）。
+            flat_level = None
+            for _sl, _si in reversed(stack):
+                if secs[_si]["kind"] in FLAT_KINDS:
+                    flat_level = _sl
+                    break
+            if flat_level is not None \
+                    and (lvl > flat_level or RE_TOC_LINE.search(raw)):
+                append_body(raw, pno)
+                continue
+            prev_level[0] = lvl
+            open_sec(title, lvl, kind_here)
+    # 丢掉完全空的节（只有标题、没有正文、也没有子节）
+    keep = []
+    for i, s in enumerate(secs):
+        has_child = any(x["parent"] == i for x in secs)
+        if str(s["text"]).strip() or has_child:
+            keep.append(i)
+    remap = {old: new for new, old in enumerate(keep)}
+    out = []
+    for old in keep:
+        s = dict(secs[old])
+        p = s.get("parent", -1)
+        s["parent"] = remap.get(p, -1)
+        out.append(s)
+    return out
+
+
+def _path_of(secs: list, si: int) -> str:
+    """节的 section_path：祖先标题用 > 连起来（"第2章 > 2.3 反演方法"）。"""
+    names = []
+    j = si
+    seen = set()
+    while 0 <= j < len(secs) and j not in seen:
+        seen.add(j)
+        t = str(secs[j].get("title") or "").strip()
+        if t:
+            names.append(t)
+        j = secs[j].get("parent", -1)
+    return " > ".join(reversed(names))
+
+
+def _indexable(kind: str, on: bool = False) -> bool:
+    return bool(on) or (kind or "body") not in NONBODY_KINDS
+
+
+def _subtree(secs: list, si: int):
+    """一节及其子孙的全文（父块正文）＋ {节索引: 在全文里的偏移}。"""
+    subs: dict = {}
+    for i, s in enumerate(secs):
+        p = s.get("parent", -1)
+        if p >= 0:
+            subs.setdefault(p, []).append(i)
+    buf: list = []
+    offs: dict = {}
+    pos = [0]
+
+    def walk(i):
+        offs[i] = pos[0]
+        t = str(secs[i].get("text") or "").strip()
+        if t:
+            if buf:
+                buf.append("\n\n")
+                pos[0] += 2
+            offs[i] = pos[0]
+            buf.append(t)
+            pos[0] += len(t)
+        for j in subs.get(i, []):
+            walk(j)
+
+    walk(si)
+    return "".join(buf), offs
+
+
+def _split_parent(text: str, limit: int = PARENT_MAX) -> list:
+    """父块正文按段落拆到 ≤limit 字，返回 [(起始偏移, 文本)]。"""
+    t = str(text or "")
+    if len(t) <= limit:
+        return [(0, t)]
+    parts: list = []
+    cur = ""
+    cur_start = 0
+    pos = 0
+    for chunk in re.split(r"(\n\s*\n)", t):
+        if cur and len(cur) + len(chunk) > limit:
+            parts.append((cur_start, cur.rstrip()))
+            cur = ""
+            cur_start = pos
+        cur += chunk
+        pos += len(chunk)
+    if cur.strip():
+        parts.append((cur_start, cur.rstrip()))
+    return parts or [(0, t)]
+
+
+def _cut_offsets(text: str, target: int = CHILD_TARGET,
+                 overlap: int = CHILD_OVERLAP) -> list:
+    """把一节正文切成子块，返回 [(起始偏移, 文本)]。
+
+    与老的 chunk_text 的区别：**带偏移**（父块拆成多段时要按偏移归到那一段），
+    另外按句子边界收口（中文句号后没有空格，零宽看标点）。
+    """
+    t = str(text or "")
+    if not t.strip():
+        return []
+    out: list = []
+    n = len(t)
+    i = 0
+    while i < n:
+        end = min(n, i + target)
+        if end < n:
+            m = RE_SENT_END.search(t, max(end - 1, i))
+            if m and m.end() <= i + target + overlap:
+                end = m.end()
+        piece = t[i:end].strip()
+        if piece and len(piece) >= CHILD_MIN:
+            out.append((i, piece))
+        if end >= n:
+            break
+        nxt = end - overlap
+        i = nxt if nxt > i else i + 1
+    if not out and t.strip():
+        out = [(0, t.strip())]
+    return out
+
+
+def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
+    """把一篇文献切成**父子两层**（2026-10-11 口径，设计方案附录 J.4）。
+
+    · 父块（level=0）：节/章的**整节全文**，≤3000 字（超了按段落拆「（续 N）」）；
+      只作「命中子块时返回上下文」的载体，**不进 FTS、不建向量**；
+    · 子块（level=1）：节内 300 字、重叠 60，**FTS 与向量都建在这一层**，
+      文本前缀挂 section_path（"第2章 > 2.3 反演方法"）；
+    · 标注与笔记只有一层（level=1、无父块）；
+    · toc / refs / ack / appendix 存库但不进 FTS/向量（开关 ZOTERO_KB_INDEX_NONBODY=1）。
+
+    返回顺序：**全部父块在前、子块在后** —— 调用方按顺序插入即可保证
+    `parent_id` 指向已存在的行（父块先插）。父块带 `ref`，子块带 `parent_ref`。
+    """
+    secs = sectionize_pages(pages, str(getattr(item, "item_type", "") or ""))
+    index_nonbody = _index_nonbody()
+    parents: list = []
+    children: list = []
+    store: dict = {}
+    ref_seq = [0]
+
+    def new_ref():
+        ref_seq[0] += 1
+        return "r%d" % ref_seq[0]
+
+    def parent_ref_for(si, off):
+        """把「某节内偏移 off」映射到最近的 ≤2 级祖先父块的某一段。"""
+        j = si
+        while j >= 0 and secs[j]["level"] > 2:
+            j = secs[j].get("parent", -1)
+        if j < 0 or j not in store:
+            return ""
+        info = store[j]
+        base = info["offs"].get(si, 0)
+        off = base + off
+        ref = info["parts"][0][1] if info["parts"] else ""
+        for start, r in info["parts"]:
+            if start <= off:
+                ref = r
+            else:
+                break
+        return ref
+
+    for si, sec in enumerate(secs):
+        kind = sec.get("kind") or "body"
+        text = str(sec.get("text") or "").strip()
+        if sec["level"] <= 2:
+            subtree, offs = _subtree(secs, si)
+            parts = _split_parent(subtree)
+            refs = []
+            for pi, (start, ptext) in enumerate(parts):
+                title = sec.get("title") or "（无标题节）"
+                if len(parts) > 1:
+                    title = "%s（续 %d）" % (title, pi + 1)
+                ref = new_ref()
+                parents.append({
+                    "ref": ref, "level": 0, "kind": "fulltext", "title": title,
+                    "page": sec.get("page_from") or 0,
+                    "page_from": sec.get("page_from") or 0,
+                    "page_to": sec.get("page_to") or 0,
+                    "text": ptext, "section_path": _path_of(secs, si),
+                    "section_kind": kind, "indexable": False,
+                })
+                refs.append((start, ref))
+            store[si] = {"parts": refs, "offs": offs}
+        if text:
+            path = _path_of(secs, si)
+            ok = _indexable(kind, index_nonbody)
+            for off, piece in _cut_offsets(text):
+                children.append({
+                    "level": 1, "kind": "fulltext", "parent_ref": parent_ref_for(si, off),
+                    "page": sec.get("page_from") or 0,
+                    "page_from": sec.get("page_from") or 0,
+                    "page_to": sec.get("page_to") or 0,
+                    "text": (path + "\n" + piece) if path else piece,
+                    "section_path": path, "section_kind": kind, "indexable": ok,
+                })
+
+    # 标注：一条一个块（通常很短，但信号强）；只有一层
     for ann in item.annotations:
         text = ann.text.strip()
         if len(text) < 8:
             continue
         comment = f"（批注：{ann.comment}）" if ann.comment else ""
         page = int(ann.page) if ann.page.isdigit() else 0
-        out.append({
-            "page": page,
-            "kind": "annotation",
+        children.append({
+            "level": 1, "kind": "annotation", "parent_ref": "",
+            "page": page, "page_from": page, "page_to": page,
             "text": f"[{item.title} · 第 {ann.page} 页 高亮]{comment}\n{text}",
+            "section_path": "", "section_kind": "", "indexable": True,
         })
 
-    # 笔记：段落级切块
+    # 笔记：段落级切块，只有一层
     for note in item.notes:
         body = note.markdown.strip()
         if not body:
             continue
         for piece in chunk_text(body, target=700, overlap=100):
-            out.append({"page": 0, "kind": "note", "text": f"[{item.title} · 笔记]\n{piece}"})
+            children.append({
+                "level": 1, "kind": "note", "parent_ref": "",
+                "page": 0, "page_from": 0, "page_to": 0,
+                "text": f"[{item.title} · 笔记]\n{piece}",
+                "section_path": "", "section_kind": "", "indexable": True,
+            })
 
+    out = parents + children
     for seq, chunk in enumerate(out):
         chunk["seq"] = seq
     return out
-
-
 # ---------------------------------------------------------------- Markdown
 
 

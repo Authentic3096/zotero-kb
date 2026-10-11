@@ -43,6 +43,10 @@ RE_BLOCK_MATH = re.compile(r"\$\$(.+?)\$\$", re.S)
 RE_BRACKET_MATH = re.compile(r"\\\[(.+?)\\\]", re.S)
 # 行内单美元：`$x^2$`（我们自己的视图只用 `$$`，但用户笔记/别的 md 里会出现）
 RE_INLINE_MATH = re.compile(r"(?<!\$)\$([^$\n]+)\$(?!\$)")
+# markdown 管道表：一整行都被 `|` 包起来才算（避免误吞普通正文里的竖线）
+RE_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+# 分隔行：|---|:--:|---|
+RE_TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$")
 
 
 def latex_to_mathml(tex: str, display: str = "inline") -> str:
@@ -84,13 +88,62 @@ def _inline(text: str) -> str:
     s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)
     s = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", s)
     s = re.sub(r"(^|[^*])\*([^*\n]+)\*", r"\1<em>\2</em>", s)
-    s = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"[图：\1]", s)
+    # 图片：渲染成真的 <img>（用户要"侧边栏能看正文并渲染里面的图表"）。
+    # ⚠ 路径**保持相对**（kb 文件里就是 `images/xxx.jpg`，相对 <kb>/mineru/<key>/），
+    #   由插件在注入时补 <base> 或改写 src 成绝对 file:// —— 知识库整体搬家
+    #   不用重写任何文件。这里绝不写本机绝对路径。
+    #   自闭合 <img .../>：窗格可能按 XML 解析，未闭合会被整段丢弃。
+    s = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)",
+               lambda m: '<img src="%s" alt="%s" style="max-width:100%%;'
+                         ' height:auto; display:block; margin:4px 0;" />'
+                         % (m.group(2), m.group(1)), s)
     s = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', s)
 
     # 占位换回 MathML（此时已转义完，MathML 是可信的我们自己生成的标签）
     for i, frag in enumerate(slots):
         s = s.replace("\x00M%d\x00" % i, frag)
     return s
+
+
+def _table_cell(tag: str, text: str) -> str:
+    return ('<%s style="border:1px solid rgba(127,127,127,0.45);'
+            ' padding:2px 5px; text-align:left; vertical-align:top;">%s</%s>'
+            % (tag, _inline(text), tag))
+
+
+def _render_table(rows: list[list[str]]) -> str:
+    """把 markdown 管道表渲染成 <table>（**全部自闭合/成对标签**，保持 XML 可解析）。
+
+    ⚠ MinerU 的表格块 `content` 就是管道表；窗格优先读 `.html`，所以表格必须
+    在这里就画成表格，否则用户看到的是 `| a | b |` 的原文。
+    """
+    if not rows:
+        return ""
+    head, body = rows[0], rows[1:]
+    parts = ['<table style="border-collapse:collapse; margin:6px 0;'
+             ' font-size:0.95em; max-width:100%;">']
+    parts.append("<thead><tr>"
+                 + "".join(_table_cell("th", c) for c in head)
+                 + "</tr></thead>")
+    if body:
+        parts.append("<tbody>")
+        for r in body:
+            # 行里缺列时补空，免得 <td> 个数不齐
+            cells = list(r) + [""] * (len(head) - len(r))
+            parts.append("<tr>" + "".join(_table_cell("td", c)
+                                          for c in cells[:len(head)]) + "</tr>")
+        parts.append("</tbody>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+def _split_table_row(line: str) -> list[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
 
 
 def render(md_text: str) -> str:
@@ -113,11 +166,41 @@ def render(md_text: str) -> str:
             out.append("</%s>" % list_kind)
             list_kind = ""
 
-    for raw in str(md_text or "").splitlines():
+    lines = str(md_text or "").splitlines()
+    i = 0
+    page_open = False
+    while i < len(lines):
+        raw = lines[i]
+        # 管道表：当前行是 |...|、下一行是 |---| 分隔行 → 整块吃掉，别再走普通分支
+        if RE_TABLE_ROW.match(raw) and i + 1 < len(lines) \
+                and RE_TABLE_SEP.match(lines[i + 1]):
+            flush_buf(); close_list()
+            rows = [_split_table_row(raw)]
+            i += 2
+            while i < len(lines) and RE_TABLE_ROW.match(lines[i]):
+                rows.append(_split_table_row(lines[i]))
+                i += 1
+            out.append(_render_table(rows))
+            continue
         line = raw.rstrip()
+        i += 1
         if not line.strip():
             flush_buf()
             close_list()
+            continue
+        # 页码锚点：全文里的 `## p.N` 包一层 <div class="kb-page" data-kbpage="N">，
+        # 插件靠它把「按页正文」切成可编辑的页块（mdhtml 渲染后仍能按页定位）。
+        mp = re.match(r"^(#{1,6})\s+p\.(\d+)\s*$", line)
+        if mp:
+            flush_buf(); close_list()
+            if page_open:
+                out.append("</div>")
+            out.append('<div class="kb-page" data-kbpage="%s">' % mp.group(2))
+            page_open = True
+            lvl = len(mp.group(1))
+            size = {1: "1.35em", 2: "1.18em", 3: "1.06em"}.get(lvl, "1em")
+            out.append('<div style="font-weight:600; font-size:%s; margin:6px 0 2px;">p.%s</div>'
+                       % (size, mp.group(2)))
             continue
         m = re.match(r"^(#{1,6})\s+(.*)$", line)
         if m:
@@ -162,6 +245,8 @@ def render(md_text: str) -> str:
             continue
         buf.append(_inline(line))
     flush_buf(); close_list()
+    if page_open:
+        out.append("</div>")
     return "\n".join(out)
 
 

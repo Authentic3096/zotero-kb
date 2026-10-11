@@ -329,9 +329,13 @@ def _rows_snapshot(conn, key: str, *, with_embeddings: bool = True) -> dict:
         "key": key,
         "archived_at": now_iso(),
         "items": dict(item) if item is not None else {},
+        # 父子切块的列也要一起快照（漏了就静默丢一半：还原后父子结构没了）。
+        # ⚠ **按 level 排序**：父块（level=0）在前 —— 还原时要求父块先插，
+        #   否则子块的 parent_id 指向还不存在的行。
         "chunks": [dict(r) for r in conn.execute(
-            "SELECT chunk_id, item_key, page, seq, text, n_chars FROM chunks "
-            "WHERE item_key = ? ORDER BY chunk_id", (key,))],
+            "SELECT chunk_id, item_key, page, seq, text, n_chars, level, "
+            "parent_id, section_path, section_kind, page_from, page_to "
+            "FROM chunks WHERE item_key = ? ORDER BY level, chunk_id", (key,))],
         "figures": [dict(r) for r in conn.execute(
             "SELECT fig_id, item_key, page, kind, label, text, n_rows, n_cols, built_at "
             "FROM figures WHERE item_key = ? ORDER BY fig_id", (key,))],
@@ -549,14 +553,33 @@ def _restore_rows(conn, key: str, snap: dict,
     #     残留（别人的行在上面那一关就已经整条劝退了）。
     _purge_derived_rows(conn, key)
 
-    chunk_cols = ("chunk_id", "item_key", "page", "seq", "text", "n_chars")
-    for row in snap.get("chunks") or []:
+    chunk_cols = ("chunk_id", "item_key", "page", "seq", "text", "n_chars",
+                  "level", "parent_id", "section_path", "section_kind",
+                  "page_from", "page_to")
+    # ⚠ **父块先插**（level 小的先）：子块的 parent_id 指向父块，顺序反了就会
+    #   留下悬空 parent_id（还原后检索照样跑，只是上下文没了 —— 静默的那种错）。
+    #   老库的快照没有 level 列 → 默认 1，等价于"全是子块"，行为与从前一致。
+    # ⚠ `r.get("level") or 1` 是**错的**：父块的 level 是 0，`0 or 1` 会变成 1，
+    #   于是父块被排到子块后面、FTS 也按错层级写（实测踩到）。必须显式判 None。
+    def _lvl(row):
+        v = row.get("level")
+        return 1 if v is None else int(v)
+
+    snap_chunks = sorted(snap.get("chunks") or [],
+                         key=lambda r: (_lvl(r), int(r.get("chunk_id") or 0)))
+    for row in snap_chunks:
         conn.execute(f"INSERT INTO chunks({','.join(chunk_cols)}) "
                      f"VALUES({','.join('?' * len(chunk_cols))})",
                      [row.get(c) for c in chunk_cols])
-        conn.execute("DELETE FROM chunks_fts WHERE rowid = ?", (row.get("chunk_id"),))
-        conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)",
-                     (row.get("chunk_id"), row.get("text") or ""))
+        # FTS 只还原**当初进了 FTS 的那一层**：父块与 toc/refs/ack/appendix 不进
+        # （否则还原一次就把"父块不进 FTS"的约定冲掉，关键词路开始整节召回）。
+        if _lvl(row) == 1 and \
+                (row.get("section_kind") or "") not in (
+                    "toc", "refs", "ack", "appendix"):
+            conn.execute("DELETE FROM chunks_fts WHERE rowid = ?",
+                         (row.get("chunk_id"),))
+            conn.execute("INSERT INTO chunks_fts(rowid, text) VALUES(?, ?)",
+                         (row.get("chunk_id"), row.get("text") or ""))
         res["chunks"] += 1
 
     fig_cols = ("fig_id", "item_key", "page", "kind", "label", "text",

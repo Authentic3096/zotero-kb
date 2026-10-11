@@ -944,6 +944,10 @@ FULLTEXT_DIR = os.path.join(KB_DIR, "fulltext")
 # 分级视图（摘要与要点 / 图注与表格 / 权重与经验），由 offline/kbviews.py 生成。
 # 和 papers/ fulltext/ 一样是**可重建的派生物**：删了跑一次构建就回来。
 VIEWS_DIR = os.path.join(KB_DIR, "views")
+# **人工修订层**（offline/edits.py 是唯一读写路径）：正文按页覆盖。
+# ⚠ 它是**用户资产，绝不能删** —— 删了就等于放弃改过的正文（与 papers/views 那种
+#   "删了跑一次构建就回来"的派生物**性质完全不同**）。面板结构表里也这么写。
+EDITS_DIR = os.path.join(KB_DIR, "edits")
 INBOX_DIR = os.path.join(KB_DIR, "inbox")
 CACHE_DIR = os.path.join(KB_DIR, ".cache")
 INDEX_DB = os.path.join(KB_DIR, "index.db")
@@ -1251,6 +1255,15 @@ CREATE TABLE IF NOT EXISTS chunks (
     seq         INTEGER,          -- 该条目内第几块
     text        TEXT NOT NULL,
     n_chars     INTEGER,
+    -- ---- 父子切块（2026-10-11 口径，设计方案附录 J.4）----
+    -- ⚠ **不给 parent_id 声明外键**：还原/批量插入的顺序会坑（子块先插会违约），
+    --   父子关系由转换器保证（父块先插），一致性由 maintain.py check 兜。
+    level        INTEGER DEFAULT 1,   -- 0=父（节/章，只作上下文载体） 1=子（FTS/向量）
+    parent_id    INTEGER,             -- 子块指向父块 chunk_id
+    section_path TEXT,                -- 第2章 > 2.3 反演方法
+    section_kind TEXT,                -- body|review|refs|toc|appendix|ack
+    page_from    INTEGER,
+    page_to      INTEGER,
     FOREIGN KEY (item_key) REFERENCES items(key) ON DELETE CASCADE
 );
 
@@ -1490,13 +1503,27 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 conn.execute(f"ALTER TABLE item_tombstone ADD COLUMN {col} TEXT")
             except sqlite3.Error:
                 pass
+
+    # 父子切块（附录 J.4）：老库的 chunks 是六列建的，CREATE TABLE IF NOT EXISTS
+    # 对已存在的表**不加列** —— 只能显式 ALTER。老库补完列后 level 全为默认 1
+    # （= 子块），所以在跑过一次全量重建之前，检索侧看到的仍是「没有父块、
+    # section_path 为空」的老结构（向后兼容）。
+    chunk_cols = columns("chunks")
+    for col, typ in (("level", "INTEGER DEFAULT 1"), ("parent_id", "INTEGER"),
+                     ("section_path", "TEXT"), ("section_kind", "TEXT"),
+                     ("page_from", "INTEGER"), ("page_to", "INTEGER")):
+        if chunk_cols and col not in chunk_cols:
+            try:
+                conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} {typ}")
+            except sqlite3.Error:
+                pass
     conn.commit()
 
 
 def init_db(path: str = INDEX_DB) -> sqlite3.Connection:
     """建库建表。幂等，重复调用安全。"""
-    for directory in (KB_DIR, PAPERS_DIR, FULLTEXT_DIR, VIEWS_DIR, INBOX_DIR,
-                      CACHE_DIR):
+    for directory in (KB_DIR, PAPERS_DIR, FULLTEXT_DIR, VIEWS_DIR, EDITS_DIR,
+                      INBOX_DIR, CACHE_DIR):
         os.makedirs(directory, exist_ok=True)
     conn = connect(path)
     conn.executescript(SCHEMA_SQL)

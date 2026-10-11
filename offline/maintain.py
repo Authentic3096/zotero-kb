@@ -106,14 +106,20 @@ def check() -> int:
         if chunks and vecs == 0:
             print(f"{WARN}没有向量 —— 语义检索不可用（关键词检索仍可用）")
             problems.append("补向量：convert.py（不加 --no-vectors）")
-        # FTS 与 chunks 是否一一对应（漏了会导致"检索不到明明该命中的内容"）
+        # FTS 与「**该进 FTS 的那一层**」是否一一对应（漏了会导致"检索不到明明
+        # 该命中的内容"）。⚠ 父子切块之后不能再拿**总切片数**比：父块（level=0）
+        # 与 toc/refs/ack/appendix 本来就不进 FTS（附录 J.4），拿总数比会天天报警。
         fts = conn.execute("SELECT COUNT(*) AS n FROM chunks_fts").fetchone()["n"]
-        if fts != chunks:
-            print(f"{BAD}FTS 行数 {fts} 与切片数 {chunks} 不一致")
+        expect_fts = conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks WHERE level = 1 "
+            "AND COALESCE(section_kind, '') NOT IN "
+            "('toc', 'refs', 'ack', 'appendix')").fetchone()["n"]
+        if fts != expect_fts:
+            print(f"{BAD}FTS 行数 {fts} 与应索引切片数 {expect_fts} 不一致")
             problems.append("FTS 与 chunks 不同步：跑 maintain.py reindex-fst")
             core_broken = True
         else:
-            print(f"{OK}FTS 与切片一一对应")
+            print(f"{OK}FTS 与应索引切片一一对应（{fts}）")
         # 测试数据残留：会抬高某些文献的权重、并把"自检经验"带进检索结果。
         # 两个会写数据的测试现在都自清理了，这里兜底检查一次。
         test_exp = conn.execute(
@@ -352,7 +358,11 @@ def reindex_fst() -> int:
     print("重建 FTS 与词元表…")
     conn = S.connect(S.INDEX_DB)
     conn.execute("DELETE FROM chunks_fts")
-    rows = conn.execute("SELECT chunk_id, text FROM chunks").fetchall()
+    # 只重建**该进 FTS 的那一层**（父子切块：父块与 toc/refs/ack/appendix 不进）
+    rows = conn.execute(
+        "SELECT chunk_id, text FROM chunks WHERE level = 1 "
+        "AND COALESCE(section_kind, '') NOT IN "
+        "('toc', 'refs', 'ack', 'appendix')").fetchall()
     conn.executemany("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
                      [(r["chunk_id"], r["text"]) for r in rows])
     conn.execute("DELETE FROM term_df")

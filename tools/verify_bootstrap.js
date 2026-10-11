@@ -169,6 +169,8 @@ const Services = {
     BUTTON_POS_0: 1, BUTTON_POS_1: 2, BUTTON_TITLE_IS_STRING: 128,
   },
   locale: { availableLocales: ["zh-CN", "en-US"] },
+  // 图片相对路径 → file:// （20-kbview.js 的 kbviewFixImgs 用它；桩里给个够用的实现）
+  io: { newFileURI: (f) => ({ spec: "file:///" + String(f.path).replace(/\\/g, "/") }) },
   dirsvc: { get: () => ({ path: "D:\\" }) },
   // ⚠ 为了能测「Ollama 装在本机默认位置」那条分支：`ollamaExePath()` 读
   //   %LOCALAPPDATA%，桩里给它一个中性值（别写真实用户名，发布审计会拦）。
@@ -392,12 +394,40 @@ if (KB) {
   check("md2html 渲染引用", html.indexOf("<blockquote") >= 0);
   check("md2html 渲染公式（原样保留 LaTeX 文本）",
     html.indexOf("E = m c^2") >= 0 && html.indexOf("monospace") >= 0);
-  check("md2html 渲染链接、图片降级成图注",
-    html.indexOf('<a href="https://x.test">链接</a>') >= 0
-    && html.indexOf("[图：图注]") >= 0);
+  check("md2html 渲染链接",
+    html.indexOf('<a href="https://x.test">链接</a>') >= 0);
+  check("md2html 把图片渲染成 <img>（相对路径不被改写）",
+    html.indexOf('<img src="images/a.jpg" alt="图注"') >= 0, html.slice(-220));
+  const tbl = KB.md2html(["| a | b |", "| --- | --- |", "| 1 | 2 |"].join("\n"));
+  check("md2html 把管道表渲染成 <table>",
+    tbl.indexOf("<table") >= 0 && tbl.indexOf("<th") >= 0
+    && tbl.indexOf("<td") >= 0 && tbl.indexOf("| --- |") < 0, tbl);
+  const oldKbDir = KB.kbDir;
+  KB.kbDir = () => "C:\\kb";
+  const fixedImg = KB.kbviewFixImgs('<img src="images/a.jpg">', "ABC");
+  check("kbviewFixImgs 把相对 src 改写成 file://（含 mineru/<key>）",
+    fixedImg.indexOf("file:///") >= 0 && fixedImg.indexOf("mineru") >= 0
+    && fixedImg.indexOf("ABC") >= 0, fixedImg);
+  check("kbviewFixImgs 不动绝对 URL",
+    KB.kbviewFixImgs('<img src="http://x/a.jpg">', "ABC")
+      === '<img src="http://x/a.jpg">');
+  KB.kbDir = () => "";
+  check("kbviewFixImgs 没有 kbDir 时原样返回（宁可裂图，不拼坏 URL）",
+    KB.kbviewFixImgs('<img src="images/a.jpg">', "ABC")
+      === '<img src="images/a.jpg">');
+  KB.kbDir = oldKbDir;
   check("md2html 转义 HTML（笔记里有 < & 也不炸）",
     KB.md2html("<b>x</b> & y").indexOf("&lt;b&gt;x&lt;/b&gt; &amp; y") >= 0,
     KB.md2html("<b>x</b> & y"));
+  const paged = KB.md2html(["# T", "", "## p.1", "aaa", "", "## p.2", "bbb"].join("\n"));
+  check("md2html 把 ## p.N 包成可编辑的页块",
+    paged.indexOf('<div class="kb-page" data-kbpage="1">') >= 0
+    && paged.indexOf('<div class="kb-page" data-kbpage="2">') >= 0, paged);
+  const split = KB.kbviewSplitMd(["## p.1", "线一", "线二", "", "## p.2", "乙"].join("\n"));
+  check("kbviewSplitMd 把正文按 ## p.N 切成 markdown",
+    split[1] === "线一\n线二" && split[2] === "乙", JSON.stringify(split));
+  check("kbviewSplitMd 没分节时返回空对象",
+    JSON.stringify(KB.kbviewSplitMd("没有页码锚点")) === "{}");
   check("md2html 空输入不抛", KB.md2html("") === "" && KB.md2html(null) === "");
 
   // ---- kbviewPickLevel：选中那一级没生成时按 纲要→摘要→档案 回退

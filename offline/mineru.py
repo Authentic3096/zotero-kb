@@ -324,6 +324,7 @@ ART_ROOT = "mineru"
 PARSE_TIMEOUT = 3600.0            # 单篇上限：basic 档 5 页约 16~33 秒，慢机器留足
 PAGE_JSON = "pages.json"
 META_JSON = "meta.json"
+STRUCT_JSON = "structured_content.json"
 # 渲染 pages 时要**丢掉**的块类型：MinerU 分出来的页眉/页脚/页码
 # （这正是我们原来用正则 + 灰区模型仲裁想干掉的东西，它直接标出来了）
 DROP_BLOCK_TYPES = ("header", "footer", "page_footnote", "page_number",
@@ -401,6 +402,145 @@ def _as_text(val) -> str:
     return str(val).strip()
 
 
+def _captions_text(val) -> str:
+    """取 `captions` / `footnotes` 这类字段里的**文字**。
+
+    ⚠ 本机 MinerU 4.0.10 给的是 **dict 列表**：
+
+        [{"bbox": [...], "content": "图 1 六棱锥构型的超导全张量磁梯度探头"}]
+
+    直接 str() 会渲染成 `[{'bbox': [...], 'content': ...}]` —— 正文里是一坨
+    噪声，还会进切片把向量带偏（这正是"3713 张图只有 5 处进了正文"的根因之一）。
+    这里只取每个 dict 的 `content` / `text`；字符串列表照旧逐元素拼。
+    """
+    if val is None:
+        return ""
+    if isinstance(val, (list, tuple)):
+        parts = []
+        for x in val:
+            if isinstance(x, dict):
+                parts.append(_as_text(x.get("content") or x.get("text") or ""))
+            else:
+                parts.append(_as_text(x))
+        return " ".join(p for p in parts if p).strip()
+    if isinstance(val, dict):
+        return _as_text(val.get("content") or val.get("text") or "")
+    return _as_text(val)
+
+
+# 图注字段的读取顺序：MinerU 4.0.10 的 `captions` 优先，其余是历史/别的档位
+CAPTION_KEYS = ("captions", "img_caption", "caption", "img_footnote", "footnotes")
+# 图片路径字段的读取顺序：`image_source` 是 4.0.10 真正给的那个
+IMAGE_KEYS = ("image_source", "img_path", "image_path")
+
+
+def _caption_text(b: dict) -> str:
+    """一个块里的图注文字（按 CAPTION_KEYS 顺序取第一个非空的）。"""
+    if not isinstance(b, dict):
+        return ""
+    for k in CAPTION_KEYS:
+        txt = _captions_text(b.get(k))
+        if txt:
+            return txt
+    return ""
+
+
+def _block_image(b: dict) -> str:
+    """一个块里的图片相对路径（按 IMAGE_KEYS 顺序取第一个非空的）。"""
+    if not isinstance(b, dict):
+        return ""
+    for k in IMAGE_KEYS:
+        txt = _as_text(b.get(k))
+        if txt:
+            return txt
+    return ""
+
+
+RE_FIG_LABEL = re.compile(
+    r"((?:图|圖|Fig\.?|Figure|表|Table)\s*[\d]+(?:[-–—.．][\d]+)*[a-zA-Z]?)", re.I)
+
+
+def _figure_label(text: str) -> str:
+    """从图注文字里提「图 1.1 / 表 2.3」这样的编号（提不到返回空串）。"""
+    m = RE_FIG_LABEL.search(str(text or ""))
+    return (m.group(1) if m else "").strip()
+
+
+def _table_shape(md: str) -> tuple[int, int]:
+    """数一份 markdown 管道表的（行数, 列数）。数不出来返回 (0, 0)。"""
+    rows = [ln for ln in str(md or "").splitlines() if ln.strip().startswith("|")]
+    if not rows:
+        return 0, 0
+    # 第二行是 |---| 分隔线，不算数据行
+    body = [r for i, r in enumerate(rows) if i != 1]
+    n_rows = len(body)
+    n_cols = max((len([c for c in r.strip().strip("|").split("|")])
+                  for r in rows), default=0)
+    return n_rows, n_cols
+
+
+def figures_from_structured(structured: dict) -> dict:
+    """从 `structured_content.json` 抽「图注与表格」（MinerU 单一来源时用）。
+
+    返回与 `offline/figures.py::extract_document` **同形**：
+      captions: [{"page", "kind", "label", "text"}]
+      tables:   [{"page", "label", "markdown", "caption", "rows", "cols"}]
+
+    为什么要从 structured_content 抽而不是继续用 PyMuPDF：两路混用会让同一张
+    图的图注**出现两次**（MinerU 的 captions 在页面正文里，figures.py 又从 PDF
+    抽一份附在页尾）。用户 2026-10-11 定的口径是"MinerU 可用时全部走 MinerU"。
+    """
+    captions: list[dict] = []
+    tables: list[dict] = []
+    for pi, pg in enumerate((structured or {}).get("pages") or [], start=1):
+        if not isinstance(pg, dict):
+            continue
+        for b in (pg.get("blocks") or []):
+            typ = block_type(b)
+            if typ not in ("image", "chart", "figure", "table"):
+                continue
+            cap = _caption_text(b)
+            content = str(b.get("content") or "").strip()
+            label = _figure_label(cap or content)
+            if typ == "table":
+                md = content
+                rows, cols = _table_shape(md)
+                if not md and b.get("image_source"):
+                    md = f"![{cap or '表'}]({_as_text(b.get('image_source'))})"
+                if not (cap or md):
+                    continue
+                tables.append({"page": pi, "label": label, "markdown": md,
+                               "caption": cap, "rows": rows, "cols": cols})
+                continue
+            # image / chart / figure：没有图注的图不进「图注与表格」视图
+            # （视图是给"图叫什么"用的，没名字的图放进去只是噪声）
+            if not cap:
+                continue
+            captions.append({"page": pi, "kind": typ, "label": label,
+                             "text": cap})
+    return {"captions": captions, "tables": tables}
+
+
+def count_block_types(structured: dict) -> dict:
+    """数一份 structured_content 里各类块的个数（报告用，不改渲染）。"""
+    out: dict[str, int] = {}
+    for pg in (structured or {}).get("pages") or []:
+        for b in (pg.get("blocks") or []):
+            t = block_type(b) or "(无类型)"
+            out[t] = out.get(t, 0) + 1
+    return out
+
+
+def load_structured(key: str, kb_dir: str = "") -> dict:
+    """读 `structured_content.json`（没有/坏了都返回 {}）。"""
+    p = os.path.join(artifact_dir(key, kb_dir), STRUCT_JSON)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            return json.load(fh) or {}
+    except Exception:      # noqa: BLE001
+        return {}
+
+
 def render_pages(structured: dict) -> list[str]:
     """把 `structured_content.json` 渲染成**逐页 markdown**（索引 0 = 第 1 页）。
 
@@ -458,11 +598,11 @@ def render_block(b) -> str:
     if typ in ("equation", "interline_equation", "inline_equation"):
         return "$$" + content + "$$" if content else ""
     if typ in ("image", "chart", "figure"):
-        img = _as_text(b.get("img_path") or b.get("image_path") or "")
-        cap = " ".join(
-            _as_text(b.get(k)) for k in
-            ("img_caption", "caption", "img_footnote")
-            if _as_text(b.get(k))).strip()
+        # ⚠ 字段名（2026-10-11 实测 MinerU 4.0.10）：图片路径在 `image_source`，
+        #   图注在 `captions`（**dict 列表**）里。原来读的是 img_path/image_path
+        #   与 img_caption/caption —— 全篇对不上，3713 张图只有 5 处进了正文。
+        img = _block_image(b)
+        cap = _caption_text(b)
         parts = []
         if img:
             parts.append(f"![{cap or typ}]({img})")
@@ -471,6 +611,19 @@ def render_block(b) -> str:
         elif content and content != img:
             parts.append(content)
         return "\n".join(parts)
+    if typ == "table":
+        # 表格的 `content` 就是 markdown 管道表（原样保留，交给渲染端画）；
+        # 表注在 `captions` 里，**且不会**另外以 text 块出现 —— 不在这里补上，
+        # 「表 2.1 相关系数矩阵」这句就永远进不了正文（实测确认）。
+        cap = _caption_text(b)
+        parts = []
+        if cap:
+            parts.append(cap)
+        if content:
+            parts.append(content)
+        elif b.get("image_source"):
+            parts.append(f"![{cap or '表'}]({_as_text(b.get('image_source'))})")
+        return "\n\n".join(parts)
     return content
 
 
@@ -987,6 +1140,50 @@ def clear_artifacts(key: str = "", kb_dir: str = "") -> int:
     return n
 
 
+def rerender(key: str, kb_dir: str = "") -> dict:
+    """**只重渲染** `pages.json`：读已有的 `structured_content.json`，不重跑 MinerU。
+
+    用途：渲染规则改了（字段名修对了、新加表格/图注）之后，把全库的逐页文本
+    重算一遍。MinerU 的原始块全在 structured_content.json 里，所以**不需要**
+    几十分钟的重新解析。
+
+    ⚠ **绝不碰 meta.json**：重跑判据（指纹）在它里面，动一下下次就会重新解析。
+    原子写：先写 .tmp 再 os.replace，免得窗格读到半截文件。
+    """
+    adir = artifact_dir(key, kb_dir)
+    src = os.path.join(adir, STRUCT_JSON)
+    if not os.path.isfile(src):
+        return {"key": key, "ok": False, "pages": 0, "chars": 0, "images": 0,
+                "why": "没有 structured_content.json"}
+    try:
+        with open(src, encoding="utf-8") as fh:
+            structured = json.load(fh) or {}
+        pages = render_pages(structured)
+    except Exception as exc:      # noqa: BLE001
+        return {"key": key, "ok": False, "pages": 0, "chars": 0, "images": 0,
+                "why": f"{type(exc).__name__}: {exc}"}
+    dst = os.path.join(adir, PAGE_JSON)
+    try:
+        with open(dst + ".tmp", "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(pages, fh, ensure_ascii=False)
+        os.replace(dst + ".tmp", dst)
+    except OSError as exc:
+        return {"key": key, "ok": False, "pages": 0, "chars": 0, "images": 0,
+                "why": f"写 pages.json 失败：{exc}"}
+    return {"key": key, "ok": True, "pages": len(pages),
+            "chars": sum(len(p) for p in pages),
+            "images": sum(p.count("![") for p in pages), "why": ""}
+
+
+def rerender_keys(kb_dir: str = "") -> list[str]:
+    """有哪些条目可以重渲染（有 structured_content.json 的目录）。"""
+    root = os.path.join(_kb_dir(kb_dir), ART_ROOT)
+    if not os.path.isdir(root):
+        return []
+    return sorted(n for n in os.listdir(root)
+                  if os.path.isfile(os.path.join(root, n, STRUCT_JSON)))
+
+
 def main(argv: list[str] | None = None) -> int:
     """`python offline/mineru.py …`
 
@@ -997,6 +1194,9 @@ def main(argv: list[str] | None = None) -> int:
       status [--key K]    看一篇/全部已解析的状态
       clear --key K|--all 删产物（函数名 clear_artifacts，见它的说明）
       pages --key K [--page N]   打印某页渲染后的文本（核对用）
+    另有选项（不是子命令，可放在任意位置）：
+      --rerender --all | --rerender --key K
+                          重渲染 pages.json（不重跑 MinerU、不动 meta.json）
     """
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -1085,6 +1285,35 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"共 {len(pages)} 页；每页字符数："
                   f"{[len(p) for p in pages]}")
+        return 0
+
+    if "--rerender" in argv:
+        kb_dir = opt("--kb", _kb_dir())
+        key = opt("--key")
+        keys = [key] if key else (rerender_keys(kb_dir) if "--all" in argv else [])
+        if not keys:
+            print("[XX] 需要 --key K 或 --all")
+            return 2
+        n_ok = n_fail = n_img = total_chars = 0
+        with_img = 0
+        for k in keys:
+            res = rerender(k, kb_dir)
+            if res["ok"]:
+                n_ok += 1
+                total_chars += res["chars"]
+                n_img += res["images"]
+                with_img += 1 if res["images"] else 0
+                if key:      # 单篇时把结果打出来，方便核对
+                    print(f"  {k}  {res['pages']} 页 / {res['chars']} 字符"
+                          f" / {res['images']} 处图片引用")
+            else:
+                n_fail += 1
+                print(f"  [!!] {k} 重渲染失败：{res['why']}")
+        print(f"重渲染完成：{n_ok} 篇成功、{n_fail} 篇失败；"
+              f"共 {n_img} 处图片引用、{with_img} 篇含图、{total_chars} 字符")
+        if n_fail:
+            return 1
+        print("下一步：跑一次 scripts\\1-convert.cmd 重建（否则 fulltext 还是旧的）")
         return 0
 
     # 默认：探测（保留原行为）

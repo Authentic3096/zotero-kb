@@ -206,6 +206,9 @@ def kb_search(
                 # searcher.search 末尾那段说明 —— 它是"这篇是不是我要的"的
                 # 判断依据之一（尤其英文文献的中文译名）。
                 **({"structured": h["structured"]} if h.get("structured") else {}),
+                # 父子切块的 small-to-big：命中子块时把**这一节的上下文**一起给
+                # 模型（父块截断 1500 字）。没有父块（老库/标注/笔记）时不出现。
+                **({"context": h["context"]} if h.get("context") else {}),
             }
             for h in hits
         ],

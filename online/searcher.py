@@ -161,6 +161,24 @@ class Searcher:
         self._idf_default = 0.0
         self._load_idf()
         self.reload_weights()
+        # ---- 父子切块的检索侧开关（都做成可关的，附录 J.4）----
+        # 父块上下文（small-to-big）：ZOTERO_KB_PARENT_CONTEXT=0 关掉
+        self.parent_context = str(os.environ.get(
+            "ZOTERO_KB_PARENT_CONTEXT", "1")).strip().lower() not in (
+            "0", "off", "false", "no")
+        # 同一父块只留最佳子块（附录 J.4 的口径）：ZOTERO_KB_PARENT_DEDUPE=0 关掉
+        # （做成开关是为了消融：这条规则会压低"同一节里多块都命中"的条目分数）
+        self.parent_dedupe = str(os.environ.get(
+            "ZOTERO_KB_PARENT_DEDUPE", "1")).strip().lower() not in (
+            "0", "off", "false", "no")
+        # 综述章加权：默认 +10%（ZOTERO_KB_REVIEW_BOOST=0 关掉）
+        try:
+            raw_boost = os.environ.get("ZOTERO_KB_REVIEW_BOOST")
+            if raw_boost is None:
+                raw_boost = S.get_meta(self.conn, "review_boost", "") or "0.1"
+            self.review_boost = float(raw_boost)
+        except Exception:      # noqa: BLE001
+            self.review_boost = 0.1
 
     # ------------------------------------------------------------ 元信息
 
@@ -636,11 +654,18 @@ class Searcher:
             return {}
         ph = ",".join("?" * len(chunk_ids))
         out: dict[int, dict] = {}
+        # 父子切块的列 + 父块正文一次取齐：命中子块时要用 parent_id 取父块做上下文
+        # （small-to-big，附录 J.4）。LEFT JOIN 自连接；老库（还没有父块）时
+        # parent_text 为 NULL，一切照旧。
         for row in self.conn.execute(
             f"""
             SELECT c.chunk_id, c.item_key, c.page, c.seq, c.text,
+                   c.level, c.parent_id, c.section_path, c.section_kind,
+                   c.page_from, c.page_to,
+                   p.text AS parent_text, p.section_path AS parent_section_path,
                    i.title, i.year, i.first_author, i.item_type, i.collections
             FROM chunks c JOIN items i ON i.key = c.item_key
+            LEFT JOIN chunks p ON p.chunk_id = c.parent_id
             WHERE c.chunk_id IN ({ph})
             """,
             chunk_ids,
@@ -770,7 +795,7 @@ class Searcher:
                per_item_chunks: int = 3, max_scoring_chunks: int = 3,
                snippets_per_item: int = 2,
                source_kind: str = "", publication_tag: str = "",
-               clc: str = "") -> dict:
+               clc: str = "", with_parent_context: bool | None = None) -> dict:
         """主检索入口。返回 {query, hits, diagnostics}。
 
         一个关键取舍：**每个条目最多只用 3 个块参与打分**。
@@ -806,6 +831,29 @@ class Searcher:
 
         rows = self._chunk_rows(list(fused.keys()))
 
+        # ---- 父子切块（附录 J.4）：综述章加权 + 同一父块只留最佳子块
+        if self.review_boost:
+            for cid in list(fused):
+                r = rows.get(cid)
+                if r and (r.get("section_kind") or "") == "review":
+                    fused[cid] *= (1.0 + self.review_boost)
+        # 同一个父块下**只留融合分最高**的子块：一节里几个子块都命中时不该重复
+        # 占分（这是父块要解决的问题之一）。没有父块的块（标注/笔记）各自独立。
+        if self.parent_dedupe:
+            best_of_parent: dict = {}
+            for cid, sc in fused.items():
+                r = rows.get(cid)
+                pid = (r or {}).get("parent_id")
+                if not pid:
+                    continue
+                cur = best_of_parent.get(pid)
+                if cur is None or sc > cur[0]:
+                    best_of_parent[pid] = (sc, cid)
+            for cid, _sc in list(fused.items()):
+                pid = (rows.get(cid) or {}).get("parent_id")
+                if pid and best_of_parent.get(pid, (None, None))[1] != cid:
+                    fused.pop(cid, None)
+
         # 按条目聚合：块按融合分从高到低排，只让前 max_scoring_chunks 个块贡献分数
         by_item: dict[str, dict] = {}
         for chunk_id, rrf_score in fused.items():
@@ -838,6 +886,20 @@ class Searcher:
                     "page": row["page"],
                     "text": self._snippet(row["text"], query),
                 })
+            # small-to-big：命中子块时把**父块正文**一起返回，父块截断到 1500 字
+            # （附录 J.4 的返回口径）。关掉开关时不带这个字段，行为与从前一致。
+            use_ctx = self.parent_context if with_parent_context is None \
+                else bool(with_parent_context)
+            if use_ctx and item["_chunks"]:
+                best_row = item["_chunks"][0][1]
+                ptext = str(best_row.get("parent_text") or "").strip()
+                if ptext:
+                    item["context"] = {
+                        "section_path": best_row.get("parent_section_path") or "",
+                        "note": "这一节的上下文（small-to-big）",
+                        "text": ptext[:1500],
+                        "truncated": len(ptext) > 1500,
+                    }
 
         # 过滤
         hits = []
