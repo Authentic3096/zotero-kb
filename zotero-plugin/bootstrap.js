@@ -7717,9 +7717,11 @@ Object.assign(ZoteroKB, {
 
   // ⚠ 2026-10-11 用户反馈后**删掉了 kbviewOpenDoc**（以及页面上的「对照页」按钮）：
   //   阅读器右侧那一列已经能直接对着 PDF 看（同一个窗口、同一份正文），再跳一次
-  //   浏览器反而多一步。服务端那几个 GET 端点（/doc、/doc-text、/doc-raw、
-  //   /doc-page.png、/kb-image）**留着**，是"不装插件也能在浏览器里看渲染"
-  //   的兜底路径（派发包 §四：不删、但本包不再投入）；只是插件里不再有入口。
+  //   浏览器反而多一步。
+  // ⚠ **2026-10-12 用户拍板：浏览器兜底页整组删掉**（派发包《元数据与摘要与分层》§五）——
+  //   online/docpage.{py,html} 与 GET /doc、/doc-text、/doc-raw、/doc-page.png、
+  //   /kb-image 全部删除；**只保留 POST/GET /doc-edit**（正文修订层，本文件的
+  //   kbviewSavePage 与条目窗格列的「改这一页」都靠它）。
 
   /** 保存 / 恢复一页正文（text == null 表示恢复原版）。 */
   kbviewSavePage: async function (win, kind, page, text) {

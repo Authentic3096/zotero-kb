@@ -194,6 +194,39 @@ class Searcher:
             self.review_boost = float(raw_boost)
         except Exception:      # noqa: BLE001
             self.review_boost = 0.1
+        # ---- 摘要深度层（2026-10-12，设计方案 D.2；**默认关**）----
+        # chunks.depth：0=逐段（现有子块）1=逐节（现有父块）2=全篇（概要块）。
+        # 关着（默认）时把 depth>=2 的块从**候选阶段**就排除 —— 这样即使库是用
+        # 开关打开的状态建的，检索结果也与"没有全篇层"完全一致（消融的基准）。
+        self.depth_layer = str(os.environ.get(
+            "ZOTERO_KB_DEPTH", "0")).strip().lower() in (
+            "1", "true", "yes", "on")
+        # 老库可能还没有 depth 列（本次改动之前建的库）→ 不加任何过滤，
+        # 行为与从前逐字一致。判据是列存不存在，不是版本号。
+        try:
+            self._has_depth = any(
+                str(r[1]) == "depth"
+                for r in self.conn.execute("PRAGMA table_info(chunks)"))
+        except Exception:      # noqa: BLE001
+            self._has_depth = False
+        self._depth_excl = None      # 懒算：depth>=2 的 chunk_id 集合
+
+    def _excluded_depth_ids(self) -> set:
+        """关着开关时要排除的 chunk_id（depth>=2）；不需要排除时返回空集。
+
+        懒算 + 缓存：只在"有 depth 列且开关关着"时才查一次。
+        """
+        if not self._has_depth or self.depth_layer:
+            return set()
+        if self._depth_excl is None:
+            try:
+                self._depth_excl = {
+                    int(r[0]) for r in self.conn.execute(
+                        "SELECT chunk_id FROM chunks "
+                        "WHERE COALESCE(depth, 0) >= 2")}
+            except Exception:      # noqa: BLE001
+                self._depth_excl = set()
+        return self._depth_excl
 
     # ------------------------------------------------------------ 元信息
 
@@ -436,13 +469,26 @@ class Searcher:
 
     def _recall(self, query: str, limit: int) -> list:
         """召回：先短语（相邻匹配），命中太少再退到单字宽召回。"""
-        sql = """
-            SELECT f.rowid AS chunk_id, bm25(chunks_fts) AS bm25
-            FROM chunks_fts f
-            WHERE chunks_fts MATCH ?
-            ORDER BY bm25
-            LIMIT ?
-        """
+        if self._excluded_depth_ids():
+            # 摘要深度层关着：从 SQL 就把 depth>=2（全篇块）排除 —— 必须在
+            # LIMIT 之前过滤，否则全篇块会挤掉本该出现的候选（候选数是有上限的）。
+            sql = """
+                SELECT f.rowid AS chunk_id, bm25(chunks_fts) AS bm25
+                FROM chunks_fts f
+                JOIN chunks c ON c.chunk_id = f.rowid
+                WHERE chunks_fts MATCH ?
+                  AND COALESCE(c.depth, 0) < 2
+                ORDER BY bm25
+                LIMIT ?
+            """
+        else:
+            sql = """
+                SELECT f.rowid AS chunk_id, bm25(chunks_fts) AS bm25
+                FROM chunks_fts f
+                WHERE chunks_fts MATCH ?
+                ORDER BY bm25
+                LIMIT ?
+            """
         expr = build_match_phrases(query)
         if expr:
             try:
@@ -598,11 +644,17 @@ class Searcher:
             return []
         norm = float(np.linalg.norm(q)) or 1.0
         sims = mat @ (q / norm)
+        # 摘要深度层关着（默认）时：把 depth>=2 的全篇块在**排序之前**打掉，
+        # 否则它们会占用 top-limit 名额、挤掉本该出现的子块（候选是有上限的）。
+        excl = self._excluded_depth_ids()
+        if excl:
+            mask = np.isin(ids, np.fromiter(excl, dtype="int64"))
+            sims = np.where(mask, -np.inf, sims)
         top = np.argsort(-sims)[:limit]
         # similarity 必须非负：融合时它当质量分用，负数会被当成"负相关证据"
         return [{"chunk_id": int(ids[i]), "rank": rank + 1,
                  "similarity": float(max(0.0, sims[i])), "raw": float(sims[i])}
-                for rank, i in enumerate(top)]
+                for rank, i in enumerate(top) if np.isfinite(sims[i])]
 
     # ------------------------------------------------------------ 融合
 
@@ -849,6 +901,14 @@ class Searcher:
             return {"query": query, "hits": [], "diagnostics": diag}
 
         rows = self._chunk_rows(list(fused.keys()))
+
+        # 摘要深度层关着时再兜一道（FTS/向量两路已在候选阶段滤过，这里是保险）：
+        # 任何 depth>=2 的块都不参与打分 —— 保证"关 == 与从前一致"。
+        _excl = self._excluded_depth_ids()
+        if _excl:
+            for cid in list(fused):
+                if cid in _excl:
+                    fused.pop(cid, None)
 
         # ---- PFTS 档（ZOTERO_KB_PFTS=1 建的库）：父块也在 FTS 里。
         # 父块命中**不直接返回**（它是上下文载体，不是结果），只把分数记到该篇头上，

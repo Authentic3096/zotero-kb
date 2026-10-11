@@ -334,7 +334,7 @@ def _rows_snapshot(conn, key: str, *, with_embeddings: bool = True) -> dict:
         #   否则子块的 parent_id 指向还不存在的行。
         "chunks": [dict(r) for r in conn.execute(
             "SELECT chunk_id, item_key, page, seq, text, n_chars, level, "
-            "parent_id, section_path, section_kind, page_from, page_to "
+            "parent_id, section_path, section_kind, page_from, page_to, depth "
             "FROM chunks WHERE item_key = ? ORDER BY level, chunk_id", (key,))],
         "figures": [dict(r) for r in conn.execute(
             "SELECT fig_id, item_key, page, kind, label, text, n_rows, n_cols, built_at "
@@ -555,7 +555,7 @@ def _restore_rows(conn, key: str, snap: dict,
 
     chunk_cols = ("chunk_id", "item_key", "page", "seq", "text", "n_chars",
                   "level", "parent_id", "section_path", "section_kind",
-                  "page_from", "page_to")
+                  "page_from", "page_to", "depth")
     # ⚠ **父块先插**（level 小的先）：子块的 parent_id 指向父块，顺序反了就会
     #   留下悬空 parent_id（还原后检索照样跑，只是上下文没了 —— 静默的那种错）。
     #   老库的快照没有 level 列 → 默认 1，等价于"全是子块"，行为与从前一致。
@@ -570,7 +570,8 @@ def _restore_rows(conn, key: str, snap: dict,
     for row in snap_chunks:
         conn.execute(f"INSERT INTO chunks({','.join(chunk_cols)}) "
                      f"VALUES({','.join('?' * len(chunk_cols))})",
-                     [row.get(c) for c in chunk_cols])
+                     [(0 if row.get("depth") is None else row.get("depth"))
+                      if c == "depth" else row.get(c) for c in chunk_cols])
         # FTS 只还原**当初进了 FTS 的那一层**：父块与 toc/refs/ack/appendix 不进
         # （否则还原一次就把"父块不进 FTS"的约定冲掉，关键词路开始整节召回）。
         if _lvl(row) == 1 and \

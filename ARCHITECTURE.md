@@ -85,7 +85,8 @@ Zotero 库 ──只读快照(含 -wal/-shm)──> zreader ──清洗/HTML转
                   edits.py 按页覆盖（人工修订层）  ←── 插件侧边栏「改这一页」
                           │  有效正文 = 修订 ⊕ 机器稿
                           ↓
-                  chunks：父块(节/章，level=0) + 子块(300 字，level=1)
+                  chunks：父块(节/章,level=0) + 子块(300 字,level=1) + 全篇(depth=2)
+                  （切片前过 L2 清洗 clean_for_index；见 A10/A11）
                           │
                           ↓
                   chunks_fts(FTS5) + 向量(bge-small-zh)   全文/档案 Markdown
@@ -426,6 +427,34 @@ structured_content.json（原版，只读） ──> pages.json（机器稿）
 - 分节的正则要认「带空格的中文标题」：`参 考 文 献` 匹配不上 `参考文献` 会让参考文献被当正文索引
   （曾实测 9 篇中招）。
 
+#### A10. 索引层 L2 清洗（2026-10-12）
+
+`fulltext/<key>.md` 是 **L1**（给人看、给 AI 读，**保留引文上标与图表**）；切片与向量另吃一层
+**L2 = `converter.clean_for_index(L1)`** —— 纯函数、**不落盘**（L1 是契约、L2 是推导，用户改修订层时
+两边自动一致）。`collect_chunks` 只对 **fulltext** 支清洗，**标注与笔记一个字都不动**。
+
+删三类：①**引文型** `<sup>`（前一个字符不是拉丁字母/数字/`>`、且内容是纯数字/数字列表/方括号含全角）；
+②正文 `[n]` 编号（含全角；先给 `$$…$$` 公式与规则①保留下来的 `<sup>` 上占位符再处理）；
+③页首期刊版权块那类**独立行**（`http://` / `E-mail` / `Tel` / `ISSN` / `收稿日期` /
+`中图分类号` / `DOI:` …）。**明确不动**：`<sub>`（513 个全是数学下标）、单位与数学上标
+（拉丁 308 / 数字 36 / `>` 后 71）、公式、`## p.N`。收益如实记：标签只占字符 1.23%，
+**剥上标是小收益**，真正的大头是版权块。消融（题集 v4，与 A9 同一套）：回归组 hit@1 与 MRR 不变。
+
+#### A11. 摘要深度分层（`chunks.depth`，2026-10-12）
+
+`chunks.depth` 与 `level` **正交**（`level` 是"父/子"结构，`depth` 是"抽得多深"）：
+
+| depth | 来源 | 说明 |
+|---|---|---|
+| 0 | 现有子块（level=1） | 逐段 |
+| 1 | 现有父块（level=0） | 逐节 |
+| 2 | **全篇概要块**（新） | 文本复用 `meta ai_summary:<key>`（即 `views/<key>.tldr.md` 的产物），没有就退回 `abstract`；都没有就**不建** |
+
+全篇块是 level=1、可索引、进 FTS 与向量。检索侧开关 **`ZOTERO_KB_DEPTH`（默认关）**：关着时在
+**候选阶段**（FTS 的 SQL `LIMIT` 之前、向量 `argsort` 之前）就把 `depth>=2` 排除，所以结果与
+"没有全篇层"**逐字一致**；开着才参与。老库（没有 `depth` 列）不加任何过滤。
+消融：关 == 只做 L2 清洗时全指标相同；开时回归组 hit@10 8/9→9/9、MRR 0.731→0.759。
+
 ### B. 在线检索与交互
 
 #### B1. 混合检索：两路怎么算分、怎么融合
@@ -614,15 +643,15 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 `POST /shutdown` 用事件位 + 看门狗退出，刻意不用 `taskkill pythonw.exe`
 —— 那会连管理面板和用户脚本一起杀掉（`:2519-2558`）。
 
-**对照页**（v1.11.0，左 PDF 页 / 右可改正文，自己开在浏览器标签里）是一组 GET 端点，
-实现委派给 `online/docpage.py`：`/doc`（整页 HTML，模板是 `online/docpage.html`）/
-`/doc-text`（该页**渲染后**的 HTML 片段）/ `/doc-raw`（该页**原始 markdown**，编辑框用，
-两者绝不能混）/ `/doc-page.png`（PyMuPDF 渲页图，缓存在 `kb/.cache/doc-pages/`，
-文件名含 PDF 的 mtime+大小指纹）/ `/kb-image`（正文里的图；http 页面加载不了 `file://`，
-且 `<base>` 上的 token 不会跟着子资源走，所以改成渲染时重写 `<img src>`）。
-保存/恢复**仍走既有的 `POST /doc-edit`**（唯一写路径是 `offline/edits.py`），
-页面只负责轮询 `/jobs/<id>` 后刷右栏。**只认 `index.db` 里登记过的条目**，
-PDF 绝对路径取自 `mineru/<key>/meta.json`（不现场拷 Zotero 快照）。
+**对照页（浏览器兜底页）已于 2026-10-12 删除** —— 用户拍板不要了
+（派发包《元数据与摘要与分层》§五）。`online/docpage.py` / `online/docpage.html` 已删，
+那一组 GET 端点（`/doc`、`/doc-text`、`/doc-raw`、`/doc-page.png`、`/kb-image`）
+也一并删掉 —— 现在请求它们返回 404。对照改由阅读器右侧那一列承担
+（与条目窗格列**共用** `content/kbview.html`，见 §B7）。
+
+⚠ **`/doc-edit` 必须保留**（GET 元信息 + POST 保存/恢复）：它是**正文修订层**的端点，
+阅读器列 / 条目窗格列的「改这一页」全靠它（唯一写路径是 `offline/edits.py`，
+保存后轮询 `/jobs/<id>`）—— 删了就废掉整个编辑功能。
 
 #### B7. Zotero 插件的几个关键机制
 
@@ -1072,9 +1101,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 │   │   ├── searcher.py              混合检索 + 经验查询（唯一读库入口）
 │   │   ├── server.py                MCP 服务器（13 工具 + 4 资源）
 │   │   ├── query.py                 中文分词 / 查询改写 / 覆盖率
-│   │   ├── localserver.py           给 Zotero 插件的 HTTP 服务（:8765）
-│   │   ├── docpage.py               对照页后端（登记校验 / 页图 / 图片改写 / 模板注入）
-│   │   └── docpage.html             对照页页面本体（自带 CSS/JS，服务端只替换配置）
+│   │   └── localserver.py           给 Zotero 插件的 HTTP 服务（:8765）
 │   ├── kb\                          数据（可迁移）
 │   │   ├── index.sqlite             ★ 单一事实来源
 │   │   ├── papers\*.md              每篇文献的 Markdown

@@ -392,7 +392,174 @@ def _cut_offsets(text: str, target: int = CHILD_TARGET,
     return out
 
 
-def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
+# ---------------------------------------------------------------- L2 清洗（切片/向量专用）
+#
+# 三层文本（设计方案附录 J.1；2026-10-12 补 L2）：
+#   L0 MinerU 原版（mineru/<key>/，不动）
+#     -> L1 fulltext/<key>.md（给人看、也给 AI 全文读，**保留引文上标与图表**）
+#     -> L2 = clean_for_index(L1)（**只用来切片与向量化**）
+#
+# L2 是纯函数、不落盘、不可编辑：L1 是契约、L2 是 L1 的推导 —— 一旦落成
+# 文件，用户改 L1 的修订层时 L2 就跟不上，等于要维护两份可编辑稿。
+#
+# 实测收益（2026-10-12，本机 94 篇；**如实记，别夸大**）：
+#   · 可索引子块 11284 里含上/下标的 1534 块（13.6%），平均每块 0.283 个，
+#     标签只占字符 1.23%（46092 / 3750710）—— 剥上标是**小收益**；
+#   · 真正的大头是第 3 条**页首期刊版权块**（一篇 p.1 开头能有 8~十几天这类行）。
+# 清洗规则（按序判：先方括号 -> 再纯数字 -> 最后看前一个字符）：
+#   1 删**引文型** <sup>：内容是纯数字 / 数字列表 / 方括号（含全角），且前一个
+#     字符**不是**拉丁字母、**不是**数字、**不是** >。实测：汉字后的 1622 个
+#     全是 [1] 这类引文；拉丁字母后 308 个是 m² 单位、> 后 71 个是
+#     x<sub>i</sub><sup>2</sup> 这类数学 —— 两档都要留。
+#   2 删正文里的 [n] / [n-m] / [n,m] 编号（含全角）。**必须先给
+#     $$…$$ 公式上占位符** —— 公式里 \begin{bmatrix} 的方括号极多。
+#   3 删页首期刊版权块那类**独立行**（http:// / E-mail / Tel / ISSN /
+#     收稿日期 / 基金项目 / 中图分类号 / 文献标志码 / 文章编号 / DOI:）。
+# **明确不动**：<sub>（513 个全是数学下标）、单位与数学上标、摘要/关键词/正文/
+#   图注、公式、## p.N 锚点（它本来就不在 pages 里、切片从来不含）。
+# **不要**把清洗写进 fulltext_markdown() —— 那样人看的稿子也被改了，就白分层了。
+
+# 引文型 <sup> 的内容：纯数字 / 数字列表 / 方括号（含全角）。
+RE_SUP = re.compile(r"<sup>(.*?)</sup>", re.I | re.S)
+RE_SUP_NUM = re.compile(r"\d+(?:\s*[-–—,，、]\s*\d+)*")
+# 正文里的 [n] / [n-m] / [n,m]（含全角）；**紧跟** ( 的是 md 链接标签，不能删。
+# ⚠ 负向前瞻里不要写 \s* —— 实测 [50] (Eq. (3)) 会被当成链接而漏删（markdown
+#   链接不允许 ] 与 ( 之间有空格）。
+RE_CITE_NUM = re.compile(r"\[(\d+(?:\s*[-–—,，、]\s*\d+)*)\](?!\()")
+RE_CITE_NUM_FW = re.compile(r"［(\d+(?:\s*[-–—,，、]\s*\d+)*)］")
+# $$…$$ 公式块（非贪婪、跨行）；处理前先换成占位符。
+RE_EQ_BLOCK = re.compile(r"\$\$.*?\$\$", re.S)
+# 规则 1 保留下来的 <sup>（m²、x_i² 这类单位/数学）也是保护区：规则 2 不该
+# 钻进去删 [35]（否则 5<sup>[35]</sup> 会变成 <sup></sup> 这种空标签残渣）。
+RE_SUP_SPAN = re.compile(r"<sup>.*?</sup>", re.I | re.S)
+_L2_EQ_PH = "\x00l2eq%d\x00"
+# 页首期刊版权块：以这些开头的独立行。拉丁前缀加 \b，免得把 Telescope 当 Tel。
+RE_COPY_LINE = re.compile(
+    r"^(?:https?://|E-?mail\b|Tel\b|ISSN\b|DOI\s*[:：]"
+    r"|收稿日期|基金项目|中图分类号|文献标志码|文章编号)")
+
+
+def _sup_is_citation(content: str) -> bool:
+    """<sup> 的内容是不是「引文型」：纯数字 / 数字列表 / 方括号（含全角）。"""
+    c = str(content or "").strip()
+    if not c:
+        return False
+    inner = c
+    if len(c) >= 2 and ((c[0] == "[" and c[-1] == "]")
+                        or (c[0] == "［" and c[-1] == "］")):
+        inner = c[1:-1]
+    return bool(RE_SUP_NUM.fullmatch(inner))
+
+
+def _sup_prev_protects(prev: str) -> bool:
+    """前一个字符是不是「数学/单位」的护栏：拉丁字母、数字、>。
+
+    > 保护的是 x<sub>i</sub><sup>2</sup> 这种复合下标（标签结束符）。
+    注意**只认 ASCII 拉丁字母** —— 汉字 isalpha() 也为真，若用它会把
+    1622 个汉字后的引文全留下。
+    """
+    if not prev:
+        return False
+    if prev == ">":
+        return True
+    if prev in "0123456789":
+        return True
+    return prev.isascii() and prev.isalpha()
+
+
+def _drop_citation_sups(text: str) -> str:
+    if "<sup" not in text.lower():
+        return text
+    out: list[str] = []
+    pos = 0
+    for m in RE_SUP.finditer(text):
+        out.append(text[pos:m.start()])
+        prev = text[m.start() - 1] if m.start() > 0 else ""
+        if _sup_is_citation(m.group(1)) and not _sup_prev_protects(prev):
+            pass                       # 连标签带内容一起删
+        else:
+            out.append(m.group(0))
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _drop_citation_numbers(text: str) -> str:
+    """删正文里的 [n]/[n-m]/[n,m] 编号。
+
+    **两块保护区**：`$$…$$` 公式（\begin{bmatrix} 的方括号极多）与规则 1 保留下来的
+    `<sup>…</sup>`（m² / x_i²）。做法都是先换占位符、处理完再换回。
+    """
+    blocks: list[str] = []
+
+    def _stash(m):
+        blocks.append(m.group(0))
+        return _L2_EQ_PH % (len(blocks) - 1)
+
+    tmp = RE_EQ_BLOCK.sub(_stash, text)
+    tmp = RE_SUP_SPAN.sub(_stash, tmp)
+    tmp = RE_CITE_NUM.sub("", tmp)
+    tmp = RE_CITE_NUM_FW.sub("", tmp)
+    for i, b in enumerate(blocks):
+        tmp = tmp.replace(_L2_EQ_PH % i, b)
+    return tmp
+
+
+def _drop_copy_lines(text: str) -> str:
+    if "http" not in text and "\n" not in text:
+        return text
+    lines = text.split("\n")
+    keep = [ln for ln in lines if not RE_COPY_LINE.match(ln.strip())]
+    return "\n".join(keep)
+
+
+def clean_for_index(text: str) -> str:
+    """把 L1 正文清洗成 **L2**（只用于切片与向量化）。纯函数、幂等。
+
+    见本节顶部注释；规则 1/2/3 按序执行（1 必须在 2 之前：<sup>[1]</sup>
+    要先被当成引文上标整体删掉，否则规则 2 先删掉 [1] 就只剩空标签）。
+    """
+    if not text:
+        return str(text or "")
+    s = _drop_citation_sups(str(text))
+    s = _drop_citation_numbers(s)
+    s = _drop_copy_lines(s)
+    return s
+
+
+DOC_MAX_CHARS = 1200
+
+
+def doc_chunk(item: S.Item, summary: str = "") -> dict | None:
+    """全篇层（depth=2）的块：给「整篇在讲什么」这类宽问题一个能命中的载体。
+
+    文本**优先用本地模型写好的摘要与关键词**（也就是 views/<key>.tldr.md 的产物：
+    meta 表 ai_summary:<key>，由 judge.py summarize 写、kbviews 渲染），没有就退回
+    Zotero 的摘要；两者都没有就**不建** —— 拿正文硬凑会变成第二份全文，反而稀释检索。
+
+    它与 level 正交：level=1（可索引的子块），但 depth=2。检索侧默认
+    （ZOTERO_KB_DEPTH 这个开关关着）会把它从候选里过滤掉，所以默认行为一个字不变。
+    """
+    body = str(summary or "").strip() or str(
+        getattr(item, "abstract", "") or "").strip()
+    if not body:
+        return None
+    title = str(getattr(item, "title", "") or "").strip()
+    head = "；".join(x for x in (
+        str(getattr(item, "author_line", "") or "").strip(),
+        str(getattr(item, "year", "") or "").strip()) if x)
+    text = title + (("（" + head + "）") if head else "") + "\n" + body
+    pages = getattr(item, "fulltext_pages", None) or []
+    return {
+        "level": 1, "depth": 2, "kind": "fulltext", "parent_ref": "",
+        "page": 1, "page_from": 1, "page_to": len(pages),
+        "text": text[:DOC_MAX_CHARS], "section_path": "", "section_kind": "doc",
+        "indexable": True,
+    }
+
+
+def collect_chunks(item: S.Item, pages: list[str],
+                   doc_summary: str = "") -> list[dict]:
     """把一篇文献切成**父子两层**（2026-10-11 口径，设计方案附录 J.4）。
 
     · 父块（level=0）：节/章的**整节全文**，≤3000 字（超了按段落拆「（续 N）」）；
@@ -406,6 +573,13 @@ def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
     `parent_id` 指向已存在的行（父块先插）。父块带 `ref`，子块带 `parent_ref`。
     """
     secs = sectionize_pages(pages, str(getattr(item, "item_type", "") or ""))
+    # L2 清洗（2026-10-12）：正文（fulltext）在**切片之前**过一遍 clean_for_index，
+    # 父块与子块吃到同一份清洗后的文本，parent_ref 的偏移也天然一致。
+    # **标注与笔记不清洗** —— 那是人工文本，一个字都不动（它们在下面单独成块）。
+    # 为什么改 secs 而不是改 pages：fulltext 落盘吃的是 pages（L1），清洗只该
+    # 作用在「要被切片」的这一份上 —— 这样 L1 是契约、L2 是推导，天然一致。
+    for _sec in secs:
+        _sec["text"] = clean_for_index(str(_sec.get("text") or ""))
     index_nonbody = _index_nonbody()
     parents: list = []
     children: list = []
@@ -447,7 +621,7 @@ def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
                     title = "%s（续 %d）" % (title, pi + 1)
                 ref = new_ref()
                 parents.append({
-                    "ref": ref, "level": 0, "kind": "fulltext", "title": title,
+                    "ref": ref, "level": 0, "depth": 1, "kind": "fulltext", "title": title,
                     "page": sec.get("page_from") or 0,
                     "page_from": sec.get("page_from") or 0,
                     "page_to": sec.get("page_to") or 0,
@@ -462,7 +636,7 @@ def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
             ok = _indexable(kind, index_nonbody)
             for off, piece in _cut_offsets(text):
                 children.append({
-                    "level": 1, "kind": "fulltext", "parent_ref": parent_ref_for(si, off),
+                    "level": 1, "depth": 0, "kind": "fulltext", "parent_ref": parent_ref_for(si, off),
                     "page": sec.get("page_from") or 0,
                     "page_from": sec.get("page_from") or 0,
                     "page_to": sec.get("page_to") or 0,
@@ -478,7 +652,7 @@ def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
         comment = f"（批注：{ann.comment}）" if ann.comment else ""
         page = int(ann.page) if ann.page.isdigit() else 0
         children.append({
-            "level": 1, "kind": "annotation", "parent_ref": "",
+            "level": 1, "depth": 0, "kind": "annotation", "parent_ref": "",
             "page": page, "page_from": page, "page_to": page,
             "text": f"[{item.title} · 第 {ann.page} 页 高亮]{comment}\n{text}",
             "section_path": "", "section_kind": "", "indexable": True,
@@ -491,11 +665,17 @@ def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
             continue
         for piece in chunk_text(body, target=700, overlap=100):
             children.append({
-                "level": 1, "kind": "note", "parent_ref": "",
+                "level": 1, "depth": 0, "kind": "note", "parent_ref": "",
                 "page": 0, "page_from": 0, "page_to": 0,
                 "text": f"[{item.title} · 笔记]\n{piece}",
                 "section_path": "", "section_kind": "", "indexable": True,
             })
+
+    # 全篇层（depth=2）：整篇的摘要级块（见 doc_chunk）。摘要文本由调用方给
+    # （convert.py 读 meta 的 ai_summary），没给就用 item.abstract 兜底。
+    _doc = doc_chunk(item, doc_summary)
+    if _doc:
+        children.append(_doc)
 
     out = parents + children
     for seq, chunk in enumerate(out):

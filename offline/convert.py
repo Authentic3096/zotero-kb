@@ -502,8 +502,24 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                 # 父子切块：collect_chunks 返回**全部父块在前、子块在后**，
                 # 按顺序插入即可保证 parent_id 指向已存在的行（父块先插）。
                 # FTS 只给 level=1 且 indexable 的块（toc/refs/ack/appendix 不进）。
+                # 全篇层（depth=2）的摘要文本：优先用本地模型写的 ai_summary
+                # （meta 表，judge.py summarize 写的，kbviews 渲染进 tldr），
+                # 没有就让 doc_chunk 退回 item.abstract。读不到一律当空串。
+                doc_summary = ""
+                try:
+                    _row = conn.execute("SELECT v FROM meta WHERE k = ?",
+                                        ("ai_summary:%s" % item.key,)).fetchone()
+                    if _row and _row[0]:
+                        _d = json.loads(_row[0])
+                        _pts = [str(x) for x in (_d.get("points") or [])]
+                        _kws = [str(x) for x in (_d.get("keywords") or [])]
+                        if _kws:
+                            _pts.append("关键词：" + "、".join(_kws))
+                        doc_summary = "；".join(_pts)
+                except (sqlite3.Error, ValueError, TypeError):
+                    doc_summary = ""
                 ref_ids: dict[str, int] = {}
-                for chunk in C.collect_chunks(item, pages):
+                for chunk in C.collect_chunks(item, pages, doc_summary):
                     parent_id = None
                     ref = chunk.get("parent_ref") or ""
                     if ref:
@@ -511,13 +527,15 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                     cur = conn.execute(
                         "INSERT INTO chunks(item_key, page, seq, text, n_chars,"
                         " level, parent_id, section_path, section_kind,"
-                        " page_from, page_to) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                        " page_from, page_to, depth) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                         (item.key, chunk.get("page"), chunk.get("seq"),
                          chunk["text"], len(chunk["text"]),
                          int(chunk.get("level", 1)), parent_id,
                          chunk.get("section_path") or "",
                          chunk.get("section_kind") or "",
-                         chunk.get("page_from"), chunk.get("page_to")),
+                         chunk.get("page_from"), chunk.get("page_to"),
+                         int(chunk.get("depth", 0))),
                     )
                     chunk_id = cur.lastrowid
                     if chunk.get("ref"):

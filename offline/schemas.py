@@ -1264,6 +1264,11 @@ CREATE TABLE IF NOT EXISTS chunks (
     section_kind TEXT,                -- body|review|refs|toc|appendix|ack
     page_from    INTEGER,
     page_to      INTEGER,
+    -- ---- 摘要深度（2026-10-12，设计方案 D.2）----
+    -- **与 level 正交、语义不同**：level 是"父/子"结构（父块只作上下文载体），
+    -- depth 是"抽得多深"：0=逐段（现有子块）1=逐节（现有父块）2=全篇（概要）。
+    -- 检索侧由开关 ZOTERO_KB_DEPTH 控制是否把 depth>=2 也算进候选，**默认关**。
+    depth        INTEGER DEFAULT 0,
     FOREIGN KEY (item_key) REFERENCES items(key) ON DELETE CASCADE
 );
 
@@ -1511,7 +1516,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     chunk_cols = columns("chunks")
     for col, typ in (("level", "INTEGER DEFAULT 1"), ("parent_id", "INTEGER"),
                      ("section_path", "TEXT"), ("section_kind", "TEXT"),
-                     ("page_from", "INTEGER"), ("page_to", "INTEGER")):
+                     ("page_from", "INTEGER"), ("page_to", "INTEGER"),
+                     ("depth", "INTEGER DEFAULT 0")):
         if chunk_cols and col not in chunk_cols:
             try:
                 conn.execute(f"ALTER TABLE chunks ADD COLUMN {col} {typ}")
