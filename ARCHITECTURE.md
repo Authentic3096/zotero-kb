@@ -415,6 +415,16 @@ structured_content.json（原版，只读） ──> pages.json（机器稿）
   （`context` 字段，`kb_search` 会带给模型；开关 `ZOTERO_KB_PARENT_CONTEXT=0`）。
 - 归档/还原（`trash.py`）的快照带齐新列并按 `level` 排序：**父块先插**，否则
   `parent_id` 会悬空（还原后检索照样跑、只是上下文没了，属静默错误）。
+- **口径是复测过的**（2026-10-11，题集 v4 = 回归 9 题 + 切块专项 24 题，脚本在工作文件夹）：
+  在**纯向量路**上子块口径对旧口径（1000 字/页）全胜（hit@3 +2、MRR +0.063、平均排名 −0.49）；
+  在**关键词主导的融合路**上旧口径的覆盖率略好 —— 这是"关键词路偏长块"的真实损失。
+  试过的补偿档 **K500**（子块 500 字）与 **K300+PFTS**（父块也进 FTS、命中只给该篇加分）
+  **都没有采用**：前者 D 组纯向量路略差，后者把回归组 hit@1 从 6/9 打到 5/9（越线）。
+  实验开关（**调试面，默认行为不变**）：`ZOTERO_KB_CHILD_TARGET` / `ZOTERO_KB_PFTS`（构建期）、
+  `ZOTERO_KB_ROUTE` / `ZOTERO_KB_W_KW` / `ZOTERO_KB_W_VEC` / `ZOTERO_KB_PARENT_CONTEXT` /
+  `ZOTERO_KB_PARENT_DEDUPE` / `ZOTERO_KB_REVIEW_BOOST` / `ZOTERO_KB_INDEX_NONBODY`（检索期）。
+- 分节的正则要认「带空格的中文标题」：`参 考 文 献` 匹配不上 `参考文献` 会让参考文献被当正文索引
+  （曾实测 9 篇中招）。
 
 ### B. 在线检索与交互
 

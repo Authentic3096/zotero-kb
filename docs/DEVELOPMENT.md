@@ -128,8 +128,11 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
 - `offline/edits.py` 是**正文修订层**的唯一读写路径，`<知识库>\edits\` 是**用户资产**
   （删了就等于放弃用户改过的正文）—— 面板结构表里写的是「✗ 绝对不能删」，
   任何"清理知识库"的改动都必须跳过它。
-- 切块口径（`converter.sectionize_pages` / `collect_chunks`）一改就要 **全量重建 + 跑一遍
-  9 题消融**（工作文件夹 `tools/eval_questions.py`，三组结果写 `eval-*.md`）；
+- 切块口径（`converter.sectionize_pages` / `collect_chunks`）一改就要 **全量重建 + 重跑评估**：
+  题集是工作文件夹的 `检索评估问题集.md`（v4 = 回归组 9 题 + 切块专项 D 组 24 题），脚本
+  `tools/eval_questions.py`（`--route both|keyword|vector` 归因、`--db` 评旧库、`--json` 留档），
+  汇总 `tools/eval_compare.py`。**判据要开跑前写定**（v1.9.0 的第二轮复测就是这么做的，见工作文件夹
+  `eval-t3-对比小结.md`）。实验开关：`ZOTERO_KB_CHILD_TARGET` / `ZOTERO_KB_PFTS`（构建期）；
   同时检查 `trash.py` 的快照/还原列与 `maintain.py` 的 FTS 一致性判据（这两处漏了是**静默**的）。
 
 ### ⑥ 提交信息怎么写

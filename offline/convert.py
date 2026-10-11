@@ -525,11 +525,17 @@ def build(args: argparse.Namespace) -> tuple[int, dict]:
                     chunk["chunk_id"] = chunk_id
                     chunk["item_key"] = item.key
                     chunk["parent_id"] = parent_id
-                    if int(chunk.get("level", 1)) == 1 and chunk.get("indexable", True):
-                        # FTS 与 chunks 用同一个 rowid，随写随建，避免"先全删后全建"
+                    # FTS 与 chunks 用同一个 rowid，随写随建，避免"先全删后全建"。
+                    # 默认只有 level=1 的可索引块；K300+PFTS 档额外给**父块**建一份
+                    # （父块命中不直接返回，只给该篇加分 —— 见 searcher.search）。
+                    want_fts = bool(chunk.get("fts")) or (
+                        int(chunk.get("level", 1)) == 1
+                        and chunk.get("indexable", True))
+                    if want_fts:
                         conn.execute(
                             "INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
                             (chunk_id, chunk["text"]))
+                    if int(chunk.get("level", 1)) == 1 and chunk.get("indexable", True):
                         all_chunks.append(chunk)
 
                 if idx % 20 == 0 or idx == len(items):

@@ -48,10 +48,22 @@ CHUNK_MIN = 120
 #   子块（level=1）= 节内 300 字、重叠 60，**FTS 与向量都建在这一层**。
 # 堆缩点：父块能吃下整节（信息全），子块短（关键词路精度高、向量不过饱和），
 # 两头的好处都要 —— 见附录 J.4 为什么推翻「FTS 建在父块」。
-CHILD_TARGET = 300
-CHILD_OVERLAP = 60
+# 子块大小与重叠：实验开关 ZOTERO_KB_CHILD_TARGET（默认 300）。
+# ⚠ 这两个是**构建期**参数：改了必须全量重建，且要重算向量（重切会换 chunk_id）。
+CHILD_TARGET = int(os.environ.get("ZOTERO_KB_CHILD_TARGET") or 300) or 300
+CHILD_OVERLAP = int(os.environ.get("ZOTERO_KB_CHILD_OVERLAP") or 60)
 CHILD_MIN = 20
 PARENT_MAX = 3000
+
+
+def _pfts() -> bool:
+    """K300+PFTS 档：**父块也建一份 FTS**（ZOTERO_KB_PFTS=1，默认关）。
+
+    动机：关键词路偏长块（覆盖度高），父块进 FTS 把这份优势用「另一路加分」补回来，
+    同时保住子块的高精度。父块命中**不直接返回**，只给该篇加分（见 searcher.search）。
+    """
+    return str(os.environ.get("ZOTERO_KB_PFTS") or "").strip().lower() \
+        in ("1", "true", "yes", "on")
 
 
 def now_iso() -> str:
@@ -145,7 +157,9 @@ RE_TOC_LINE = re.compile(r"\.{2,}\s*\d+\s*$|…{2,}\s*\d*\s*$|[·．]{2,}")
 
 # 节的语义类别（附录 F.4：参考文献/致谢/附录/目录默认不进检索；综述章加权）
 KIND_RULES = (
-    (re.compile(r"参考文献|references?", re.I), "refs"),
+    # ⚠ 中文标题常被排版成「参 考 文 献」（带空格）—— 实测 9 篇的参考文献
+    #   因此被当成正文索引了进去（`参 考 文 献` 匹配不上 `参考文献`）。
+    (re.compile(r"参\s*考\s*文\s*献|references?", re.I), "refs"),
     (re.compile(r"致\s*谢|acknowledg", re.I), "ack"),
     (re.compile(r"攻读学位期间|科研成果|发表论文|成果清单"), "ack"),
     (re.compile(r"附\s*录|appendix", re.I), "appendix"),
@@ -439,6 +453,7 @@ def collect_chunks(item: S.Item, pages: list[str]) -> list[dict]:
                     "page_to": sec.get("page_to") or 0,
                     "text": ptext, "section_path": _path_of(secs, si),
                     "section_kind": kind, "indexable": False,
+                    "fts": _pfts(),
                 })
                 refs.append((start, ref))
             store[si] = {"parts": refs, "offs": offs}

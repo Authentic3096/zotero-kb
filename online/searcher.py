@@ -166,6 +166,21 @@ class Searcher:
         self.parent_context = str(os.environ.get(
             "ZOTERO_KB_PARENT_CONTEXT", "1")).strip().lower() not in (
             "0", "off", "false", "no")
+        # ---- 路级开关（**只服务评估与排障**，默认行为一个字不变）----
+        # ZOTERO_KB_ROUTE=both|keyword|vector —— 只跑一路，用于归因"变差是哪一路"；
+        # ZOTERO_KB_W_KW / ZOTERO_KB_W_VEC —— 覆盖融合权重（默认 0.65 / 0.35）。
+        # ⚠ 这两个**不进发布说明**（属于调试面）。
+        self.route = str(os.environ.get("ZOTERO_KB_ROUTE", "both")).strip().lower()
+        if self.route not in ("both", "keyword", "vector"):
+            self.route = "both"
+        try:
+            self.w_kw = float(os.environ.get("ZOTERO_KB_W_KW") or KEYWORD_ROUTE_WEIGHT)
+        except ValueError:
+            self.w_kw = KEYWORD_ROUTE_WEIGHT
+        try:
+            self.w_vec = float(os.environ.get("ZOTERO_KB_W_VEC") or VECTOR_ROUTE_WEIGHT)
+        except ValueError:
+            self.w_vec = VECTOR_ROUTE_WEIGHT
         # 同一父块只留最佳子块（附录 J.4 的口径）：ZOTERO_KB_PARENT_DEDUPE=0 关掉
         # （做成开关是为了消融：这条规则会压低"同一节里多块都命中"的条目分数）
         self.parent_dedupe = str(os.environ.get(
@@ -812,24 +827,39 @@ class Searcher:
         if not query:
             return {"query": query, "hits": [], "diagnostics": diag}
 
-        fts = self.search_fts(query, limit=CANDIDATES)
+        # 路级开关（默认 both，行为与从前完全一致）：评估时只跑一路来归因
+        fts = self.search_fts(query, limit=CANDIDATES) \
+            if self.route in ("both", "keyword") else []
         diag["fts_candidates"] = len(fts)
-        vec = self.search_vector(query, limit=CANDIDATES)
+        vec = self.search_vector(query, limit=CANDIDATES) \
+            if self.route in ("both", "vector") else []
         diag["vector_candidates"] = len(vec)
         diag["vector_used"] = bool(vec)
+        diag["route"] = self.route
 
         # 两路的可信度不同，给不同权重：关键词路要求查询词真的出现在文里，
         # 精度高；向量路负责"换了个说法"的召回，但它在短查询上的相似度
         # 分布很挤（实测 0.63-0.66），单独靠它排序不稳。
         # 所以关键词路拿 0.65、向量路拿 0.35 —— 关键词命中永远是主证据。
-        fused = self._rrf(fts, quality_scale=KEYWORD_ROUTE_WEIGHT)
+        fused = self._rrf(fts, quality_scale=self.w_kw)
         for chunk_id, score in self._rrf(
-                vec, quality_scale=VECTOR_ROUTE_WEIGHT).items():
+                vec, quality_scale=self.w_vec).items():
             fused[chunk_id] = fused.get(chunk_id, 0.0) + score
         if not fused:
             return {"query": query, "hits": [], "diagnostics": diag}
 
         rows = self._chunk_rows(list(fused.keys()))
+
+        # ---- PFTS 档（ZOTERO_KB_PFTS=1 建的库）：父块也在 FTS 里。
+        # 父块命中**不直接返回**（它是上下文载体，不是结果），只把分数记到该篇头上，
+        # 用来补偿"关键词路偏好长块"的那部分覆盖度。默认档里父块根本不在 FTS，
+        # 这段是空转。
+        parent_bonus: dict[str, float] = {}
+        for cid in list(fused):
+            r = rows.get(cid)
+            if r is not None and int(r.get("level") or 1) == 0:
+                parent_bonus[r["item_key"]] = \
+                    parent_bonus.get(r["item_key"], 0.0) + fused.pop(cid)
 
         # ---- 父子切块（附录 J.4）：综述章加权 + 同一父块只留最佳子块
         if self.review_boost:
@@ -879,6 +909,8 @@ class Searcher:
             # 只累加最好的几块：块多不再等于更相关
             best = item["_chunks"][:max_scoring_chunks]
             item["score"] = sum(score for score, _ in best)
+            if parent_bonus:      # PFTS 档：父块命中折算成该篇的加分
+                item["score"] += parent_bonus.get(item["key"], 0.0)
             # 诊断用：把参与打分的块排名留下来，便于核对排序是否合理
             item["_scored"] = [(round(s, 5), row["chunk_id"], row["page"]) for s, row in best]
             for _, row in item["_chunks"][:per_item_chunks]:

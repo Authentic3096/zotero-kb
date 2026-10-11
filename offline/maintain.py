@@ -114,6 +114,11 @@ def check() -> int:
             "SELECT COUNT(*) AS n FROM chunks WHERE level = 1 "
             "AND COALESCE(section_kind, '') NOT IN "
             "('toc', 'refs', 'ack', 'appendix')").fetchone()["n"]
+        # K300+PFTS 档还会把**父块**也放进 FTS（父块命中只给该篇加分，不直接返回）。
+        # 判据取"库里真实存在的父块 FTS 行数"，这样两档都自洽。
+        expect_fts += conn.execute(
+            "SELECT COUNT(*) AS n FROM chunks_fts f JOIN chunks c "
+            "ON c.chunk_id = f.rowid WHERE c.level = 0").fetchone()["n"]
         if fts != expect_fts:
             print(f"{BAD}FTS 行数 {fts} 与应索引切片数 {expect_fts} 不一致")
             problems.append("FTS 与 chunks 不同步：跑 maintain.py reindex-fst")
@@ -358,11 +363,17 @@ def reindex_fst() -> int:
     print("重建 FTS 与词元表…")
     conn = S.connect(S.INDEX_DB)
     conn.execute("DELETE FROM chunks_fts")
-    # 只重建**该进 FTS 的那一层**（父子切块：父块与 toc/refs/ack/appendix 不进）
-    rows = conn.execute(
-        "SELECT chunk_id, text FROM chunks WHERE level = 1 "
-        "AND COALESCE(section_kind, '') NOT IN "
-        "('toc', 'refs', 'ack', 'appendix')").fetchall()
+    # 只重建**该进 FTS 的那一层**（父子切块：父块与 toc/refs/ack/appendix 不进）。
+    # ⚠ K300+PFTS 档父块也在 FTS 里 —— 判据不能写死"只 level=1"，否则重建一次就把
+    #   父块那份 FTS 悄悄删掉（该档的检索行为随之改变，而且看不出原因）。
+    pfts_on = conn.execute(
+        "SELECT COUNT(*) FROM chunks_fts f JOIN chunks c ON c.chunk_id = f.rowid "
+        "WHERE c.level = 0").fetchone()[0] > 0
+    sql = ("SELECT chunk_id, text FROM chunks WHERE level = 1 "
+           "AND COALESCE(section_kind, '') NOT IN ('toc', 'refs', 'ack', 'appendix')")
+    if pfts_on:
+        sql += " OR level = 0"
+    rows = conn.execute(sql).fetchall()
     conn.executemany("INSERT INTO chunks_fts(rowid, text) VALUES(?,?)",
                      [(r["chunk_id"], r["text"]) for r in rows])
     conn.execute("DELETE FROM term_df")
