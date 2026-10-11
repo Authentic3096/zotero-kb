@@ -697,6 +697,140 @@
 
   // ------------------------------------------------------------ 接线
 
+  // ------------------------------------------------------------ 公式修正
+  //
+  // 宿主（src/22-formula.js）取好数据才送进来；这里只画界面：
+  //   · 「应用」   → post({type:"formulaApply"})            → 宿主调 POST /formula-apply
+  //   · 「MathType」→ post({type:"formulaMathType",latex})   → 宿主调 POST /formula-mathtype
+  //     （服务端把 LaTeX 放进剪贴板并启动 MathType，排好后复制回来粘进框里）
+  // **不做识别**：LaTeX 由人写。MathType 没装时按钮只置灰、不隐藏。
+
+  var fml = { key: "", page: 0, ordinal: 0, oldLatex: "", cands: [], wired: false };
+
+  function fmlEls() {
+    return {
+      box: document.getElementById("kbv-fml"),
+      where: document.getElementById("kbv-fml-where"),
+      img: document.getElementById("kbv-fml-img"),
+      tex: document.getElementById("kbv-fml-tex"),
+      prev: document.getElementById("kbv-fml-prev"),
+      cands: document.getElementById("kbv-fml-cands"),
+      cand: document.getElementById("kbv-fml-cand"),
+      msg: document.getElementById("kbv-fml-msg"),
+      mt: document.getElementById("kbv-fml-mt"),
+      mthint: document.getElementById("kbv-fml-mthint"),
+      x: document.getElementById("kbv-fml-x"),
+      cancel: document.getElementById("kbv-fml-cancel"),
+      apply: document.getElementById("kbv-fml-apply")
+    };
+  }
+
+  function fmlPreview() {
+    var e = fmlEls();
+    if (!e.tex || !e.prev) return;
+    var tex = String(e.tex.value || "");
+    if (!tex.trim()) {
+      e.prev.innerHTML = '<span class="kbv-fml-empty">（还没写 LaTeX）</span>';
+      return;
+    }
+    e.prev.innerHTML = mathHtml(tex, true);
+  }
+
+  function fmlSay(text, kind) {
+    var e = fmlEls();
+    if (!e.msg) return;
+    e.msg.textContent = text || "";
+    e.msg.className = "kbv-fml-msg"
+      + (kind === "err" ? " kbv-fml-err" : (kind === "ok" ? " kbv-fml-ok" : ""));
+  }
+
+  function fmlClose() {
+    var e = fmlEls();
+    if (e.box) e.box.hidden = true;
+  }
+
+  function fmlPick(idx) {
+    var e = fmlEls();
+    var c = fml.cands[idx];
+    if (!c) return;
+    fml.ordinal = c.eq_ordinal | 0;
+    fml.oldLatex = String(c.latex || "");
+    e.tex.value = fml.oldLatex;
+    setText(e.where, "第 " + (fml.page + 1) + " 页，第 " + (fml.ordinal + 1) + " 条公式");
+    fmlPreview();
+  }
+
+  function fmlWire() {
+    if (fml.wired) return;
+    var e = fmlEls();
+    if (!e.box) return;
+    fml.wired = true;
+    e.tex.addEventListener("input", fmlPreview);
+    e.x.addEventListener("click", fmlClose);
+    e.cancel.addEventListener("click", fmlClose);
+    e.cand.addEventListener("change", function () {
+      fmlPick(parseInt(e.cand.value, 10) || 0);
+    });
+    e.apply.addEventListener("click", function () {
+      var tex = String(e.tex.value || "").trim();
+      if (!tex) { fmlSay("LaTeX 是空的，先写一条。", "err"); return; }
+      e.apply.disabled = true;
+      fmlSay("正在写回…");
+      post({ type: "formulaApply", key: fml.key, page: fml.page,
+             latex: tex, ordinal: fml.ordinal, old_latex: fml.oldLatex });
+    });
+    e.mt.addEventListener("click", function () {
+      fmlSay("正在把 LaTeX 放进剪贴板并打开 MathType…");
+      post({ type: "formulaMathType", latex: String(e.tex.value || "") });
+    });
+  }
+
+  function fmlOpen(payload) {
+    if (!payload) return;
+    var e = fmlEls();
+    if (!e.box) { logIt("formula: 页面里没有编辑区（kbview.html 是不是旧的？）"); return; }
+    fmlWire();
+    fml.key = String(payload.key || "");
+    fml.page = payload.page | 0;
+    var m = payload.matched || null;
+    fml.oldLatex = m ? String(m.latex || "") : "";
+    fml.ordinal = m ? (m.eq_ordinal | 0) : 0;
+    fml.cands = payload.candidates || [];
+
+    setText(e.where, "第 " + (fml.page + 1) + " 页"
+      + (m ? "，第 " + (fml.ordinal + 1) + " 条公式" : "（没定位到，下面挑一条）"));
+    if (payload.preview) { e.img.src = payload.preview; e.img.hidden = false; }
+    else { e.img.removeAttribute("src"); e.img.hidden = true; }
+    e.tex.value = fml.oldLatex;
+
+    if (fml.cands.length > 1) {
+      e.cand.innerHTML = "";
+      for (var i = 0; i < fml.cands.length; i++) {
+        var c = fml.cands[i];
+        var o = document.createElement("option");
+        o.value = String(i);
+        o.textContent = "第 " + ((c.eq_ordinal | 0) + 1) + " 条："
+          + String(c.latex || "").replace(/\s+/g, " ").slice(0, 40);
+        if ((c.eq_ordinal | 0) === fml.ordinal) o.selected = true;
+        e.cand.appendChild(o);
+      }
+      e.cands.hidden = false;
+    } else {
+      e.cands.hidden = true;
+    }
+
+    var mt = payload.mathtype || {};
+    e.mt.disabled = !mt.installed;          // ⚠ 没装**不隐藏**，只置灰
+    e.mthint.textContent = mt.installed
+      ? "会在 MathType 里打开：排好后复制，回来粘进上面的框"
+      : "本机没装 MathType（装了就能用）";
+    e.apply.disabled = false;
+    fmlSay(payload.why || "");
+    e.box.hidden = false;
+    fmlPreview();
+    try { e.tex.focus(); } catch (err) { /* ignore */ }
+  }
+
   function handle(msg) {
     try {
       if (!msg || typeof msg.type !== "string") return;
@@ -705,6 +839,25 @@
       //   2026-10-11 按页跟随去掉，宿主不再发它，这个分支也就删了。
       else if (msg.type === "hint") setText(els.hint, msg.text);
       else if (msg.type === "busy") setBusy(!!msg.busy, msg.text);
+      else if (msg.type === "formula") fmlOpen(msg.payload);
+      else if (msg.type === "formulaResult") {
+        var fr = fmlEls();
+        if (fr.apply) fr.apply.disabled = false;
+        if (msg.ok) {
+          fmlSay("已写回" + (msg.job ? "，正在重建索引…" : "。"), "ok");
+          setTimeout(fmlClose, 900);
+        } else {
+          fmlSay("写回失败：" + (msg.error || "未知原因"), "err");
+        }
+      }
+      else if (msg.type === "formulaMathTypeResult") {
+        if (msg.ok) {
+          fmlSay("已把当前 LaTeX 放进剪贴板并打开 MathType："
+            + "排好后复制，回来粘进上面的框。", "ok");
+        } else {
+          fmlSay("MathType 那条路没走通：" + (msg.error || "未知原因"), "err");
+        }
+      }
     } catch (e) {
       setText(els.hint, "渲染出错：" + e);
       logIt("render error: " + e);

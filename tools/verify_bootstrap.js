@@ -803,11 +803,23 @@ if (KB) {
     KB.kbviewPickLevel("outline", () => false).levelId === "");
   check("存在性判断抛异常也不炸",
     KB.kbviewPickLevel("outline", () => { throw new Error("x"); }).levelId === "");
-  // 阅读器那边只允许注册 renderToolbar（「对照」按钮）。旧的"选中入口"
-  // （renderTextSelectionPopup 那批）随窗格一起删了，不许被加回来。
-  check("阅读器只注册了 renderToolbar（旧的选中入口没被加回来）",
-    calls.readers.length >= 1
-    && calls.readers.every((r) => r.type === "renderToolbar"),
+  // 阅读器那边注册的事件**只允许这三种**：
+  //   · renderToolbar                     —— 工具栏「对照」按钮（2026-10-11）
+  //   · createViewContextMenu             —— 右键页面/公式「知识库：修正公式」
+  //   · createAnnotationContextMenu       —— 右键已有标注（同上一项，2026-10-12）
+  //     （两个都要：右键公式**不必先画标注**，见 src/22-formula.js 文件头）
+  // 旧的"选中入口"（renderTextSelectionPopup 那批）随窗格一起删了，不许被加回来。
+  const READER_EVENTS_OK = ["renderToolbar", "createViewContextMenu",
+                            "createAnnotationContextMenu"];
+  const badReaderEvents = calls.readers
+    .filter((r) => READER_EVENTS_OK.indexOf(r.type) < 0)
+    .map((r) => r.type);
+  check("阅读器只注册 工具栏 + 两个右键菜单（旧的选中入口没被加回来）",
+    calls.readers.length >= 1 && badReaderEvents.length === 0,
+    JSON.stringify(calls.readers.map((r) => r.type)));
+  check("两个右键菜单事件都注册了（右键公式不必先建标注）",
+    calls.readers.some((r) => r.type === "createViewContextMenu")
+    && calls.readers.some((r) => r.type === "createAnnotationContextMenu"),
     JSON.stringify(calls.readers.map((r) => r.type)));
   check("startup 里不再有窗格/退出提醒那三步",
     steps.indexOf("registerItemPane") < 0

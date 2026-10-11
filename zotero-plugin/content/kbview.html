@@ -60,6 +60,43 @@
     </header>
     <main id="kbv-view" class="kbv-view" tabindex="0"></main>
   </div>
+  <!-- 公式修正（阅读器右键 → 「知识库：修正公式」）。宿主取好数据再送进来，
+       本页只画界面；应用与 MathType 都由宿主去调本机服务。**不做识别**：
+       LaTeX 由人写，或从 MathType 复制回来。 -->
+  <div id="kbv-fml" class="kbv-fml" hidden>
+    <div class="kbv-fml-box" role="dialog" aria-label="修正公式">
+      <div class="kbv-fml-head">
+        <b>修正公式</b>
+        <span id="kbv-fml-where" class="kbv-fml-where"></span>
+        <button id="kbv-fml-x" class="kbv-btn kbv-fml-x" type="button"
+                title="关闭">✕</button>
+      </div>
+      <div class="kbv-fml-body">
+        <div class="kbv-fml-left">
+          <div class="kbv-fml-cap">原文（对着它改）</div>
+          <img id="kbv-fml-img" class="kbv-fml-img" alt="这一块公式的原文裁剪">
+        </div>
+        <div class="kbv-fml-right">
+          <div class="kbv-fml-cap">LaTeX（可改，右边实时预览）</div>
+          <textarea id="kbv-fml-tex" class="kbv-fml-tex" spellcheck="false"
+                    wrap="off"></textarea>
+          <div id="kbv-fml-prev" class="kbv-fml-prev"></div>
+        </div>
+      </div>
+      <div id="kbv-fml-cands" class="kbv-fml-cands" hidden>
+        <span>这一页有多条公式，改的是：</span>
+        <select id="kbv-fml-cand" class="kbv-sel"></select>
+      </div>
+      <div id="kbv-fml-msg" class="kbv-fml-msg"></div>
+      <div class="kbv-fml-foot">
+        <button id="kbv-fml-mt" class="kbv-btn" type="button">用 MathType 编辑</button>
+        <span id="kbv-fml-mthint" class="kbv-fml-hint"></span>
+        <span class="kbv-fml-sp"></span>
+        <button id="kbv-fml-cancel" class="kbv-btn" type="button">取消</button>
+        <button id="kbv-fml-apply" class="kbv-btn kbv-fml-primary" type="button">应用</button>
+      </div>
+    </div>
+  </div>
   <script src="vendor/markdown-it/markdown-it.min.js"></script>
   <script src="vendor/katex/katex.min.js"></script>
   <script src="kbview.js"></script>

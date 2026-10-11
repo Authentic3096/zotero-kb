@@ -419,3 +419,61 @@ button, select { font: inherit; color: inherit; }
 @container (max-width: 620px) {
   .kbv-block { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------------------------------------------------------------- 公式修正
+   （阅读器右键 → 「知识库：修正公式」；宿主取数据，这里只画界面）
+   ⚠ MathType 没装时按钮**只置灰、不隐藏**（用户 2026-10-12 明确要求）。
+   颜色用系统色（Canvas / CanvasText / Field / GrayText），深浅色自动跟着走。 */
+.kbv-fml {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+}
+.kbv-fml[hidden] { display: none; }
+.kbv-fml-box {
+  width: min(880px, 96vw); max-height: 92vh; overflow: auto;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: 8px;
+  background: Canvas; color: CanvasText;
+  border: 1px solid rgba(128, 128, 128, 0.5);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.kbv-fml-head { display: flex; align-items: baseline; gap: 8px; }
+.kbv-fml-where { color: GrayText; font-size: 0.9em; }
+.kbv-fml-x { margin-left: auto; }
+.kbv-fml-body {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px; align-items: start;
+}
+@container (max-width: 620px) {
+  .kbv-fml-body { grid-template-columns: minmax(0, 1fr); }
+}
+.kbv-fml-cap { color: GrayText; font-size: 0.85em; margin-bottom: 4px; }
+.kbv-fml-img {
+  max-width: 100%; max-height: 220px; object-fit: contain;
+  background: #fff; border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 4px; padding: 4px;
+}
+.kbv-fml-tex {
+  width: 100%; box-sizing: border-box; min-height: 110px; resize: vertical;
+  font-family: Consolas, "Cascadia Mono", monospace; font-size: 12px;
+  white-space: pre; overflow-wrap: normal; overflow-x: auto;
+  background: Field; color: FieldText;
+  border: 1px solid rgba(128, 128, 128, 0.45); border-radius: 4px; padding: 6px;
+}
+.kbv-fml-prev {
+  margin-top: 6px; min-height: 44px; overflow-x: auto; overflow-y: hidden;
+  border: 1px dashed rgba(128, 128, 128, 0.4); border-radius: 4px;
+  padding: 8px; text-align: center;
+}
+.kbv-fml-empty { color: GrayText; }
+.kbv-fml-cands { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.kbv-fml-msg { color: GrayText; min-height: 1em; }
+.kbv-fml-msg.kbv-fml-err { color: #c0392b; }
+.kbv-fml-msg.kbv-fml-ok { color: #1e8449; }
+.kbv-fml-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.kbv-fml-hint { color: GrayText; font-size: 0.85em; flex: 1 1 240px; }
+.kbv-fml-sp { flex: 1 1 0; }
+.kbv-fml-primary { font-weight: 600; }
+.kbv-fml button[disabled] { opacity: 0.5; cursor: not-allowed; }
+

@@ -393,6 +393,10 @@ Object.assign(ZoteroKB, {
     catch (e3) { Zotero.debug("[zotero-kb] 注册侧栏 Notifier 失败：" + e3); }
     try { self.kbviewRegisterReaderToolbar(); }
     catch (e4) { Zotero.debug("[zotero-kb] 注册阅读器工具栏按钮失败：" + e4); }
+    // 阅读器右键菜单的「知识库：修正公式」（22-formula.js）。同样幂等，
+    // 失败只写状态文件，不影响别的功能。
+    try { self.kbFormulaInit(); }
+    catch (e4b) { Zotero.debug("[zotero-kb] 注册阅读器右键菜单失败：" + e4b); }
     // ⚠ 会话恢复出来的阅读器**早于**我们注册 renderToolbar，收不到那个一次性
     //   事件 —— 所以注册完再"补注入"一次（见 kbviewInjectToolbarButton）。
     try { self.kbviewLateDispatch(function () { self.kbviewEnsureReaderToolbar(); }, 1500); }
@@ -823,6 +827,9 @@ Object.assign(ZoteroKB, {
     }
     if (t === "openImage") { self.kbviewOpenImage(win, kind, msg.rel); return; }
     if (t === "restorePage") { self.kbviewSavePage(win, kind, msg.page, null); return; }
+    // 公式纠错（22-formula.js）：页面只负责界面，请求与写回都在宿主这一侧。
+    if (t === "formulaApply") { self.kbFormulaApply(win, kind, msg); return; }
+    if (t === "formulaMathType") { self.kbFormulaMathType(win, kind, msg); return; }
   },
 
   /** 给某个窗口的一列送一句提示（只更新状态行，不重画正文）。 */

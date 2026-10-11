@@ -2875,6 +2875,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": f"未知同步方式 {mode}"})
             return self._send(200 if res.get("ok") else 500, res)
 
+        if path == "/formula-mathtype":
+            # 剪贴板往返的第一步：把 LaTeX 放进剪贴板 + 启动 MathType。
+            # 由服务端做（插件侧没有稳定的起进程/写剪贴板能力）。
+            # POST /formula-mathtype {latex, dry_run?}
+            try:
+                import formula as FM
+            except Exception as exc:      # noqa: BLE001
+                return self._send(500, {"error": "载入 offline/formula.py 失败：%s" % exc})
+            latex = str((body or {}).get("latex") or "").strip()
+            if not latex:
+                return self._send(400, {"error": "需要 latex",
+                                        "hint": "POST /formula-mathtype {latex}"})
+            dry = bool((body or {}).get("dry_run"))
+            return self._send(200, FM.start_mathtype(latex, dry_run=dry))
+
         if path == "/formula-apply":
             # 公式纠错：把新 LaTeX 写回该页第 ordinal 条 $$…$$，并复用 /doc-edit 的重切重向量。
             # POST /formula-apply {key, page(0基), latex, ordinal?, old_latex?}
@@ -3294,6 +3309,14 @@ def self_test(port: int) -> int:
         passed, failed = (passed + 1, failed) if okf else (passed, failed + 1)
     else:
         print("  [--]  库里没有 MinerU 产物，跳过 /formula-target 正向检查")
+    call("POST", "/formula-mathtype", {}, token=True, expect=400)     # 缺 latex
+    mt = call("POST", "/formula-mathtype", {"latex": "x=1", "dry_run": True},
+              token=True, expect=200)
+    okmt2 = (mt.get("installed") is True and mt.get("copied") is True
+             and mt.get("launched") is False)
+    print(f"  {'PASS' if okmt2 else 'FAIL'}  dry_run：只写剪贴板、不起 MathType"
+          f"（{mt.get('installed')}/{mt.get('copied')}/{mt.get('launched')}）")
+    passed, failed = (passed + 1, failed) if okmt2 else (passed, failed + 1)
     call("POST", "/formula-apply", {}, token=True, expect=400)
     call("POST", "/formula-apply", {"key": ANY_KEY, "page": 0},
          token=True, expect=400)                                            # 缺 latex

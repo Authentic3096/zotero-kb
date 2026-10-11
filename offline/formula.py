@@ -25,6 +25,8 @@ from __future__ import annotations
 import base64
 import os
 import re
+import subprocess
+import tempfile
 
 import edits as ED          # noqa: E402 —— 修订层（唯一写路径的落点）
 import mineru as M          # noqa: E402
@@ -276,3 +278,68 @@ def mathtype_state() -> dict:
         if os.path.exists(p):
             return {"installed": True, "exe": p}
     return {"installed": False, "exe": ""}
+
+
+def _to_clipboard(text: str) -> bool:
+    """把一段文本放进 Windows 剪贴板。
+
+    为什么不用 clip.exe：它按**控制台代码页**解 stdin，LaTeX 里出现非 ASCII
+    （中文式号、Unicode 符号）就会被写坏。改成写临时文件 + PowerShell 的
+    Set-Clipboard（PS 5.1 自带，按 UTF-8 读文件），中文也是对的。
+    """
+    path = os.path.join(tempfile.gettempdir(), "zotero-kb-formula-clip.txt")
+    try:
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+    except OSError:
+        return False
+    try:
+        cmd = ("Set-Clipboard -Value (Get-Content -Raw -Encoding UTF8 "
+               "-LiteralPath '" + path.replace("'", "''") + "')")
+        ps = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-Command", cmd],
+            capture_output=True, timeout=20)
+        return ps.returncode == 0
+    except Exception:      # noqa: BLE001
+        return False
+
+
+def start_mathtype(latex: str = "", dry_run: bool = False) -> dict:
+    """剪贴板往返的第一步：把 LaTeX 放进剪贴板，并启动 MathType。
+
+    dry_run=True：只做检测与写剪贴板，**不启动** MathType（自检用，免得弹窗）。
+
+    为什么放在**服务端**：插件沙箱里没有稳定的「启动某个 exe / 写剪贴板」能力，
+    而 Python 这边两句就完事，还能被自检打到。
+    返回 {ok, installed, exe, copied, launched, why}。
+    """
+    st = mathtype_state()
+    out = {"ok": True, "installed": st["installed"], "exe": st["exe"],
+           "copied": False, "launched": False, "why": []}
+    if latex:
+        out["copied"] = _to_clipboard(latex)
+        if not out["copied"]:
+            out["why"].append("把 LaTeX 放进剪贴板失败（可以手动复制）")
+    if not st["installed"]:
+        out["ok"] = False
+        out["why"].append("本机没装 MathType")
+        out["why"] = "；".join(out["why"])
+        return out
+    if dry_run:
+        out["why"] = "；".join(out["why"])
+        return out
+    startfile = getattr(os, "startfile", None)
+    if startfile is None:      # 非 Windows（CI）
+        out["ok"] = False
+        out["why"].append("这个平台没有 os.startfile")
+        out["why"] = "；".join(out["why"])
+        return out
+    try:
+        startfile(st["exe"])
+        out["launched"] = True
+    except Exception as exc:      # noqa: BLE001
+        out["ok"] = False
+        out["why"].append("启动 MathType 失败：%s" % exc)
+    out["why"] = "；".join(out["why"])
+    return out
