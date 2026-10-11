@@ -20,7 +20,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import html as _html
 import json
+import mimetypes
 import os
 import re
 import secrets
@@ -31,7 +34,7 @@ import threading
 import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -2335,6 +2338,33 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _send_bytes(self, code: int, ctype: str, data: bytes,
+                    cache: str = "no-store") -> None:
+        """发二进制/文本响应（json 之外的 Content-Type）。
+
+        ⚠ 页图端点必须走这条，不能走 _send —— JSON 序列化会把 PNG 字节毁掉。
+        """
+        data = bytes(data or b"")
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", cache)
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _send_html(self, code: int, text: str) -> None:
+        self._send_bytes(code, "text/html; charset=utf-8",
+                         str(text).encode("utf-8"))
+
+    def _send_png(self, data: bytes) -> None:
+        # 页图可以长缓存：缓存文件名里含 PDF 的 mtime+大小指纹，
+        # 同一个 URL 就是同一张图（换 PDF 会自动换 URL）。
+        self._send_bytes(200, "image/png", data,
+                         cache="private, max-age=86400")
+
     def _authorized(self) -> bool:
         """校验 token：Header 或 query 都行（插件两种都方便）。"""
         tok = self.headers.get("X-KB-Token", "")
@@ -2351,6 +2381,150 @@ class Handler(BaseHTTPRequestHandler):
             return json.loads(self.rfile.read(n).decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return {}
+
+    # -------------------------------------------------- 对照页（GET 组）
+
+    def _doc_error_html(self, msg: str) -> str:
+        """对照页打不开时给一张**能看懂的中文说明页**（不是裸 JSON）。"""
+        return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+                '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                '<title>对照页打不开</title></head>'
+                '<body style="font:15px/1.8 \'Microsoft YaHei\',system-ui;'
+                'padding:36px;max-width:680px;margin:auto;">'
+                '<h2>对照页打不开</h2><p>' + _html.escape(str(msg)) + '</p>'
+                '</body></html>')
+
+    def _doc_get(self, path: str):
+        """对照页那一组 GET 端点。
+
+        · /doc          整页 HTML（自带 CSS/JS）
+        · /doc-text     这一页**渲染后**的 HTML 片段（右栏显示用）
+        · /doc-raw      这一页**原始 markdown**（编辑框用，绝不能与上一条混）
+        · /doc-page.png PDF 这一页渲成的 PNG
+        · /kb-image     正文里的图（浏览器加载不了 file://，走这里）
+
+        只认**登记过的条目**（index.db 的 items 表）；PDF 路径取自 mineru/meta.json。
+        """
+        import docpage as DP
+        qs = parse_qs(urlparse(self.path).query)
+
+        def q(name: str, default: str = "") -> str:
+            return str(((qs.get(name) or [default])[0]) or "")
+
+        key = q("key").strip()
+        tok = q("token").strip() or str(self.headers.get("X-KB-Token") or "")
+        if not key:
+            if path == "/doc":
+                return self._send_html(400, self._doc_error_html("缺少 key 参数。"))
+            return self._send(400, {"error": "需要 key 参数",
+                                    "hint": "GET %s?key=<条目 key>" % path})
+        info = DP.item(key)
+        if not info:
+            msg = ("知识库里没有这一条（key=%s）。只有收进知识库的条目才有对照页。"
+                   % key)
+            if path == "/doc":
+                return self._send_html(404, self._doc_error_html(msg))
+            return self._send(404, {"error": msg, "key": key})
+
+        def page_arg(limit: int):
+            """页码参数 → 合法页码；非法/越界返回 None。"""
+            raw = q("page") or "1"
+            try:
+                n = int(float(raw))
+            except (TypeError, ValueError):
+                return None
+            if n < 1 or (limit and n > limit):
+                return None
+            return n
+
+        if path == "/doc":
+            machine = DP.pages(key)
+            if not machine:
+                return self._send_html(404, self._doc_error_html(
+                    "这一篇还没有逐页正文（没建过索引，或没有 PDF 附件）。"))
+            try:
+                page = int(float(q("page") or "1"))
+            except (TypeError, ValueError):
+                page = 1
+            page = max(1, min(len(machine), page))
+            text = DP.html(key, page, tok)
+            if not text:
+                return self._send_html(500, self._doc_error_html(
+                    "找不到对照页模板 online/docpage.html（服务端装得不全）。"))
+            return self._send_html(200, text)
+
+        if path == "/doc-text":
+            machine = DP.pages(key)
+            if not machine:
+                return self._send(404, {
+                    "error": "这一篇还没有逐页正文", "key": key})
+            page = page_arg(len(machine))
+            if page is None:
+                return self._send(400, {
+                    "error": "页码越界（1..%d）" % len(machine), "key": key})
+            out = DP.render_page(key, page, machine, tok)
+            m = DP.meta(key, machine)
+            edited = m.get("edited") or []
+            out.update({"ok": True, "key": key, "page": page,
+                        "pages": len(machine),
+                        "edited": edited, "stale": m.get("stale") or [],
+                        "source": "revised" if page in edited else "machine"})
+            return self._send(200, out)
+
+        if path == "/doc-raw":
+            machine = DP.pages(key)
+            if not machine:
+                return self._send(404, {
+                    "error": "这一篇还没有逐页正文", "key": key})
+            page = page_arg(len(machine))
+            if page is None:
+                return self._send(400, {
+                    "error": "页码越界（1..%d）" % len(machine), "key": key})
+            # ⚠ 编辑框装的是**有效正文**（含用户上次的修订），不是机器稿：
+            #   装机器稿的话，用户改第二次时会把第一次的改动悄悄抹掉。
+            eff = DP.effective(key, machine)
+            text = str(eff[page - 1] or "")
+            m = DP.meta(key, machine)
+            return self._send(200, {
+                "ok": True, "key": key, "page": page, "pages": len(machine),
+                "text": text, "bytes": len(text.encode("utf-8")),
+                "edited": page in (m.get("edited") or []),
+                "stale": page in (m.get("stale") or [])})
+
+        if path == "/doc-page.png":
+            try:
+                page = int(float(q("page") or "1"))
+            except (TypeError, ValueError):
+                page = 0
+            if page < 1:
+                return self._send(400, {"error": "需要正整数 page", "key": key})
+            data, err = DP.png(key, page, q("w") or DP.DOC_PAGE_DEFAULT_W)
+            if err == "no-pdf":
+                return self._send(404, {
+                    "error": "这一篇没有可用的 PDF",
+                    "hint": "只有 MinerU 解析过的条目才登记了 PDF 路径。", "key": key})
+            if err == "range":
+                return self._send(400, {
+                    "error": "页码超出 PDF 范围", "key": key, "page": page})
+            if err or not data:
+                return self._send(500, {
+                    "error": "渲染这一页失败（PDF 可能读不了）", "key": key,
+                    "page": page})
+            return self._send_png(data)
+
+        if path == "/kb-image":
+            full = DP.image_path(key, q("name"))
+            if not full:
+                return self._send(404, {"error": "找不到这张图", "key": key})
+            try:
+                with open(full, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                return self._send(404, {"error": "读不到这张图", "key": key})
+            ctype = mimetypes.guess_type(full)[0] or "application/octet-stream"
+            return self._send_bytes(200, ctype, data, cache="private, max-age=86400")
+
+        return self._send(404, {"error": "未知的对照页端点 %s" % path})
 
     # ---------------------------------------------------------- 路由
 
@@ -2430,6 +2604,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "需要 key",
                                         "hint": "GET /doc-edit?key=<KEY>"})
             return self._send(200, ED.meta(key, M.load_pages(key)))
+
+        # 对照页那一组（左 PDF 页 / 右修订后正文，可直接改）。
+        #
+        # ⚠ 这几条**必须写在这里**（do_GET 里、最后一个 return 404 之前）——
+        #   本项目在 /weights、/llm-config、/kb-location 上三次踩过
+        #   "只在 do_POST 里加了一支、GET 过去 404"，这条注释就是提醒别第四次。
+        #   POST /doc-edit（保存/恢复）在 do_POST 里，两支是配对的。
+        if path in ("/doc", "/doc-text", "/doc-raw", "/doc-page.png",
+                    "/kb-image"):
+            return self._doc_get(path)
 
         if path == "/pending":
             return self._send(200, {"pending": _read_pending()})
@@ -3170,6 +3354,120 @@ def self_test(port: int) -> int:
            and dmeta.get("count") == 0)
     print(f"  {'PASS' if okd else 'FAIL'}  没有修订时 edited/stale/count 都是空")
     passed, failed = (passed + 1, failed) if okd else (passed, failed + 1)
+
+    print("\n[5e] 对照页（/doc 左 PDF 页 / 右可改正文）")
+    # ⚠ 自检**不许有副作用**：这里只打只读端点与错误分支，绝不 POST /doc-edit
+    #   （那会真写修订层并触发一次重建）。
+    #
+    # 样本 key 从库里挑一个**真有逐页正文**的，不写死：写死换台机器就假失败
+    # （与 [3] 里"不要写死样本 key"是同一条纪律）。
+    import sqlite3 as _sq
+
+    def raw(method: str, path: str, body=None, token: bool = True):
+        """像 call() 但**不解析 JSON**（HTML / PNG 必须看原始字节）。"""
+        url = base + path
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(url, data=data, method=method)
+        if data:
+            req.add_header("Content-Type", "application/json")
+        if token:
+            req.add_header("X-KB-Token", tok)
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return resp.status, resp.read(), dict(resp.headers)
+        except urllib.error.HTTPError as exc:
+            return exc.code, exc.read(), dict(exc.headers)
+
+    real_key = ""
+    try:
+        _conn = _sq.connect(S.INDEX_DB)
+        try:
+            for (k,) in _conn.execute(
+                    "SELECT key FROM items ORDER BY fulltext_chars DESC"):
+                if os.path.isfile(os.path.join(S.KB_DIR, "mineru", str(k),
+                                               "pages.json")):
+                    real_key = str(k)
+                    break
+        finally:
+            _conn.close()
+    except Exception:      # noqa: BLE001
+        real_key = ""
+
+    q = "?key=" + real_key + "&token=" + tok
+    if real_key:
+        code, body, hdrs = raw("GET", "/doc" + q + "&page=1")
+        ok = (code == 200 and "text/html" in (hdrs.get("Content-Type") or "")
+              and b"kbDocConfig" in body and b"kb-doc-main" in body)
+        print(f"  {'PASS' if ok else 'FAIL'}  /doc 返回整页 HTML（key={real_key}）")
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
+        code, body, _ = raw("GET", "/doc-text" + q + "&page=1")
+        try:
+            td = json.loads(body.decode("utf-8"))
+        except Exception:      # noqa: BLE001
+            td = {}
+        ok = (code == 200 and td.get("ok") is True
+              and all(k in td for k in ("html", "pages", "edited", "stale",
+                                        "source")))
+        print(f"  {'PASS' if ok else 'FAIL'}  /doc-text 结构齐"
+              f"（{td.get('pages')} 页，来源 {td.get('source')}）")
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
+        code, body, _ = raw("GET", "/doc-raw" + q + "&page=1")
+        try:
+            rd = json.loads(body.decode("utf-8"))
+        except Exception:      # noqa: BLE001
+            rd = {}
+        # 编辑框必须装**原始 markdown**：拿渲染后的 HTML 会污染 md（派发包 §六）。
+        ok = (code == 200 and rd.get("ok") is True and "text" in rd
+              and "<p>" not in str(rd.get("text") or ""))
+        print(f"  {'PASS' if ok else 'FAIL'}  /doc-raw 返回原始正文"
+              f"（{rd.get('bytes')} 字节，不含 HTML）")
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
+        code, body, hdrs = raw("GET", "/doc-page.png" + q + "&page=1&w=600")
+        ok = (code == 200 and hdrs.get("Content-Type") == "image/png"
+              and body[:8] == b"\x89PNG\r\n\x1a\n")
+        print(f"  {'PASS' if ok else 'FAIL'}  /doc-page.png 返回 PNG"
+              f"（{len(body)} 字节）")
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+
+        cache_dir = os.path.join(S.CACHE_DIR, "doc-pages", real_key)
+        cached = sorted(os.listdir(cache_dir)) if os.path.isdir(cache_dir) else []
+        # 缓存文件名必须含「页码@宽度@PDF指纹」——换 PDF 要自动失效。
+        ok = any("@" in f and f.endswith(".png") for f in cached)
+        print(f"  {'PASS' if ok else 'FAIL'}  页图缓存在 .cache/doc-pages"
+              f"（含 PDF 指纹）")
+        passed, failed = (passed + 1, failed) if ok else (passed, failed + 1)
+    else:
+        print("  [--]  库里没有带逐页正文的条目，跳过 /doc 的正向检查")
+
+    # 错误分支：只认登记过的条目、token 必须带 —— 这几条不需要真 key
+    code, _, _ = raw("GET", "/doc-text", token=True)
+    print(f"  {'PASS' if code == 400 else 'FAIL'}  缺 key → 400（{code}）")
+    passed, failed = (passed + 1, failed) if code == 400 else (passed, failed + 1)
+    code, _, _ = raw("GET", "/doc-text?key=NOSUCHK1&token=" + tok)
+    print(f"  {'PASS' if code == 404 else 'FAIL'}  未登记的 key → 404（{code}）")
+    passed, failed = (passed + 1, failed) if code == 404 else (passed, failed + 1)
+    code, _, _ = raw("GET", "/doc?key=NOSUCHK1&token=" + tok)
+    print(f"  {'PASS' if code == 404 else 'FAIL'}  /doc 未知条目 → 404（{code}）")
+    passed, failed = (passed + 1, failed) if code == 404 else (passed, failed + 1)
+    code, _, _ = raw("GET", "/doc-text?key=" + (real_key or "NOSUCHK1"),
+                     token=False)
+    print(f"  {'PASS' if code == 401 else 'FAIL'}  无 token → 401（{code}）")
+    passed, failed = (passed + 1, failed) if code == 401 else (passed, failed + 1)
+    if real_key:
+        code, _, _ = raw("GET", "/doc-text" + q + "&page=999999")
+        print(f"  {'PASS' if code == 400 else 'FAIL'}  页码越界 → 400（{code}）")
+        passed, failed = (passed + 1, failed) if code == 400 else (passed, failed + 1)
+        code, _, _ = raw("GET", "/kb-image" + q + "&name=../../../zotero.sqlite")
+        print(f"  {'PASS' if code == 404 else 'FAIL'}  图片路径穿越被拦 → 404"
+              f"（{code}）")
+        passed, failed = (passed + 1, failed) if code == 404 else (passed, failed + 1)
+        # POST 那一侧只验参数（不做真实修订）：缺 key / 未知 key / 页码越界
+        call("POST", "/doc-edit", {"page": 1, "text": "x"}, expect=400)
+        call("POST", "/doc-edit", {"key": "NOSUCHK1", "page": 1, "text": "x"},
+             expect=400)
 
     print("\n[6] 异步任务：分类建议（纯确定性部分，不调模型）")
     job = call("POST", "/collection-suggest", {"use_model": False}, expect=202)

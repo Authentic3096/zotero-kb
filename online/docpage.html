@@ -1,0 +1,510 @@
+<!doctype html>
+<!--
+  docpage.html —— 「对照页」（左 PDF 页 / 右修订后正文，可直接改）的页面模板。
+
+  谁用它：online/localserver.py 的 GET /doc。服务端把 online/docpage.py::html()
+  读进来、把配置占位符换成一段 JSON，再整页发给浏览器。
+
+  为什么是「独立浏览器页」而不是再往 Zotero 窗格里塞：
+    · 对照要的是一页 PDF 原图 + 同一页正文并排，浏览器的宽度比 XUL 列宽裕；
+    · 天然跟 Zotero 不挤（派发包 §四 v1：Zotero.launchURL 交给默认浏览器）。
+
+  三条界面纪律（派发包 §三）：
+    · 右栏必须能就地改：改这一页 → textarea（装**原始 markdown**）→ 保存
+      → POST /doc-edit → 轮询 /jobs/<id> → 重取该页刷新；
+    · 翻页两边同步换，页内不做联动（v1 靠人眼）；
+    · 只刷新右栏：保存/恢复期间左边那张 PDF 图一动不动。
+
+  ⚠ 保存的是 /doc-raw 给的**原始正文**（含公式与图片的 markdown），
+    不是 /doc-text 渲染出来的 HTML —— 混了就会把 md 污染（派发包 §六 第一条）。
+  ⚠ 本文件里的配置占位符只应出现一次，服务端是按字面量整体替换的。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="color-scheme" content="light dark">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>对照页 · 文献知识库</title>
+  <style>
+    :root {
+      --kb-bg: #ffffff;
+      --kb-fg: #1f2328;
+      --kb-muted: #6b7280;
+      --kb-line: #d0d7de;
+      --kb-soft: #f6f8fa;
+      --kb-accent: #0b62d6;
+      --kb-warn: #b45309;
+      --kb-ok: #137333;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --kb-bg: #1c1f24;
+        --kb-fg: #e6e6e6;
+        --kb-muted: #9aa4b2;
+        --kb-line: #3b424b;
+        --kb-soft: #23272e;
+        --kb-accent: #6aa8ff;
+        --kb-warn: #e0a458;
+        --kb-ok: #6fd18a;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; }
+    body {
+      background: var(--kb-bg);
+      color: var(--kb-fg);
+      font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      overflow-x: hidden;
+    }
+    .kb-doc { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* ---- 工具条 ---- */
+    .kb-doc-bar {
+      position: sticky; top: 0; z-index: 5;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+      padding: 7px 10px;
+      background: var(--kb-soft);
+      border-bottom: 1px solid var(--kb-line);
+      font-size: 13px;
+    }
+    .kb-doc-bar .grow { flex: 1 1 auto; min-width: 0; }
+    .kb-doc-title {
+      color: var(--kb-muted); font-size: 12px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    button, select {
+      font: inherit; color: inherit;
+      background: var(--kb-bg);
+      border: 1px solid var(--kb-line);
+      border-radius: 6px; padding: 3px 9px; cursor: pointer;
+    }
+    button:hover:not(:disabled), select:hover:not(:disabled) { border-color: var(--kb-accent); }
+    button:disabled { opacity: 0.45; cursor: default; }
+    #kbDocPager { font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .kb-doc-label { color: var(--kb-muted); white-space: nowrap; }
+    .kb-doc-hint { color: var(--kb-muted); font-size: 12px; min-width: 0; }
+
+    /* ---- 主体两栏 ---- */
+    .kb-doc-main {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 10px; flex: 1 1 auto; min-width: 0;
+    }
+    .kb-doc-left, .kb-doc-right {
+      min-width: 0;
+      border: 1px solid var(--kb-line);
+      border-radius: 8px;
+      background: var(--kb-bg);
+    }
+    .kb-doc-left { flex: 0 0 46%; align-self: stretch; }
+    .kb-doc-right { flex: 1 1 auto; }
+
+    .kb-doc-left { max-height: calc(100vh - 66px); overflow: auto; padding: 8px; }
+    #kbDocImg { display: block; background: #fff; border: 1px solid var(--kb-line); border-radius: 4px; }
+    .kb-doc-empty { color: var(--kb-muted); padding: 14px; text-align: center; }
+
+    .kb-doc-pagebar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+      padding: 7px 10px; border-bottom: 1px solid var(--kb-line);
+      background: var(--kb-soft); border-radius: 8px 8px 0 0;
+      position: sticky; top: 0;
+    }
+    .kb-doc-tag { font-weight: 600; font-variant-numeric: tabular-nums; }
+    .kb-doc-tag.kb-edited { color: var(--kb-accent); }
+    .kb-doc-tag.kb-stale { color: var(--kb-warn); }
+    .kb-doc-status { color: var(--kb-muted); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+    .kb-doc-status.kb-ok { color: var(--kb-ok); }
+    .kb-doc-status.kb-warn { color: var(--kb-warn); }
+
+    .kb-doc-content {
+      padding: 10px 14px 24px;
+      overflow-wrap: anywhere; word-break: break-word; max-width: 100%;
+    }
+    .kb-doc-content img, .kb-doc-content table { max-width: 100%; height: auto; }
+    .kb-doc-content table { border-collapse: collapse; display: block; overflow-x: auto; }
+    .kb-doc-content math { max-width: 100%; }
+
+    .kb-doc-editor { padding: 8px 10px 16px; display: flex; flex-direction: column; gap: 8px; }
+    #kbDocText {
+      width: 100%; min-height: 62vh; resize: vertical;
+      font: 13px/1.55 Consolas, "Cascadia Mono", "Courier New", monospace;
+      color: var(--kb-fg); background: var(--kb-soft);
+      border: 1px solid var(--kb-line); border-radius: 6px; padding: 8px;
+      /* ⚠ 软换行：原来是 pre + overflow-x:auto（wrap="off"），MinerU 的公式/表格行
+         动辄几千个字符 → 一条横向几万像素的长行，改起来只能左右拉。
+         兜底页只要"能用"就行（派发包 §3.2 明确要求顺手修掉这条）。 */
+      white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: hidden;
+    }
+    .kb-doc-editor-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    @media (max-width: 820px) {
+      .kb-doc-main { flex-direction: column; }
+      .kb-doc-left { flex: 0 0 auto; width: 100%; max-height: none; }
+      .kb-doc-right { width: 100%; }
+      #kbDocText { min-height: 40vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="kb-doc">
+    <header class="kb-doc-bar">
+      <button id="kbDocPrev" type="button" title="上一页（←）">◀</button>
+      <span id="kbDocPager">第 <b id="kbDocPn">1</b> / <span id="kbDocPm">?</span> 页</span>
+      <button id="kbDocNext" type="button" title="下一页（→）">▶</button>
+      <label class="kb-doc-label">宽度
+        <select id="kbDocWidth" title="PDF 页的渲染宽度（越大越清晰、也越慢）">
+          <option value="600">600</option>
+          <option value="750">750</option>
+          <option value="900">900（默认）</option>
+          <option value="1200">1200</option>
+          <option value="1600">1600</option>
+        </select>
+      </label>
+      <label class="kb-doc-label">缩放
+        <select id="kbDocZoom" title="显示缩放（不改渲染宽度）">
+          <option value="0.75">75%</option>
+          <option value="1" selected>100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+        </select>
+      </label>
+      <span id="kbDocHint" class="kb-doc-hint"></span>
+      <span class="grow"></span>
+      <span id="kbDocTitle" class="kb-doc-title"></span>
+    </header>
+
+    <main class="kb-doc-main">
+      <section class="kb-doc-left">
+        <img id="kbDocImg" alt="PDF 页" hidden>
+        <div id="kbDocLeftMsg" class="kb-doc-empty">正在加载…</div>
+      </section>
+
+      <section class="kb-doc-right">
+        <div class="kb-doc-pagebar">
+          <span id="kbDocTag" class="kb-doc-tag">p.1</span>
+          <button id="kbDocEdit" type="button" title="就地修改这一页的正文（保存后立即重切重向量）">改这一页</button>
+          <button id="kbDocRestore" type="button" disabled title="丢掉这一页的修改，回到机器解析稿">恢复原版</button>
+          <span id="kbDocStatus" class="kb-doc-status"></span>
+        </div>
+        <div id="kbDocContent" class="kb-doc-content"></div>
+        <div id="kbDocEditor" class="kb-doc-editor" hidden>
+          <textarea id="kbDocText" spellcheck="false" wrap="soft"
+                    title="这里是 markdown 原文（公式与图片都是原文），改完点保存"></textarea>
+          <div class="kb-doc-editor-row">
+            <button id="kbDocSave" type="button">保存并重建</button>
+            <button id="kbDocCancel" type="button">取消</button>
+            <span id="kbDocEditHint" class="kb-doc-hint"></span>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script id="kbDocConfig" type="application/json">__KB_DOC_CONFIG__</script>
+  <script>
+  (function () {
+    "use strict";
+    var CFG = {};
+    try { CFG = JSON.parse(document.getElementById("kbDocConfig").textContent || "{}"); }
+    catch (e) { CFG = {}; }
+
+    var state = {
+      key: String(CFG.key || ""),
+      page: parseInt(CFG.page, 10) || 1,
+      pages: parseInt(CFG.pages, 10) || 0,
+      width: parseInt(CFG.width, 10) || 900,
+      zoom: 1,
+      editing: false,
+      busy: false,
+      edited: {},
+      stale: {}
+    };
+
+    function byId(id) { return document.getElementById(id); }
+    var els = {
+      prev: byId("kbDocPrev"), next: byId("kbDocNext"),
+      pn: byId("kbDocPn"), pm: byId("kbDocPm"),
+      width: byId("kbDocWidth"), zoom: byId("kbDocZoom"),
+      hint: byId("kbDocHint"), title: byId("kbDocTitle"),
+      img: byId("kbDocImg"), leftMsg: byId("kbDocLeftMsg"),
+      tag: byId("kbDocTag"), edit: byId("kbDocEdit"),
+      restore: byId("kbDocRestore"), status: byId("kbDocStatus"),
+      content: byId("kbDocContent"), editor: byId("kbDocEditor"),
+      text: byId("kbDocText"), save: byId("kbDocSave"),
+      cancel: byId("kbDocCancel"), editHint: byId("kbDocEditHint")
+    };
+
+    function url(path, params) {
+      var q = ["token=" + encodeURIComponent(CFG.token || "")];
+      for (var k in (params || {})) {
+        if (Object.prototype.hasOwnProperty.call(params, k)) {
+          q.push(encodeURIComponent(k) + "=" + encodeURIComponent(params[k]));
+        }
+      }
+      return path + "?" + q.join("&");
+    }
+
+    function fetchJson(path, params, options) {
+      return fetch(url(path, params), options || { cache: "no-store" })
+        .then(function (r) {
+          return r.json().catch(function () { return {}; })
+            .then(function (j) {
+              if (!r.ok) {
+                var msg = (j && (j.error || j.hint)) || ("HTTP " + r.status);
+                throw new Error(msg);
+              }
+              return j;
+            });
+        });
+    }
+
+    function setHint(text) { els.hint.textContent = text == null ? "" : String(text); }
+
+    function setStatus(text, kind) {
+      els.status.textContent = text == null ? "" : String(text);
+      els.status.className = "kb-doc-status" + (kind ? (" kb-" + kind) : "");
+    }
+
+    function setBusy(busy) {
+      state.busy = !!busy;
+      els.edit.disabled = state.busy || state.editing;
+      els.restore.disabled = state.busy || state.editing || !state.edited[state.page];
+      els.prev.disabled = state.busy || state.editing || state.page <= 1;
+      els.next.disabled = state.busy || state.editing
+        || (state.pages > 0 && state.page >= state.pages);
+      // 保存/取消也一起锁：重建期间再点一次「保存」是没意义的动作。
+      els.save.disabled = state.busy;
+      els.cancel.disabled = state.busy;
+    }
+
+    function paintPager() {
+      els.pn.textContent = String(state.page);
+      els.pm.textContent = state.pages ? String(state.pages) : "?";
+      var tag = "p." + state.page;
+      var cls = "kb-doc-tag";
+      if (state.edited[state.page]) { tag += " · 已修订"; cls += " kb-edited"; }
+      if (state.stale[state.page]) { tag += " · 基于旧解析"; cls += " kb-stale"; }
+      els.tag.textContent = tag;
+      els.tag.className = cls;
+      els.tag.title = state.stale[state.page]
+        ? "这一页的解析结果变过，你改的是旧版 —— 仍用你的版本，请核对一下" : "";
+    }
+
+    // ---------------------------------------------------------- 左栏：页图
+    function paintPdf() {
+      if (!CFG.hasPdf) {
+        els.img.hidden = true;
+        els.leftMsg.textContent = "这一篇找不到可用的 PDF（可能是回落来源解析的），"
+          + "只能看右栏正文。";
+        return;
+      }
+      els.leftMsg.hidden = false;
+      els.leftMsg.textContent = "正在渲染 PDF 页…";
+      els.img.hidden = false;
+      els.img.onload = function () {
+        els.leftMsg.hidden = true;
+        applyZoom();
+      };
+      els.img.onerror = function () {
+        els.img.hidden = true;
+        els.leftMsg.hidden = false;
+        els.leftMsg.textContent = "这一页渲染不出来（PDF 可能在磁盘上找不到了）。";
+      };
+      // ⚠ 不带 cache-busting 参数：缓存键里已经含 PDF 的 mtime+大小指纹，
+      //   同一个 URL 就是同一张图，浏览器缓存是**正确**的（验收要求第二次 <100ms）。
+      els.img.src = url("/doc-page.png",
+        { key: state.key, page: state.page, w: state.width });
+    }
+
+    function applyZoom() {
+      if (!els.img.naturalWidth) return;
+      els.img.style.width = Math.round(els.img.naturalWidth * state.zoom) + "px";
+    }
+
+    // ---------------------------------------------------------- 右栏：正文
+    function paintPage(data) {
+      state.pages = parseInt(data.pages, 10) || state.pages;
+      state.edited = {};
+      state.stale = {};
+      (data.edited || []).forEach(function (n) { state.edited[n] = true; });
+      (data.stale || []).forEach(function (n) { state.stale[n] = true; });
+      els.content.innerHTML = data.html || "";
+      if (!els.content.firstChild) {
+        var why = data.error || (data.empty
+          ? "这一页的正文是空的（MinerU 没有解析出内容）。"
+          : "这一页没渲染出内容。");
+        var d = document.createElement("div");
+        d.className = "kb-doc-empty";
+        d.textContent = why;
+        els.content.appendChild(d);
+      }
+      paintPager();
+      setBusy(state.busy);
+    }
+
+    function loadPage() {
+      setBusy(true);
+      setStatus("正在读取…");
+      paintPager();
+      return fetchJson("/doc-text", { key: state.key, page: state.page })
+        .then(function (data) {
+          paintPage(data);
+          setStatus(state.edited[state.page] ? "这一页有你的修订" : "");
+          setHint("");
+          setBusy(false);
+        })
+        .catch(function (e) {
+          els.content.innerHTML = "";
+          var d = document.createElement("div");
+          d.className = "kb-doc-empty";
+          d.textContent = "读不到这一页：" + (e && e.message ? e.message : e);
+          els.content.appendChild(d);
+          setStatus("读取失败", "warn");
+          setBusy(false);
+        });
+    }
+
+    function goto(page) {
+      if (state.editing || state.busy) return;
+      var p = parseInt(page, 10);
+      if (isNaN(p) || p < 1 || (state.pages > 0 && p > state.pages)) return;
+      state.page = p;
+      paintPdf();
+      loadPage();
+    }
+
+    // ---------------------------------------------------------- 编辑
+    function startEdit() {
+      if (state.editing || state.busy) return;
+      setBusy(true);
+      setStatus("正在取原文…");
+      fetchJson("/doc-raw", { key: state.key, page: state.page })
+        .then(function (data) {
+          state.editing = true;
+          state.pages = parseInt(data.pages, 10) || state.pages;
+          els.text.value = data.text == null ? "" : String(data.text);
+          els.content.hidden = true;
+          els.editor.hidden = false;
+          els.editHint.textContent = "这里是 markdown 原文；"
+            + "公式与图片都要保留原样，改完点「保存并重建」。";
+          setStatus("");
+          setBusy(false);
+          els.edit.disabled = true;
+          els.restore.disabled = true;
+          els.prev.disabled = true;
+          els.next.disabled = true;
+          els.text.focus();
+        })
+        .catch(function (e) {
+          setStatus("取原文失败：" + (e && e.message ? e.message : e), "warn");
+          setBusy(false);
+        });
+    }
+
+    function endEdit() {
+      state.editing = false;
+      els.editor.hidden = true;
+      els.content.hidden = false;
+      els.editHint.textContent = "";
+      setBusy(false);
+    }
+
+    function pollJob(jobId) {
+      var started = Date.now();
+      return new Promise(function (resolve, reject) {
+        function tick() {
+          fetchJson("/jobs/" + encodeURIComponent(jobId), {})
+            .then(function (job) {
+              var stt = String(job && job.state || "");
+              if (stt === "done") return resolve(job);
+              if (stt === "failed") {
+                return reject(new Error(job.error || "重建失败"));
+              }
+              if (Date.now() - started > 15 * 60 * 1000) {
+                return reject(new Error("重建超时（超过 15 分钟）"));
+              }
+              var secs = Math.round((Date.now() - started) / 1000);
+              setStatus("正在重建切片与向量…已 " + secs + " 秒");
+              setTimeout(tick, 800);
+            })
+            .catch(reject);
+        }
+        setTimeout(tick, 500);
+      });
+    }
+
+    function submitEdit(body, what) {
+      setBusy(true);
+      setStatus("正在保存" + what + "…");
+      fetchJson("/doc-edit", {}, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      })
+        .then(function (r) {
+          if (!r.job) throw new Error((r && r.error) || "服务没有返回重建任务");
+          return pollJob(r.job);
+        })
+        .then(function () {
+          endEdit();
+          setBusy(false);
+          return loadPage().then(function () {
+            setStatus("已保存并重建完成（切片与向量都已更新）", "ok");
+          });
+        })
+        .catch(function (e) {
+          setBusy(false);
+          setStatus(what + "失败：" + (e && e.message ? e.message : e), "warn");
+        });
+    }
+
+    function saveEdit() {
+      if (!state.editing || state.busy) return;
+      var text = els.text.value;
+      submitEdit({ key: state.key, page: state.page, text: text }, "修改");
+    }
+
+    function restorePage() {
+      if (state.editing || state.busy) return;
+      if (!state.edited[state.page]) return;
+      submitEdit({ key: state.key, page: state.page, action: "restore" }, "恢复");
+    }
+
+    // ---------------------------------------------------------- 接线
+    els.prev.addEventListener("click", function () { goto(state.page - 1); });
+    els.next.addEventListener("click", function () { goto(state.page + 1); });
+    els.edit.addEventListener("click", startEdit);
+    els.restore.addEventListener("click", restorePage);
+    els.save.addEventListener("click", saveEdit);
+    els.cancel.addEventListener("click", function () {
+      if (state.busy) return;
+      endEdit();
+      setStatus("");
+    });
+    els.width.addEventListener("change", function () {
+      state.width = parseInt(els.width.value, 10) || 900;
+      paintPdf();
+    });
+    els.zoom.addEventListener("change", function () {
+      state.zoom = parseFloat(els.zoom.value) || 1;
+      applyZoom();
+    });
+    document.addEventListener("keydown", function (ev) {
+      if (state.editing) return;
+      var tag = (ev.target && ev.target.tagName || "").toLowerCase();
+      if (tag === "textarea" || tag === "input" || tag === "select") return;
+      if (ev.key === "ArrowLeft") { goto(state.page - 1); }
+      else if (ev.key === "ArrowRight") { goto(state.page + 1); }
+    });
+
+    els.width.value = String(state.width);
+    els.title.textContent = (CFG.title || "")
+      + (CFG.year ? "（" + CFG.year + "）" : "");
+    document.title = (CFG.title ? CFG.title + " · " : "") + "对照页";
+    if (!state.pages) { setHint("这篇没有逐页正文"); }
+    paintPdf();
+    loadPage();
+  })();
+  </script>
+</body>
+</html>

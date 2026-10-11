@@ -614,6 +614,16 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 `POST /shutdown` 用事件位 + 看门狗退出，刻意不用 `taskkill pythonw.exe`
 —— 那会连管理面板和用户脚本一起杀掉（`:2519-2558`）。
 
+**对照页**（v1.11.0，左 PDF 页 / 右可改正文，自己开在浏览器标签里）是一组 GET 端点，
+实现委派给 `online/docpage.py`：`/doc`（整页 HTML，模板是 `online/docpage.html`）/
+`/doc-text`（该页**渲染后**的 HTML 片段）/ `/doc-raw`（该页**原始 markdown**，编辑框用，
+两者绝不能混）/ `/doc-page.png`（PyMuPDF 渲页图，缓存在 `kb/.cache/doc-pages/`，
+文件名含 PDF 的 mtime+大小指纹）/ `/kb-image`（正文里的图；http 页面加载不了 `file://`，
+且 `<base>` 上的 token 不会跟着子资源走，所以改成渲染时重写 `<img src>`）。
+保存/恢复**仍走既有的 `POST /doc-edit`**（唯一写路径是 `offline/edits.py`），
+页面只负责轮询 `/jobs/<id>` 后刷右栏。**只认 `index.db` 里登记过的条目**，
+PDF 绝对路径取自 `mineru/<key>/meta.json`（不现场拷 Zotero 快照）。
+
 #### B7. Zotero 插件的几个关键机制
 
 插件是 **bootstrapped extension**（Zotero 7~10）。
@@ -864,6 +874,48 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - 「改这一页 / 恢复原版 / 导出草稿」仍是原逻辑，只换了传输层；`md2html()` 与
   `kbviewSplitMd()` 仍是纯函数（桩测试盯着）。
 
+**v1.12.0 的三处新增**（派发包《对照页-左右并排》v4：不做独立窗口、不做 `/doc-pdf`）：
+
+- ① **阅读器那一列**（`kbviewRoots(win, "reader")` → `#zotero-context-pane` /
+  `-inner` / `-sidenav`）：与条目窗格那一列**共用同一个页面**（`content/kbview.html`），
+  只是宿主落点不同；打开时把 `#zotero-context-pane-inner` 临时 `hidden`。
+  **左 PDF 右正文、同一个窗口**，零 PDF 渲染成本；关闭时逐项还原。
+- ② **一键对照**：`Zotero.Reader.registerEventListener("renderToolbar", …)` 往阅读器工具栏
+  塞一个「对照」按钮。⚠ 这个事件是**一次性**的（React 那个 `CustomSections` 只在 mount 时发一次），
+  而 Zotero 会**在启动时恢复会话里的阅读器** —— 那些阅读器早于我们注册监听，于是永远收不到事件。
+  所以另有一条**直接注入**（`kbviewInjectToolbarButton`，往 `.custom-sections` 里 append）
+  兜底，并在 Notifier 的 `tab` select/add 时补一次。
+- ③ **停在正在读的那一页（只在打开时定位一次）**：打开阅读器那一列时取当前页
+  （`kbviewReaderPage` / `kbviewReaderInfo`）作**初始页**，页面滚过去并高亮。
+  当前页优先取 `reader._state.primaryViewState.pageIndex`（实时），读不到才退回
+  `items` 表的「最后阅读页」—— 后者会留着"上次退出时的页码"，先问它会拿到陈旧的页。
+  ⚠ **翻页不跟随**（v1.12.1 去掉）：v1.12.0 做过跟随（Notifier 的 `pageChange`
+  + 400ms 轮询重推），用户实测"没生效也不用要了，手动翻找并不麻烦"，于是功能与代码
+  一起去掉 —— 那段周期性重渲染同时也是最可疑的"渲染抽搐"来源。函数
+  `kbviewFanoutPage`（一次性把当前页推给已打开的列）按派发包要求**保留**，但没有
+  自动调用点，条目窗格那一列与将来的「跳到这一页」可以直接调它。
+
+**v1.12.0 的渲染换了实现**：正文与公式**在页面里**用 vendored 的
+`content/vendor/{markdown-it,katex}` 渲染（markdown-it 14.1.0 / KaTeX 0.16.11，都是 MIT，
+含 LICENSE 与 20 个 woff2 字体，
+`audit_release.py` 对 vendor 前缀只保留"密钥/用户目录/开发机痕迹"那几条检查），
+**不再读服务端的 `.html` 孪生**（那份现在只有降级模式才用）。理由：
+latex2mathml 转不了 `\begin{aligned}`（会转成一串 `&`）；而逐块编辑要**实时预览**，
+服务端 HTML 里拿不回来"改了一半"的正文。
+
+**v1.12.0 收尾（用户看过界面之后的调整）**：删掉了页面工具条上那个「对照页」按钮
+与 `kbviewOpenDoc`（阅读器那一列已经在同一个窗口里对着 PDF 看了，再跳浏览器多一步；
+服务端 `/doc` 那几个端点保留，只作"不装插件也能看渲染"的兜底）；编辑框改成**跟着内容
+自动长高**并跟预览等高；分页线由浅灰虚线改成**实线**；页工具条字号比正文略大；
+正文与预览里的图**限高**（150 / 110）——放图只为确认"对应原文哪张图"；MinerU 带出来的
+`<sub>`/`<sup>` 用**无属性白名单**精确回填（不开 `html:true`，见 `allowInlineTags`）。
+
+**v1.12.0 的按块编辑**：宿主 `kbviewSplitBlocks()` 把一页 md 切成块
+（空行分段 / 独立公式一块 / 表格整块 / 图片行单独一块）并**原样保留块间分隔符**
+（`kbviewJoinBlocks(parts) === 原文`，桩测试钉住），页面只负责画；
+保存时页面把每块文本交回，由宿主拼回整页再走**既有** `POST /doc-edit`
+（写路径仍然只有一条）。
+
 #### B15. 能力探测的菜单状态行
 第一版把「（未连接）/（检测中）」挂在**顶层标题**上，出现两个问题：
 ① 标题太长；② 明明子菜单已经列出对话列表，标题却写"检测中"（`caps.dsh` 还是 `null`，
@@ -1020,7 +1072,9 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 │   │   ├── searcher.py              混合检索 + 经验查询（唯一读库入口）
 │   │   ├── server.py                MCP 服务器（13 工具 + 4 资源）
 │   │   ├── query.py                 中文分词 / 查询改写 / 覆盖率
-│   │   └── localserver.py           给 Zotero 插件的 HTTP 服务（:8765）
+│   │   ├── localserver.py           给 Zotero 插件的 HTTP 服务（:8765）
+│   │   ├── docpage.py               对照页后端（登记校验 / 页图 / 图片改写 / 模板注入）
+│   │   └── docpage.html             对照页页面本体（自带 CSS/JS，服务端只替换配置）
 │   ├── kb\                          数据（可迁移）
 │   │   ├── index.sqlite             ★ 单一事实来源
 │   │   ├── papers\*.md              每篇文献的 Markdown
@@ -1035,7 +1089,9 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 │   │   ├── build_bootstrap.py       ★ 把 src\*.js 拼成 bootstrap.js
 │   │   ├── check_kb_levels.py       ★ 盯分级清单在 Python 与 JS 两侧一致
 │   ├── zotero-plugin\               ★ Zotero 插件源码 + 诊断脚本
-│   │   ├── src\*.js                 ★ 按功能拆的源码（20 个文件）
+│   │   ├── src\*.js                 ★ 按功能拆的源码（24 个文件）
+│   │   ├── content\kbview.{html,css,js}  ★ 侧栏页面（条目窗格列 + 阅读器对照列共用）
+│   │   ├── content\vendor\           ★ 原样引入的第三方库（markdown-it / KaTeX，含 LICENSE 与字体）
 │   │   └── bootstrap.js             ★ 生成物（xpi 里装的是它，别直接改）
 │   ├── tests\                       本机跑的测试（要真实知识库）
 │   ├── bundle\                      接入 DSH 的 MCP bundle
@@ -1054,7 +1110,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 ### 插件为什么要"源码多文件 + 生成单文件"
 
 Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js` 一个
-文件**（`manifest.json` 也必须在根目录）。所以源码分成 20 个文件之后，运行时
+文件**（`manifest.json` 也必须在根目录）。所以源码分成 24 个文件之后，运行时
 仍然必须是一个文件：
 
 ```
@@ -1130,9 +1186,11 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 | 混合检索 | ✅ 中文短语召回 + 向量 + RRF + 权重上浮 + small-to-big 上下文 | 关键词与语义两路实测均可用 |
 | MCP 接入 | ✅ **13 工具 + 4 资源** | AI 里 `kb_search` 等可直接调用 |
 | Zotero 插件 | ✅ 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** | 真机验收（v1.8.0 / v1.9.0） |
-| 「知识库」侧栏 | ✅ **自建一列**独占条目窗格：rail 最下面一个图标 → 开/关；正文/图片/MathML/宽表格都正常；逐页编辑；宽度跟原生一样可拖；多窗口各一份、禁用后 DOM 干净 | 真机验收 9 项（v1.10.0，见 `接手.md` §5.9） |
+| 「知识库」侧栏 | ✅ **自建一列**独占条目窗格：rail 最下面一个图标 → 开/关；正文/图片/宽表格都正常；宽度跟原生一样可拖；多窗口各一份、禁用后 DOM 干净 | 真机验收 9 项（v1.10.0，见 `接手.md` §5.9） |
+| 阅读器对照列 | ✅ 阅读器右侧同一份页面：**左 PDF 右正文、同一个窗口**；工具栏「对照」按钮一键开/关；**打开就停在正在读的那一页**（翻页**不**跟随，v1.12.1 去掉）；公式 **KaTeX** 排版、上下标真排版；**按块编辑**（左框右预览、改动块标黄、整页源码开关）；**每页工具条吸顶**；关阅读器自动收起并还原原生窗格 | 真机验收 7 项（v1.12.0 建、v1.12.1 去跟随 + 上下标，见 `接手.md` §5.11） |
+| 对照页（浏览器） | ✅ 左 PDF 页 / 右同一页**可直接改**：五个 GET 端点 + 侧栏「对照页」按钮 → 默认浏览器；保存后轮询 job、只刷右栏（v1.12.0 起降级为**兜底**，本包不再投入） | 端到端 31 项 + stale 与三篇抽样（含学位论文）22 项（v1.11.0，见 `接手.md` §5.10） |
 | 条目生命周期 | ✅ 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `trash_acceptance.py` 真机六步 + `tests/test_sections.py` |
-| 本地服务 | ✅ 96 项自检 | `online/localserver.py --test` |
+| 本地服务 | ✅ 109 项自检 | `online/localserver.py --test` |
 | 测试 | ✅ 37 个测试文件全过（0 失败） | `tools/run_tests.py`（工作文件夹） |
 | DSH 侧接入 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
 | 提示词注册表 | ✅ 话术可看可改可还原 | `tools/panels/tab_prompts.py` |

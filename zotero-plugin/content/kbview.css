@@ -14,6 +14,11 @@
 :root {
   color-scheme: light dark;
   --kbv-font-size: 13px;
+  /* 正文区（滚动口）的**上内边距**。⚠ 单独提出来做变量，是因为它同时被
+     .kbv-page-head 的吸顶位移用掉：sticky 的 top 是从滚动口的**内容盒**顶边
+     量起的，滚动口有 padding-top 时不抵消就会在条上方留一条同宽的缝，
+     正文会从缝里透出来（真人 2026-10-11 截图里就是一行被切掉一半的字）。 */
+  --kbv-view-pad: 6px;
   --kbv-line: rgba(127, 127, 127, 0.35);
   --kbv-soft: rgba(127, 127, 127, 0.12);
   --kbv-fg: #1b1b1b;
@@ -21,6 +26,7 @@
   --kbv-bg: #ffffff;
   --kbv-bar: #f4f4f5;
   --kbv-accent: #0a6cff;
+  --kbv-warn: #b26a00;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -30,6 +36,7 @@
     --kbv-bg: #1c1b1a;
     --kbv-bar: #262523;
     --kbv-accent: #6cb2ff;
+    --kbv-warn: #e0a458;
   }
 }
 
@@ -117,7 +124,7 @@ button, select { font: inherit; color: inherit; }
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  padding: 6px 8px 24px;
+  padding: var(--kbv-view-pad) 8px 24px;
   font-size: var(--kbv-font-size);
   overflow-wrap: anywhere;   /* 老实现做不到的那一条 */
   word-break: break-word;
@@ -171,9 +178,13 @@ button, select { font: inherit; color: inherit; }
 
 .kbv-view hr { border: none; border-top: 1px solid var(--kbv-line); margin: 0.8em 0; }
 
-/* ---- 图片：不许溢出，点一下看原图 ---- */
+/* ---- 图片：不许溢出，点一下看原图 ----
+   缩略图**故意限高**：这里放图只是让用户确认「这块对应原文的哪张图」，
+   不需要大也不需要清晰（要看就看原文那一页）—— 2026-10-11 真人反馈。 */
 .kbv-view img {
   max-width: 100%;
+  max-height: 150px;
+  width: auto;
   height: auto;
   display: block;
   margin: 6px 0;
@@ -215,9 +226,10 @@ button, select { font: inherit; color: inherit; }
 /* ---- 逐页正文（fulltext 级）：每页一块 + 一条工具条 ----
    ⚠ 选择器是服务端渲染出来的 `.kb-page`（不是 .kbv-* 那套自己的命名空间）。 */
 .kb-page {
-  border-top: 1px dashed var(--kbv-line);
-  margin-top: 10px;
-  padding-top: 4px;
+  /* 分页线要看得见：原来是浅灰虚线（真人反馈「太浅了」），改成前景色实线 */
+  border-top: 1px solid var(--kbv-fg);
+  margin-top: 12px;
+  padding-top: 6px;
 }
 .kb-page:first-of-type { border-top: none; margin-top: 0; }
 
@@ -226,9 +238,31 @@ button, select { font: inherit; color: inherit; }
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  margin: 0 0 4px;
-  font-size: 11px;
+  margin: 0 0 5px;
+  /* 比正文稍大一点（真人反馈）：1.08em 跟着字号设置走，不写死 px */
+  font-size: 1.08em;
+  /* 每页的上边栏：**粘在这一列的顶部**（真人 2026-10-11 要求）——
+     读这一页时「p.n / 改这一页 / 恢复原版」一直在最上面，随手就能点；
+     滚到下一页时，下一条从底下升上来把它顶出去，如此反复。
+     ⚠ sticky 要生效，祖先链上不能有 overflow:hidden，且滚动口必须是它自己
+       的祖先——这里是 #kbv-view（滚动口）> .kb-page > .kbv-page-head，中间
+       没有别的盒子（见 renderContent）。
+     ⚠ 必须给不透明背景：正文从它下面滚过去时会透出来，看着像重影。
+     底部那条细线是"下面还有正文在滚"的分界，用与别处同一个变量。 */
+  position: sticky;
+  /* ⚠ top 要抵消滚动口的上内边距（见 --kbv-view-pad）：设 0 的话条会停在
+     内容盒顶边、上方露出 6px 的缝让正文透出来。这里 -6px 恰好让条的**上边缘**
+     贴住可见顶边，而条自己的上内边距正好把那 6px 盖住（不透明背景）。
+     上面留 0：条的下边缘不裁字（padding-top = 那份被盖住的宽度）。 */
+  top: calc(-1 * var(--kbv-view-pad));
+  z-index: 3;
+  background: var(--kbv-bg);
+  padding: var(--kbv-view-pad) 0 4px;
+  border-bottom: 1px solid var(--kbv-line);
 }
+.kbv-page-head .kbv-tag { font-weight: 600; }
+/* 页工具条里的按钮跟着页标题的字号，别停在 11px */
+.kbv-page-head .kbv-mini { font-size: 1em; }
 
 .kbv-tag { color: var(--kbv-muted); }
 .kbv-tag.kbv-edited {
@@ -276,3 +310,112 @@ button, select { font: inherit; color: inherit; }
   word-break: break-all;
 }
 .kbv-hidden { display: none !important; }
+
+/* ================================================================ 2026-10-11
+   阅读器右侧那一列 + KaTeX + 分块编辑（派发包-对照页-左右并排 §三）
+
+   公式：KaTeX 在这个页面里排版（markdown-it + KaTeX 都 vendored 在
+   content/vendor/）。宽公式自己横向滚，不顶破窄栏。
+   编辑：每块一行 —— 左等宽编辑框（软换行）｜右该块的实时预览；
+   改动过的块标黄（保存前一眼能看出改了哪几块）。
+   ================================================================ */
+
+.kbv-view .katex { font-size: 1.06em; }
+.kbv-view .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-width: 100%;
+  padding: 2px 0;
+}
+.kbv-mathblock { margin: 6px 0; max-width: 100%; overflow-x: auto; }
+.kbv-tex {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--kbv-soft);
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+/* 渲染器排不了的公式（真库 1314 个块公式里有 3 个**源 LaTeX 就是坏的**，
+   任何渲染器都救不回来）：明白地标成"未能排版"，鼠标停上去看原因，
+   别让人以为正文里本来就是一段等宽代码。 */
+.kbv-tex-fail {
+  border-inline-start: 3px solid var(--kbv-warn);
+  background: color-mix(in srgb, var(--kbv-warn) 12%, transparent);
+}
+
+/* 页块：打开这一列时高亮"正在读的这一页"（翻页**不**跟随，只在打开时定位一次） */
+.kbv-page.kbv-active {
+  border-inline-start: 3px solid var(--kbv-accent);
+  margin-inline-start: -3px;
+  padding-inline-start: 3px;
+}
+.kbv-page-body > *:first-child { margin-top: 0; }
+
+/* ---- 分块编辑器 ---- */
+.kbv-editor-holder {
+  margin: 4px 0 10px;
+  padding: 5px 6px;
+  border: 1px solid var(--kbv-line);
+  border-radius: 6px;
+  background: var(--kbv-soft);
+}
+.kbv-editbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+}
+.kbv-mode.kbv-mode-on {
+  border-color: var(--kbv-accent);
+  background: var(--kbv-accent);
+  color: #fff;
+}
+.kbv-blocks { display: flex; flex-direction: column; gap: 6px; }
+.kbv-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 2px;
+  border-radius: 5px;
+}
+.kbv-block.kbv-dirty {
+  outline: 2px solid #e8b400;
+  background: rgba(255, 196, 0, 0.14);
+}
+.kbv-block-cell { min-width: 0; display: flex; flex-direction: column; }
+.kbv-block-text {
+  width: 100%;
+  min-height: 56px;
+  /* 高度由 autoGrow（页面脚本）按内容给，并且用 flex 跟右边预览**等高**
+     —— 原来固定 56px，左边比右边矮一大截（真人反馈「左边太小」）。
+     所以这里不再设 resize，交给自动增高。 */
+  flex: 1 1 auto;
+  padding: 5px 6px;
+  border: 1px solid var(--kbv-line);
+  border-radius: 4px;
+  background: var(--kbv-bg);
+  color: var(--kbv-fg);
+  font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
+  white-space: pre-wrap;        /* 不再有几万像素的长行 */
+  overflow-wrap: anywhere;
+  overflow-y: hidden;
+}
+.kbv-block-prev {
+  max-height: 360px;
+  padding: 4px 7px;
+  overflow: auto;
+  border: 1px dashed var(--kbv-line);
+  border-radius: 4px;
+  background: var(--kbv-bg);
+}
+.kbv-block-prev > *:first-child { margin-top: 0; }
+/* 预览里的图同样只当"对一下是哪张"，再小一点 */
+.kbv-block-prev img { max-height: 110px; }
+.kbv-source-wrap { display: flex; flex-direction: column; }
+
+/* 窄列时左右堆叠：列宽由原生的 splitter 决定，所以用**容器查询**而不是媒体查询
+   （媒体查询问的是整个 Zotero 窗口的宽度，问不出这一列有多窄）。 */
+.kbv-view { container-type: inline-size; }
+@container (max-width: 620px) {
+  .kbv-block { grid-template-columns: minmax(0, 1fr); }
+}

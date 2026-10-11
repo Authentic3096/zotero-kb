@@ -60,6 +60,16 @@ BENIGN = re.compile(
 # 注释行（// 或 * 或 # 开头）—— 文档里的举例不算
 COMMENT = re.compile(r"^\s*(//|\*|/\*|#)")
 
+# 第三方 vendor 代码（原样引入的压缩库：markdown-it / KaTeX）：
+# 「盘符路径」这条启发式在压缩 JS 里必然误报（本机实测 markdown-it 的正则里
+# 有一处 `p:\/\/` 被 ABS_PATH 命中）。所以 vendor 只保留 SENSITIVE 那条 ——
+# 开发机目录名/用户名在 vendor 里出现，一样是问题。
+VENDOR_PREFIX = "content/vendor/"
+
+
+def is_vendor(name: str) -> bool:
+    return name.replace("\\", "/").startswith(VENDOR_PREFIX)
+
 
 def strip_code(text: str) -> list[tuple[int, str]]:
     """返回 [(行号, 行内容)]，跳过注释行。"""
@@ -85,7 +95,10 @@ def check_xpi(path: str) -> tuple[int, list[str]]:
             except UnicodeDecodeError:
                 continue
             for lineno, line in strip_code(text):
-                if not ABS_PATH.search(line) and not SENSITIVE.search(line):
+                sensitive = SENSITIVE.search(line)
+                if is_vendor(name) and not sensitive:
+                    continue      # 压缩库：只保留"开发机痕迹"那条
+                if not ABS_PATH.search(line) and not sensitive:
                     continue
                 if BENIGN.search(line):
                     continue      # 动态取值 / 系统常量 / 环境变量

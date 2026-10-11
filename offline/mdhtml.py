@@ -43,6 +43,11 @@ RE_BLOCK_MATH = re.compile(r"\$\$(.+?)\$\$", re.S)
 RE_BRACKET_MATH = re.compile(r"\\\[(.+?)\\\]", re.S)
 # 行内单美元：`$x^2$`（我们自己的视图只用 `$$`，但用户笔记/别的 md 里会出现）
 RE_INLINE_MATH = re.compile(r"(?<!\$)\$([^$\n]+)\$(?!\$)")
+# 内联 HTML 白名单：只放行这几个**无属性**标签。
+# MinerU 会把 PDF 里的上下标原样带出来（`MRD<sub>i</sub> (%)`），而 _html.escape
+# 会把它转义成可见的原文。⚠ 必须**逐个标签精确匹配** —— 绝不能写成 `<s.*>` 这类
+# 宽松正则（那会把 `<script>` 放进来；本文件的输出是被直接 innerHTML 的）。
+RE_OK_TAG = re.compile(r"</?(?:sub|sup|br|b|i|em|strong)\s*/?>", re.I)
 # markdown 管道表：一整行都被 `|` 包起来才算（避免误吞普通正文里的竖线）
 RE_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 # 分隔行：|---|:--:|---|
@@ -61,8 +66,14 @@ def latex_to_mathml(tex: str, display: str = "inline") -> str:
     except Exception:      # noqa: BLE001
         out = ""
     if not out or "<math" not in out:
-        # 转不了就原样显示（用户至少能看到公式长什么样，而不是一片空白）
-        out = ('<code style="background:rgba(127,127,127,0.15); padding:0 3px;'
+        # 转不了就原样显示（用户至少能看到公式长什么样，而不是一片空白）。
+        # 2026-10-11：加 class + title 标记 —— 读 .html 孪生的人要能一眼看出
+        # 「这是渲染器没能转换」，而不是以为正文里本来就是一段等宽的 LaTeX。
+        # 真库实测：1314 个块公式里 latex2mathml 转不了 4 个（其中 3 个是**源
+        # LaTeX 本身坏了**：环境不配对 / 被截断，KaTeX 也救不回来）。
+        out = ('<code class="kb-fml-fail"'
+               ' title="公式未能转换为 MathML，下面是原始 LaTeX"'
+               ' style="background:rgba(127,127,127,0.15); padding:0 3px;'
                ' border-radius:3px;">' + _html.escape(tex) + "</code>")
     _math_cache[key] = out
     return out
@@ -79,10 +90,19 @@ def _inline(text: str) -> str:
         slots.append(latex_to_mathml(m.group(1).strip(), disp))
         return "\x00M%d\x00" % (len(slots) - 1)
 
+    def stash_raw(lit):
+        """白名单标签也走同一套占位符：转义之后原样换回来。"""
+        slots.append(lit)
+        return "\x00M%d\x00" % (len(slots) - 1)
+
     s = RE_BLOCK_MATH.sub(lambda m: stash(m, "inline"), s)
     s = RE_BRACKET_MATH.sub(lambda m: stash(m, "block"), s)
     # 行内单美元放最后：`$$…$$` 已经被换成占位符，剩下的 `$…$` 才是行内公式
     s = RE_INLINE_MATH.sub(lambda m: stash(m, "inline"), s)
+
+    # 白名单内联标签（MinerU 从 PDF 里带出来的 <sub>/<sup>/<br>）先换成占位符，
+    # 转义之后再原样换回 —— 复用上面那套 \x00M%d\x00 机制。
+    s = RE_OK_TAG.sub(lambda m: stash_raw(m.group(0)), s)
 
     s = _html.escape(s)
     s = re.sub(r"`([^`]+)`", r"<code>\1</code>", s)

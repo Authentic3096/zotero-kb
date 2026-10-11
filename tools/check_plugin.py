@@ -316,6 +316,33 @@ def main() -> int:
             if not ok2:
                 problems.append(f"content/{fn} 有语法错")
 
+    # 侧栏页面的 **markdown 管线**：用 node 把 vendored 的 markdown-it + KaTeX
+    # 与页面里那三条规则真跑一遍（tools/verify_kbview_md.js）。
+    # ⚠ 为什么单列一条：那个脚本的判据是**渲染结果的质量**（图片真的是 <img>、
+    #   公式真的是 KaTeX），而不是"没抛异常" —— 页面自己有 try/catch，异常只会
+    #   表现为"整页退化成一个大 <p> 纯文本"（2026-10-11 真人反馈的那个 bug：
+    #   图片标签文本里带公式 → skipToken 抛 → 整页报废，而按块编辑又是好的）。
+    print("\n[侧栏页面 markdown 管线]")
+    vmjs = os.path.join(HERE, "verify_kbview_md.js")
+    if not os.path.exists(vmjs):
+        print("  [XX] 缺 tools/verify_kbview_md.js —— 这一条检查会静默失效")
+        problems.append("缺 tools/verify_kbview_md.js")
+    else:
+        node_bin = shutil.which("node") or r"C:\Program Files\nodejs\node.exe"
+        try:
+            out = subprocess.run([node_bin, vmjs], capture_output=True, text=True,
+                                 encoding="utf-8", errors="replace", timeout=120)
+            tail = [ln for ln in (out.stdout or "").split("\n") if ln.strip()]
+            bad_lines = [ln for ln in tail if ln.startswith("  FAIL")]
+            for ln in tail:
+                if ln.startswith("  PASS") or ln.startswith("  FAIL") or ln.startswith("通过"):
+                    print("  " + ln.strip())
+            if out.returncode != 0 or bad_lines:
+                problems.append(f"侧栏 markdown 管线有 {len(bad_lines)} 项没过")
+        except Exception as exc:  # noqa: BLE001
+            print(f"  [XX] 这项检查自己崩了：{type(exc).__name__}: {exc}")
+            problems.append(f"侧栏 markdown 管线检查跑不起来：{exc}")
+
     # 生命周期函数（Zotero 会直接调这几个）
     for fn in ("startup", "shutdown", "install", "uninstall"):
         if re.search(rf"^\s*{fn}:\s*function", src, re.M):

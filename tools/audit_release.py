@@ -59,6 +59,20 @@ SKIP_PREFIXES = ("_kb-backup-",)
 EXTS = {".py", ".js", ".mjs", ".xhtml", ".html", ".json", ".md", ".txt",
         ".cmd", ".vbs", ".ps1", ".yml", ".yaml", ".toml", ".cfg", ".ini"}
 
+# 第三方 vendor 代码（**原样**引入的压缩库：markdown-it / KaTeX，2026-10-11 进
+# 「知识库」侧栏页面）。它们只做「真实性」检查 —— 密钥、用户目录、开发机目录名
+# 一律照抓；但**不做启发式检查**：压缩过的 JS 里「32 位随机串」「盘符路径」
+# 这两条必然误报（本机实测 KaTeX + markdown-it 一共 6 条，全是正则/模板字符串
+# 的碎片）。白名单按**前缀**列 —— 以后再加 vendor 库不用改这里。
+#
+# ⚠ 这个豁免只认「原样引入」：vendor 目录里绝不能放我们自己写的代码，
+#   否则它就绕过了整份审计。纪律写在 docs/DEVELOPMENT.md。
+VENDOR_PREFIX = "zotero-plugin/content/vendor/"
+
+
+def is_vendor(rel: str) -> bool:
+    return rel.replace("\\", "/").startswith(VENDOR_PREFIX)
+
 PASS = FAIL = 0
 PROBLEMS: list[str] = []
 
@@ -113,6 +127,7 @@ def audit_privacy():
     leaks: list[str] = []
     for p in iter_files():
         rel = os.path.relpath(p, ROOT)
+        vendor = is_vendor(rel)          # 第三方压缩库：跳过启发式（见 VENDOR_PREFIX）
         txt = read(p)
         for i, ln in enumerate(txt.split("\n"), 1):
             # 注释里举例说明的不算（例如 "sk-... 从服务商后台复制"）
@@ -126,7 +141,7 @@ def audit_privacy():
                     if "EXAMPLE" in val.upper() or "PLACEHOLDER" in val.upper():
                         continue
                     leaks.append(f"{rel}:{i}  {what}  {val[:20]}…")
-            for m in RANDOM32.finditer(ln):
+            for m in ([] if vendor else RANDOM32.finditer(ln)):
                 val = m.group(0)
                 # 排除：文件路径片段、常见词、markdown 分隔线、我们自己的 id
                 if any(k in val.lower() for k in
@@ -254,6 +269,10 @@ def audit_paths():
         base = os.path.basename(rel)
         # 一次性排查脚本按用户要求不管（它们不进任何发布物）
         if rel in DEV_SCRIPTS:
+            continue
+        # 第三方压缩库：盘符路径那条在压缩 JS 里必然误报（见 VENDOR_PREFIX）。
+        # 开发机目录名/用户目录那两条仍照跑（在各自的循环里，不受这里影响）。
+        if is_vendor(rel):
             continue
         generated = is_generated(rel, ignored)
         for i, ln in enumerate(read(p).split("\n"), 1):

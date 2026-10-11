@@ -1,31 +1,42 @@
 <!doctype html>
 <!--
-  kbview.html —— 「知识库」独占侧栏的界面（跑在 XUL <browser> 里的普通 HTML 文档）
+  kbview.html —— 「知识库」侧栏的界面（跑在 XUL <browser> 里的普通 HTML 文档）
+
+  **同一份页面服务两处**（2026-10-11 派发包 §四）：
+    · 条目窗格那一列（点 rail 最下面的图标）
+    · Zotero 阅读器右侧那一列（工具栏「对照」按钮，或 rail 图标）
+  两处只是宿主的落点不同，页面一个字都不用改。
 
   为什么是**独立的 HTML 文档**而不是往 XUL 窗格里塞 innerHTML：
     · 主窗口是 XUL 文档，往里塞 HTML 片段会按 XML 解析 —— 一个没闭合的 <br>
       就让整段内容被静默丢弃（2026-10-05 实测，用户看到的正是"读了 34414 字、
       正文一片空白"）；
     · 这里可以**正常写 CSS**：overflow-wrap:anywhere、max-width:100%、
-      MathML 公式、宽表格的横向滚动，一次到位。
+      公式、宽表格的横向滚动，一次到位；
+    · 这里的脚本**会执行**（主窗口里 innerHTML 注入的不会），所以能跑
+      markdown-it + KaTeX。
 
   分工（重要）：
     · **宿主（插件沙箱）负责取数据** —— 它对 IOUtils / Zotero.HTTP / kbDir 有权限，
-      也已经有 kbLevels()/kbviewFixImgs()/doc-edit 那一整套；
-    · **这个页面只负责渲染与交互** —— 通过 postMessage 拿正文 HTML，
-      用户的动作（切级别 / 重新读取 / 改这一页 / 收起）也通过 postMessage 回传。
+      也已经有 kbLevels() / doc-edit / 分块 那一整套；
+    · **这个页面只负责渲染与交互** —— 通过 JSON 字符串拿正文，
+      用户的动作（切级别 / 重新读取 / 改这一页 / 收起）也原路回传。
   这样"数据在哪"只有一处事实来源，页面里不重复实现一遍权限逻辑。
 
-  ⚠ 不要把脚本 / 样式**内联**进这个文件：chrome 文档可能有 CSP，
-     外链资源最稳（参考实现 zotero-agent 也是外部 script + link）。
-  ⚠ 不要在这里引第三方库（markdown-it / KaTeX 等）：正文直接吃服务端渲染好的
-     fulltext/<key>.html 孪生（MathML + 图片 + 表格都齐），暂不需要。
+  ⚠ 仍然不要把脚本 / 样式**内联**进这个文件（chrome 文档可能有 CSP），
+     外链资源最稳。
+
+  vendored（**原样引入、不放 CDN、离线可用**，派发包 §3.1）：
+    · markdown-it 14.1.0  —— Markdown → HTML（MIT）
+    · KaTeX 0.16.11       —— 公式排版（MIT，字体一起拷进 content/vendor/katex/fonts/）
+  两者都在 content/vendor/ 下，各自带 LICENSE；audit_release 已登记白名单。
 -->
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="color-scheme" content="light dark">
   <title>知识库预览</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="kbview.css">
 </head>
 <body>
@@ -45,10 +56,12 @@
               title="重新从磁盘读一次">重新读取</button>
       <span id="kbv-hint" class="kbv-hint"></span>
       <button id="kbv-close" class="kbv-btn kbv-close" type="button"
-              title="收起（回到 Zotero 原生的条目分区）">✕</button>
+              title="收起（回到 Zotero 原生的那一列）">✕</button>
     </header>
     <main id="kbv-view" class="kbv-view" tabindex="0"></main>
   </div>
+  <script src="vendor/markdown-it/markdown-it.min.js"></script>
+  <script src="vendor/katex/katex.min.js"></script>
   <script src="kbview.js"></script>
 </body>
 </html>

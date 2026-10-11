@@ -591,9 +591,11 @@ if (KB) {
     && kvSrc.indexOf("kbvReceive") >= 0);
   check("定时器走 Services.tm（沙箱的 setTimeout 不可靠）",
     kvSrc.indexOf("Services.tm") >= 0 && kvSrc.indexOf("newTimer") >= 0);
-  check("页面优先读 .html（公式渲染），没有才回退 md",
-    kvSrc.indexOf('.md$/i, ".html"') >= 0
-    && kvSrc.indexOf("公式已渲染") >= 0);
+  check("正文默认不读 .html 孪生（页面里用 markdown-it + KaTeX 渲染），只有降级模式要它",
+    // 2026-10-11 改版：服务端 latex2mathml 渲染不了 aligned 环境，页面改吃 md
+    kvSrc.indexOf("wantHtml") >= 0
+    && kvSrc.indexOf("kbviewImgBase") >= 0
+    && kvSrc.indexOf("公式已渲染") < 0);
   const pageHtml = fs.readFileSync(
     path.join(PLUGIN, "content", "kbview.html"), "utf8");
   check("content/kbview.html 外链了自己的 css/js（不内联，避开 CSP）",
@@ -621,12 +623,113 @@ if (KB) {
     //   会被我们自己的 "`.kbv-page-head`（工具条）" 误判成"用错类名"。
     pageCss.indexOf(".kb-page {") >= 0
     && pageCss.indexOf(".kb-page:first-of-type") >= 0);
-  check("点图看原图走 data-kbv-path（不再自己解 file:// 路径）",
-    pageJs.indexOf("data-kbv-path") >= 0
-    && pageJs.indexOf("openPath") >= 0
-    && pageJs.indexOf("charAt(0)") < 0);
+  check("点图看原图：页面把相对路径交回宿主（data-kbv-src → openImage）",
+    pageJs.indexOf("data-kbv-src") >= 0
+    && pageJs.indexOf("openImage") >= 0
+    && kvSrc.indexOf("kbviewOpenImage") >= 0
+    && kvSrc.indexOf("indexOf(\"..\") >= 0") >= 0);
   check("侧栏页面导出了 kbvReceive（宿主直接调它送内容）",
     pageJs.indexOf("window.kbvReceive") >= 0);
+
+  // ---- 逐块编辑 / 初始页定位 / 阅读器工具栏（派发包 §二 §三）
+  check("编辑器：左等宽编辑框 + 右该块实时预览 + 改动过的块标黄",
+    pageJs.indexOf("kbv-block-text") >= 0
+    && pageJs.indexOf("kbv-block-prev") >= 0
+    && pageJs.indexOf("kbv-dirty") >= 0
+    && pageCss.indexOf(".kbv-block.kbv-dirty") >= 0);
+  check("编辑器有「整页源码」开关，且一律软换行（不再有几万像素的长行）",
+    pageJs.indexOf("整页源码") >= 0
+    && pageJs.indexOf('"soft"') >= 0
+    && pageCss.indexOf("white-space: pre-wrap") >= 0);
+  check("打开那一列就停在正在读的那一页（**初始页**，不是跟随）",
+    pageJs.indexOf("showPage") >= 0
+    && pageJs.indexOf('data-kbpage="') >= 0
+    && kvSrc.indexOf("kbviewReaderPage") >= 0
+    && kvSrc.indexOf("kbviewReaderInfo") >= 0);
+  check("按页跟随已彻底去掉：宿主没有自动重推的调用点、页面不跟",
+    // 2026-10-11 用户拍板（派发包《去跟随与上下标》§一）：跟随"没生效也不用要了"。
+    // 顺带：那也是一处周期性重渲染，是"渲染偶尔抽搐"最可疑的来源。
+    // ⚠ 判据不是"再没有 type:\"page\" 这个字符串" —— 保留下来的
+    //   kbviewFanoutPage（一次性推当前页）内部还在用这个消息；要钉住的是
+    //   **没有自动调用点**：没有 pageChange 分支、没有 poll 那一拍的重推。
+    kvSrc.indexOf("self.kbviewFanoutPage(") < 0
+    && kvSrc.indexOf('event === "pageChange"') < 0
+    && kvSrc.indexOf("host.lastPage = page;") < 0
+    && pageJs.indexOf("followPage") < 0
+    && pageJs.indexOf('msg.type === "page"') < 0);
+  check("kbviewFanoutPage 与 Notifier 保留（派发包 §一：别整体删掉）",
+    kvSrc.indexOf("kbviewFanoutPage: function") >= 0
+    && kvSrc.indexOf('}, ["tab"], self.id + "-kbview")') >= 0
+    && kvSrc.indexOf("kbviewRegisterNotifier") >= 0);
+  check("页工具条吸顶：每页的「p.n / 改这一页 / 恢复原版」粘在顶边（要有不透明背景）",
+    pageCss.indexOf("position: sticky") >= 0
+    && pageCss.indexOf("border-bottom: 1px solid var(--kbv-line)") >= 0
+    && pageCss.indexOf("background: var(--kbv-bg)") >= 0
+    // ⚠ 条上方不能留缝：sticky 的 top 是从滚动口内容盒量起的，必须抵消
+    //   .kbv-view 的 padding-top，而这两处共用 --kbv-view-pad（改一处即可）
+    && pageCss.indexOf("padding: var(--kbv-view-pad) 8px 24px") >= 0
+    && pageCss.indexOf("top: calc(-1 * var(--kbv-view-pad))") >= 0
+    && pageCss.indexOf("padding: var(--kbv-view-pad) 0 4px") >= 0);
+  check("排不了的公式退回等宽原文并标 kbv-tex-fail（不是一大片红字）",
+    pageJs.indexOf("kbv-tex-fail") >= 0
+    && pageJs.indexOf("throwOnError: true") >= 0
+    && pageCss.indexOf(".kbv-tex-fail") >= 0);
+  check("阅读器工具栏「对照」按钮走 renderToolbar（必须同步 append）",
+    kvSrc.indexOf('registerEventListener("renderToolbar"') >= 0
+    && kvSrc.indexOf("kbviewAddToolbarButton") >= 0
+    && kvSrc.indexOf("synchronously") >= 0);
+  check("两列不能同时开（kbviewOpen 里也兜一次）",
+    kvSrc.indexOf("if (self.kbviewIsOpen(win, other)) self.kbviewClose(win, other);") >= 0);
+
+  // ---- 分块：块之间保留原文分隔符，拼回去必须**一字不差**
+  const pageMd = [
+    "# 标题", "", "第一段", "续行", "", "$$E = m c^2$$", "", "结语",
+    "", "| a | b |", "| --- | --- |", "| 1 | 2 |", "", "![图](images/a.jpg)", "尾行",
+  ].join("\n");
+  const blk = KB.kbviewSplitBlocks(pageMd);
+  check("kbviewSplitBlocks 能一字不改地拼回去（kbviewJoinBlocks）",
+    KB.kbviewJoinBlocks(blk) === pageMd, JSON.stringify(blk));
+  check("kbviewSplitBlocks 把独立公式 / 表格 / 图片行各自切成一块",
+    blk.blocks.indexOf("$$E = m c^2$$") >= 0
+    && blk.blocks.indexOf("| a | b |\n| --- | --- |\n| 1 | 2 |") >= 0
+    && blk.blocks.indexOf("![图](images/a.jpg)") >= 0,
+    JSON.stringify(blk.blocks));
+  check("kbviewSplitBlocks 段内单换行仍属同一块",
+    blk.blocks.indexOf("第一段\n续行") >= 0, JSON.stringify(blk.blocks));
+  check("kbviewSplitBlocks 空输入不抛，且拼得回来",
+    KB.kbviewJoinBlocks(KB.kbviewSplitBlocks("")) === ""
+    && KB.kbviewJoinBlocks(KB.kbviewSplitBlocks(null)) === "");
+  check("kbviewJoinBlocks 对缺字段的 parts 也不抛",
+    KB.kbviewJoinBlocks({ blocks: ["a"] }) === "a"
+    && KB.kbviewJoinBlocks(null) === "");
+  const realParts = KB.kbviewSplitBlocks(
+    "# H\n\n文字。\n\n$$x^2$$\n\n| a |\n| --- |\n| 1 |\n\n尾\n");
+  check("真形态样例（末尾换行 + 多空行）也能一字不改地往返",
+    KB.kbviewJoinBlocks(realParts) ===
+      "# H\n\n文字。\n\n$$x^2$$\n\n| a |\n| --- |\n| 1 |\n\n尾\n");
+
+  // ---- vendored 第三方库：漏了就是"公式不渲染，而且不报错"
+  const vdir = path.join(PLUGIN, "content", "vendor");
+  for (const rel of ["markdown-it/markdown-it.min.js",
+                     "katex/katex.min.js", "katex/katex.min.css",
+                     "katex/fonts/KaTeX_Main-Regular.woff2"]) {
+    check("vendored 第三方库在包里：" + rel,
+      fs.existsSync(path.join(vdir, rel)));
+  }
+  let licOk = true;
+  for (const n of ["markdown-it", "katex"]) {
+    if (!fs.existsSync(path.join(vdir, n, "LICENSE"))) licOk = false;
+  }
+  check("vendored 第三方库都带了 LICENSE（MIT，发布面要求）", licOk);
+  check("页面从 vendor/ 引 KaTeX 与 markdown-it（不放 CDN，离线可用）",
+    pageHtml.indexOf('href="vendor/katex/katex.min.css"') >= 0
+    && pageHtml.indexOf('src="vendor/markdown-it/markdown-it.min.js"') >= 0
+    && pageHtml.indexOf('src="vendor/katex/katex.min.js"') >= 0
+    && pageHtml.indexOf("cdn.jsdelivr") < 0
+    && pageHtml.indexOf("unpkg") < 0);
+  check("打包器会递归收 content/vendor/**（否则 KaTeX 进不了包）",
+    fs.readFileSync(path.join(__dirname, "..", "tools", "pack_plugin.py"), "utf8")
+      .indexOf('RECURSE_DIRS = ("locale", "content")') >= 0);
 
   // ---- md2html：知识库 md 里真正用到的语法（纯函数，最容易出错的一块）
   const html = KB.md2html([
@@ -700,7 +803,11 @@ if (KB) {
     KB.kbviewPickLevel("outline", () => false).levelId === "");
   check("存在性判断抛异常也不炸",
     KB.kbviewPickLevel("outline", () => { throw new Error("x"); }).levelId === "");
-  check("没有注册阅读器选中入口（随窗格一起删了）", calls.readers.length === 0,
+  // 阅读器那边只允许注册 renderToolbar（「对照」按钮）。旧的"选中入口"
+  // （renderTextSelectionPopup 那批）随窗格一起删了，不许被加回来。
+  check("阅读器只注册了 renderToolbar（旧的选中入口没被加回来）",
+    calls.readers.length >= 1
+    && calls.readers.every((r) => r.type === "renderToolbar"),
     JSON.stringify(calls.readers.map((r) => r.type)));
   check("startup 里不再有窗格/退出提醒那三步",
     steps.indexOf("registerItemPane") < 0

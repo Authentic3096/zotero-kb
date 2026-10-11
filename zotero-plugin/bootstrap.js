@@ -6880,7 +6880,7 @@ Object.assign(ZoteroKB, {
     let h = m.get(win) || null;
     if (!h && create) {
       h = { win: win, lib: null, read: null, timer: null, timerArmed: false,
-            lastKey: "", onMessage: null };
+            lastKey: "", lastPage: 0, onMessage: null };
       m.set(win, h);
     }
     return h;
@@ -6975,6 +6975,17 @@ Object.assign(ZoteroKB, {
       Zotero.debug("[zotero-kb] 阅读器那列没装成（不影响条目库）：" + e2);
     }
     if (!host.onMessage) self.kbviewOnWindowMessage(win);
+    // 阅读器侧的两个全局东西（幂等；放在这里 = 有主窗口就一定装上）：
+    //   · Notifier 的 pageChange —— 翻页时立刻把右边滚到同一页（见 kbviewOnNotify）
+    //   · 阅读器工具栏的「对照」按钮（见 kbviewRegisterReaderToolbar）
+    try { self.kbviewRegisterNotifier(); }
+    catch (e3) { Zotero.debug("[zotero-kb] 注册侧栏 Notifier 失败：" + e3); }
+    try { self.kbviewRegisterReaderToolbar(); }
+    catch (e4) { Zotero.debug("[zotero-kb] 注册阅读器工具栏按钮失败：" + e4); }
+    // ⚠ 会话恢复出来的阅读器**早于**我们注册 renderToolbar，收不到那个一次性
+    //   事件 —— 所以注册完再"补注入"一次（见 kbviewInjectToolbarButton）。
+    try { self.kbviewLateDispatch(function () { self.kbviewEnsureReaderToolbar(); }, 1500); }
+    catch (e5) { /* ignore */ }
     return true;
   },
 
@@ -7202,6 +7213,10 @@ Object.assign(ZoteroKB, {
     var self = ZoteroKB;
     const host = self.kbviewHost(win, true);
     if (!host) return false;
+    // 两列都占地方，**不能同时开**（派发包 §一）。kbviewToggle 已经处理了
+    // 点按钮那条路；这里再兜一次，防止别的代码路径直接调 kbviewOpen。
+    const other = kind === "reader" ? "library" : "reader";
+    if (self.kbviewIsOpen(win, other)) self.kbviewClose(win, other);
     const slot = kind === "reader" ? "read" : "lib";
     if (!host[slot]) {
       let ok = false;
@@ -7383,6 +7398,19 @@ Object.assign(ZoteroKB, {
     }
     if (t === "exportDraft") { self.kbviewExportDraft(win, kind); return; }
     if (t === "savePage") { self.kbviewSavePage(win, kind, msg.page, msg.text); return; }
+    // 按块编辑：页面把每块的文本交回来，由**宿主**用它原来那份 parts 拼回整页
+    // （拼法是纯函数 kbviewJoinBlocks，桩测试直接测；页面不重复实现一遍）。
+    if (t === "saveBlocks") {
+      let text = "";
+      try { text = self.kbviewJoinBlocks(msg.parts); } catch (e) { text = ""; }
+      if (!text) {
+        self.kbviewHint(win, kind, "拼不回整页正文（parts 不完整），没有保存。");
+        return;
+      }
+      self.kbviewSavePage(win, kind, msg.page, text);
+      return;
+    }
+    if (t === "openImage") { self.kbviewOpenImage(win, kind, msg.rel); return; }
     if (t === "restorePage") { self.kbviewSavePage(win, kind, msg.page, null); return; }
   },
 
@@ -7442,17 +7470,26 @@ Object.assign(ZoteroKB, {
   /**
    * 组装给页面的一份内容（宿主把该读的文件都读好，页面只管画）。
    * 返回纯数据（可 JSON 化）。
+   *
+   * ⚠ 2026-10-11 起**默认不再读 `.html` 孪生**：正文与公式都在页面里用
+   *   markdown-it + KaTeX 渲染（配方与理由见 content/kbview.js 文件头）。
+   *   只有**降级模式**（退回 ItemPaneManager 分区，跑在主窗口的 XUL 文档里，
+   *   innerHTML 注入的 <script> 不执行）才要服务端那份带 MathML 的 HTML ——
+   *   那时调用方传 opts.wantHtml。
    */
-  kbviewPayloadForItem: async function (item, prefer) {
+  kbviewPayloadForItem: async function (item, prefer, opts) {
     var self = ZoteroKB;
+    const wantHtml = !!(opts && opts.wantHtml);
     let levels = [];
     try { levels = self.kbLevels() || []; } catch (e) { levels = []; }
     const out = {
       key: "", title: "",
       levels: levels.map(function (lv) { return { id: lv.id, label: lv.label }; }),
       level: self.kbviewLevel(), picked: "", fellBack: false, hint: "",
-      html: "", textLength: 0, isHtml: false, fulltext: false,
-      pages: {}, edited: [], stale: [],
+      md: "", pages: {}, order: [], imgBase: "",
+      html: "", textLength: 0, fulltext: false,
+      page: (opts && opts.page) || 0,
+      edited: [], stale: [],
       empty: false, emptyWhy: "", probe: "",
       font: self.kbviewFont(), busy: false,
     };
@@ -7489,35 +7526,44 @@ Object.assign(ZoteroKB, {
     }
     const path = (byId[picked.levelId] || {}).path
       || self.kbviewPath(picked.levelId, out.key);
-    // 优先读同名 .html（LaTeX 已渲染成 MathML，Firefox 原生显示公式）；
-    // 没有才退回 md，由 md2html 现场渲染（那时公式是原文文本）。
-    const htmlPath = String(path).replace(/\.md$/i, ".html");
+    // 读 **markdown** 原文（页面自己渲染）。降级模式才另外读一次 .html 孪生。
     let text = "";
-    let isHtml = false;
-    try {
-      if (self._exists(htmlPath)) { text = await IOUtils.readUTF8(htmlPath); isHtml = true; }
-    } catch (e5) { /* 读不到就走 md */ }
-    if (!text) {
-      try { text = await IOUtils.readUTF8(path); } catch (e6) { text = ""; }
-    }
-    let html = isHtml ? text : self.md2html(text);
-    html = self.kbviewFixImgs(html, out.key);
-    out.html = html;
+    try { text = await IOUtils.readUTF8(path); } catch (e6) { text = ""; }
+    out.md = text;
     out.textLength = text.length;
-    out.isHtml = isHtml;
+    out.imgBase = self.kbviewImgBase(out.key);
     out.fulltext = picked.levelId === "fulltext";
+    if (wantHtml) {
+      // 降级模式：页面脚本跑不了（主窗口 XUL 文档里的 innerHTML 不执行 <script>），
+      // 只能吃服务端渲染好的 MathML 孪生 —— 那是 mdhtml.py 的产物。
+      let html = "";
+      try { html = await IOUtils.readUTF8(String(path).replace(/\.md$/i, ".html")); }
+      catch (e7) { html = ""; }
+      if (!html) html = self.md2html(text);
+      out.html = self.kbviewFixImgs(html, out.key);
+    }
     const label = (byId[picked.levelId] || {}).label || picked.levelId;
     out.hint = label
       + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
-      + "　" + text.length + " 字"
-      + (isHtml ? "　公式已渲染" : "　公式为原文文本");
+      + "　" + text.length + " 字";
     if (out.fulltext) {
-      // 逐页编辑要的是 **markdown 源文本**（图片行、公式、表格都是 markdown）——
-      // 服务端渲染好的 HTML 里拿不回来，所以这里单独读一次 .md。
-      let mdText = "";
-      try { mdText = await IOUtils.readUTF8(path); } catch (e7) { mdText = ""; }
-      if (!mdText && !isHtml) mdText = text;
-      try { out.pages = self.kbviewSplitMd(mdText); } catch (e8) { out.pages = {}; }
+      // 逐页正文：先按 "## p.N" 切页，每页再按块切开（空行分段 / 独立公式 /
+      // 表格整块 / 图片行单独一块 —— 派发包 §3.2 的口径）。
+      // 分块是**纯函数**（kbviewSplitBlocks），桩测试直接测它。
+      let byPage = {};
+      try { byPage = self.kbviewSplitMd(text); } catch (e8) { byPage = {}; }
+      const pages = {};
+      const order = [];
+      for (const kk of Object.keys(byPage)) {
+        const n = parseInt(kk, 10);
+        if (!n) continue;
+        pages[String(n)] = self.kbviewSplitBlocks(byPage[kk]);
+        order.push(n);
+      }
+      order.sort(function (a, b) { return a - b; });
+      out.pages = pages;
+      out.order = order;
+      out.md = "";                      // 逐页时整份 md 不必再传（省一半体积）
       let meta = {};
       try { meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(out.key)); }
       catch (e9) { meta = {}; }
@@ -7535,7 +7581,14 @@ Object.assign(ZoteroKB, {
     const dock = kind === "reader" ? host.read : host.lib;
     if (!dock) return false;
     let payload = null;
-    try { payload = await self.kbviewPayloadForItem(self.kbviewCurrentItem(win), prefer); }
+    let opts = null;
+    if (kind === "reader") {
+      // 阅读器那一列要"打开就停在正在读的那一页"
+      const info = self.kbviewReaderInfo(win);
+      opts = { page: info ? info.page : 0 };
+      if (opts.page) host.lastPage = opts.page;
+    }
+    try { payload = await self.kbviewPayloadForItem(self.kbviewCurrentItem(win), prefer, opts); }
     catch (e) {
       Zotero.debug("[zotero-kb] 组装侧栏内容失败：" + e);
       return false;
@@ -7571,6 +7624,15 @@ Object.assign(ZoteroKB, {
     }
     if (host.read && host.read.open && !host.read.ready) {
       try { self.kbviewAttachBridge(win, "reader"); } catch (e1) { /* 下一拍再试 */ }
+    }
+    // ⚠ 这里**不再**做「按页跟随」（2026-10-11 用户拍板：跟随没生效也不用要了，
+    //   手动翻找并不麻烦）—— 功能与代码一起去掉，见 kbviewFanoutPage 的注释。
+    //   原来这里是 400ms 一轮的兜底重推（主路径是 Notifier 的 file/pageChange）。
+    //   顺带：那也是一处**周期性重渲染**，是"渲染偶尔抽搐"最可疑的来源。
+    if (host.read && host.read.open && !self.kbviewHasReader(win)) {
+      // 阅读器标签全关了就把这一列收起来 —— 否则状态上"还开着"，
+      // 定时器空转，用户再打开时会觉得"没关干净"（派发包 §五 第 6 条）。
+      try { self.kbviewClose(win, "reader"); } catch (e6) { /* ignore */ }
     }
     const item = self.kbviewCurrentItem(win);
     let key = "";
@@ -7652,6 +7714,12 @@ Object.assign(ZoteroKB, {
     }
     return false;
   },
+
+  // ⚠ 2026-10-11 用户反馈后**删掉了 kbviewOpenDoc**（以及页面上的「对照页」按钮）：
+  //   阅读器右侧那一列已经能直接对着 PDF 看（同一个窗口、同一份正文），再跳一次
+  //   浏览器反而多一步。服务端那几个 GET 端点（/doc、/doc-text、/doc-raw、
+  //   /doc-page.png、/kb-image）**留着**，是"不装插件也能在浏览器里看渲染"
+  //   的兜底路径（派发包 §四：不删、但本包不再投入）；只是插件里不再有入口。
 
   /** 保存 / 恢复一页正文（text == null 表示恢复原版）。 */
   kbviewSavePage: async function (win, kind, page, text) {
@@ -7766,7 +7834,8 @@ Object.assign(ZoteroKB, {
     const paint = async function (prefer) {
       hint.textContent = "读取中…";
       let payload = null;
-      try { payload = await self.kbviewPayloadForItem(item, prefer); }
+      // 降级模式：跑不了页面脚本，只能吃服务端渲染好的 MathML 孪生
+      try { payload = await self.kbviewPayloadForItem(item, prefer, { wantHtml: true }); }
       catch (e) { payload = null; }
       if (!payload) { hint.textContent = "读取失败"; return; }
       hint.textContent = payload.empty
@@ -7787,6 +7856,401 @@ Object.assign(ZoteroKB, {
     btn.addEventListener("command", () => { paint(sel.value).catch(() => {}); });
     btn.addEventListener("click", () => { paint(sel.value).catch(() => {}); });
     await paint(self.kbviewLevel());
+  },
+
+
+  // ================================================================ 阅读器那一列：取当前页（**不再跟随**）
+
+  /**
+   * 阅读器当前页（**1 起**，对齐知识库的 p.N）。取不到返回 0。
+   *
+   * 两条来源：
+   *   ① reader._state.primaryViewState.pageIndex —— **实时**的内部状态，翻页当场就变；
+   *   ② items 表的「最后阅读页」—— 阅读器每次翻页都会写它（reader.js 的
+   *      _setState：先 setAttachmentLastPageIndex，再
+   *      Zotero.Notifier.trigger('pageChange','file',itemID)），事件到的那一刻它已是新值。
+   * **① 优先**：② 里留着"上次退出时的页码"，先问它会拿到陈旧的页。
+   * 两处都是 **0 起**的，这里 +1。
+   *
+   * ⚠ 2026-10-11 起**只用于打开那一列时的初始页**（翻页**不再**跟随）：
+   *   派发包《去跟随与上下标》§一 要求保留「取当前页」的能力 —— 打开阅读器列的
+   *   那一刻用它定位一次就够了。原来还挂过 Notifier 的 file/pageChange 做跟随，
+   *   已随跟随一起去掉（实测 reader.js::_setState 确实会 trigger 它，能跟随，
+   *   但用户拍板不要 —— 手翻一次正文并不麻烦，而周期性重推最像"抽搐"的来源）。
+   */
+  kbviewReaderPage: function (reader) {
+    if (!reader) return 0;
+    let idx = NaN;
+    try {
+      const s = reader._state;
+      if (s && s.primaryViewState
+          && Number.isFinite(s.primaryViewState.pageIndex)) {
+        idx = s.primaryViewState.pageIndex;
+      }
+    } catch (e) { /* 走兜底 */ }
+    if (!Number.isFinite(idx) || idx < 0) {
+      try {
+        const item = Zotero.Items.get(reader.itemID);
+        if (item && item.getAttachmentLastPageIndex) {
+          idx = item.getAttachmentLastPageIndex();
+        }
+      } catch (e2) { /* ignore */ }
+    }
+    if (!Number.isFinite(idx) || idx < 0) return 0;
+    return Math.floor(idx) + 1;
+  },
+
+  /** 当前选中的阅读器标签（不在阅读器页签时返回 null）。 */
+  kbviewReaderInfo: function (win) {
+    if (!win) return null;
+    let reader = null;
+    try {
+      const tabs = win.Zotero_Tabs;
+      if (!tabs || String(tabs.selectedType || "") !== "reader") return null;
+      reader = (Zotero.Reader && Zotero.Reader.getByTabID)
+        ? Zotero.Reader.getByTabID(tabs.selectedID) : null;
+    } catch (e) { reader = null; }
+    if (!reader) return null;
+    return { reader: reader, itemID: reader.itemID,
+             page: ZoteroKB.kbviewReaderPage(reader) };
+  },
+
+  /** 这个窗口里还有没有阅读器？（关干净后要把我们那一列收起来。） */
+  kbviewHasReader: function (win) {
+    try {
+      const tabs = win && win.Zotero_Tabs;
+      if (tabs && String(tabs.selectedType || "") === "reader") return true;
+      const list = tabs && tabs._tabs;
+      if (list && list.length) {
+        for (const t of list) { if (t && String(t.type) === "reader") return true; }
+        return false;
+      }
+    } catch (e) { /* 走下面的兜底 */ }
+    try {
+      const rs = Zotero.Reader && Zotero.Reader._readers;
+      if (rs && rs.length) {
+        for (const r of rs) { if (r && r.itemID && !r._isTabClosed) return true; }
+        return false;
+      }
+    } catch (e2) { /* ignore */ }
+    return true;   // 问不到就当「还有」—— 宁可多留一会儿，也不要乱关
+  },
+
+  /**
+   * Notifier：翻页时立刻把右边滚到同一页；阅读器标签关光了就收起我们那一列。
+   *
+   * 注册 id 推到 self.notifyIDs，shutdown 里统一注销（既有机制）。
+   */
+  kbviewRegisterNotifier: function () {
+    var self = ZoteroKB;
+    if (!Zotero.Notifier || !Zotero.Notifier.registerObserver) return false;
+    if (self._kbvNotifierID
+        && (self.notifyIDs || []).indexOf(self._kbvNotifierID) >= 0) {
+      return true;             // 已经注册过（幂等；kbviewMount 每个窗口都会调）
+    }
+    self._kbvNotifierID = null;
+    try {
+      // ⚠ 只要 tab（选中/新开标签 → 补阅读器工具栏的「对照」按钮）。
+      //   file 原来是给 pageChange（按页跟随）用的，2026-10-11 去跟随之后不再需要。
+      self._kbvNotifierID = Zotero.Notifier.registerObserver({
+        notify: function (event, type, ids) {
+          try { ZoteroKB.kbviewOnNotify(event, type, ids); }
+          catch (e) { Zotero.debug("[zotero-kb] 侧栏通知处理失败：" + e); }
+        },
+      }, ["tab"], self.id + "-kbview");
+      if (self._kbvNotifierID) {
+        if (!self.notifyIDs) self.notifyIDs = [];
+        if (self.notifyIDs.indexOf(self._kbvNotifierID) < 0) {
+          self.notifyIDs.push(self._kbvNotifierID);
+        }
+      }
+      return !!self._kbvNotifierID;
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 注册侧栏 Notifier 失败：" + e);
+      self._kbvNotifierID = null;
+      return false;
+    }
+  },
+
+  kbviewOnNotify: function (event, type, ids) {
+    var self = ZoteroKB;
+    // ⚠ 这里**不再**处理 file/pageChange：按页跟随已去掉（2026-10-11 用户拍板），
+    //   翻页时右边那一列不再重推、不再重渲染。留下的只有「补工具栏按钮」一条 ——
+    //   会话恢复出来的阅读器是在我们注册 renderToolbar **之前** mount 的，
+    //   那个一次性事件不会再发，只能靠标签事件补挂（见 kbviewInjectToolbarButton）。
+    if (type === "tab" && (event === "select" || event === "add")) {
+      self.kbviewEnsureReaderToolbar();
+    }
+  },
+
+  /**
+   * 一次性把「当前页」推给**已经打开**的阅读器列。
+   *
+   * ⚠ 2026-10-11 起**没有自动调用点**了：按页跟随去掉之后，原来两条自动路径
+   *   （宿主侧 400ms 轮询重推、Notifier 的 file/pageChange）都删了。
+   *   函数本身**保留**（派发包《去跟随与上下标》§一 明确要求"别整体删掉"）：
+   *   它是唯一一处「把当前页一次性推给已打开的列」的逻辑，条目窗格那一列与
+   *   将来真要做的「跳到这一页」按钮都直接调它；真删了这条能力就彻底没有了。
+   */
+  kbviewFanoutPage: function (ids) {
+    var self = ZoteroKB;
+    const m = self.kbviewMap();
+    if (!m) return;
+    const hosts = [];
+    try { m.forEach(function (v) { hosts.push(v); }); } catch (e) { return; }
+    for (const host of hosts) {
+      const dock = host.read;
+      if (!dock || !dock.open) continue;
+      try {
+        const info = self.kbviewReaderInfo(host.win);
+        if (!info || ids.indexOf(info.itemID) < 0) continue;
+        if (!info.page || info.page === host.lastPage) continue;
+        host.lastPage = info.page;
+        self.kbviewSend(dock, { type: "page", page: info.page });
+      } catch (e2) { /* 一个窗口出错不影响别的 */ }
+    }
+  },
+
+  // ================================================================ 阅读器工具栏的「对照」按钮
+
+  /**
+   * 注册阅读器工具栏的「对照」按钮（**一键进入/退出对照模式**，派发包 §二）。
+   *
+   * Zotero.Reader.registerEventListener('renderToolbar', handler, pluginID)：
+   * 阅读器每次渲染工具栏都会发这个事件，handler 拿到
+   * {type, doc, params, append, reader}，**必须同步** append。
+   * pluginID 传了之后，插件停用时 Zotero 会自己把它摘掉（不用手动反注册）。
+   */
+  kbviewRegisterReaderToolbar: function () {
+    var self = ZoteroKB;
+    if (self._kbvReaderToolbar) return true;
+    if (!Zotero.Reader || typeof Zotero.Reader.registerEventListener !== "function") {
+      return false;
+    }
+    self._kbvReaderToolbar = function (event) {
+      try { ZoteroKB.kbviewAddToolbarButton(event); }
+      catch (e) { Zotero.debug("[zotero-kb] 加阅读器「对照」按钮失败：" + e); }
+    };
+    try {
+      Zotero.Reader.registerEventListener("renderToolbar", self._kbvReaderToolbar, self.id);
+      self.writeStatusFile({ kbViewReaderToolbar: "ok" });
+      return true;
+    } catch (e) {
+      self._kbvReaderToolbar = null;
+      self.writeStatusFile({ kbViewReaderToolbar: "FAIL: " + e });
+      return false;
+    }
+  },
+
+  /**
+   * 事件回调里往阅读器工具栏塞按钮。
+   *
+   * ⚠ **必须同步创建并 append**：阅读器那边 append 之后再调用就会抛
+   *   "Append must be called directly and synchronously in the event"
+   *   （见 resource/reader/reader.js 的 CustomSections）。
+   * ⚠ 每次渲染事件都会来、工具栏的 custom-sections 每次都被 replaceChildren 清空，
+   *   所以这里**每次都新建**一个（不是「已存在就跳过」）。
+   */
+  kbviewAddToolbarButton: function (event) {
+    var self = ZoteroKB;
+    const doc = event && event.doc;
+    if (!doc || !doc.createElement || typeof event.append !== "function") return false;
+    let win = null;
+    try { win = Zotero.getMainWindow(); } catch (e) { win = null; }
+    const btn = doc.createElement("button");
+    btn.setAttribute("id", "zotero-kb-kbview-toolbar-button");
+    btn.setAttribute("class", "toolbar-button");
+    btn.setAttribute("title", "对照：右侧显示这一页的知识库正文（一键开 / 关）");
+    btn.textContent = "对照";
+    if (win && self.kbviewIsOpen(win, "reader")) {
+      btn.setAttribute("aria-pressed", "true");
+      btn.setAttribute("data-kbview-open", "true");
+    }
+    btn.addEventListener("click", function () {
+      try {
+        let w = null;
+        try { w = Zotero.getMainWindow(); } catch (e2) { w = null; }
+        self.kbviewToggle(w || win, "reader");
+      } catch (e3) { Zotero.debug("[zotero-kb] 「对照」按钮出错：" + e3); }
+    });
+    event.append(btn);
+    return true;
+  },
+
+  /**
+   * 直接往阅读器工具栏**注入**一个「对照」按钮（幂等）。
+   *
+   * ⚠ 为什么需要它（真机实测，2026-10-11）：renderToolbar 是**一次性**的
+   *   （React 那个 CustomSections 只在 mount 时发一次），而 Zotero 会**在启动时
+   *   恢复会话里的阅读器标签** —— 那些阅读器可能在插件注册监听之前就挂好了，
+   *   于是我们永远收不到事件，工具栏上就没有按钮（现象：阅读器右侧那一列只能
+   *   靠 rail 图标开，工具栏上找不到入口）。
+   *   这里绕过事件、直接把按钮塞进 React 那个 .custom-sections 容器；
+   *   下次阅读器重渲染时会清掉，但那一刻 renderToolbar 会来，又会补上。
+   */
+  kbviewInjectToolbarButton: function (reader) {
+    var self = ZoteroKB;
+    const w = reader && reader._iframeWindow;
+    if (!w) return false;
+    let doc = null;
+    try { doc = w.document; } catch (e) { return false; }
+    if (!doc) return false;
+    if (doc.getElementById("zotero-kb-kbview-toolbar-button")) return true;
+    const host = doc.querySelector(".custom-sections");
+    if (!host) return false;                 // 工具栏还没渲染 → 等下一次
+    const btn = doc.createElement("button");
+    btn.setAttribute("id", "zotero-kb-kbview-toolbar-button");
+    btn.setAttribute("class", "toolbar-button");
+    btn.setAttribute("title", "对照：右侧显示这一页的知识库正文（一键开 / 关）");
+    btn.textContent = "对照";
+    if (self.kbviewIsOpen(Zotero.getMainWindow(), "reader")) {
+      btn.setAttribute("aria-pressed", "true");
+    }
+    btn.addEventListener("click", function () {
+      try { self.kbviewToggle(Zotero.getMainWindow(), "reader"); }
+      catch (e3) { Zotero.debug("[zotero-kb] 「对照」按钮出错：" + e3); }
+    });
+    const section = doc.createElement("div");
+    section.setAttribute("class", "section");
+    section.appendChild(btn);
+    try { host.appendChild(section); } catch (e4) { return false; }
+    return true;
+  },
+
+  /** 把「对照」按钮补到**所有已经挂好的**阅读器工具栏上（幂等）。 */
+  kbviewEnsureReaderToolbar: function () {
+    var self = ZoteroKB;
+    let n = 0;
+    try {
+      const rs = (Zotero.Reader && Zotero.Reader._readers) || [];
+      for (const r of rs) {
+        try { if (self.kbviewInjectToolbarButton(r)) n++; }
+        catch (e) { /* 单个阅读器失败不影响别的 */ }
+      }
+    } catch (e2) { /* ignore */ }
+    return n;
+  },
+
+  // ================================================================ 图片与分块（纯函数）
+
+  /**
+   * 知识库图片的 resource:// 前缀（<kb>/mineru/<key>/ 下的相对路径拼在它后面）。
+   *
+   * ⚠ 为什么走 resource 而不是 file://（老做法）：resource:// 的页面加载
+   *   file:// 图片会被安全策略**拦掉**，图片全空白且不报错（见 KB_FILES_RES）。
+   */
+  kbviewImgBase: function (key) {
+    var self = ZoteroKB;
+    try {
+      const base = self.kbviewFilesURI();
+      if (!base || !key) return "";
+      return base + "mineru/" + String(key) + "/";
+    } catch (e) { return ""; }
+  },
+
+  /** 阅读器栏里点了一张图 → 用系统默认程序打开 <kb>/mineru/<key>/<rel>。 */
+  kbviewOpenImage: function (win, kind, rel) {
+    var self = ZoteroKB;
+    const item = self.kbviewCurrentItem(win);
+    if (!item) return false;
+    let kb = "";
+    try { kb = String(self.kbDir() || "").replace(/[\\/]+$/, ""); } catch (e) { kb = ""; }
+    const r = String(rel == null ? "" : rel).replace(/\\/g, "/").replace(/^\.\//, "");
+    if (!kb || !r) return false;
+    // 只允许相对路径，且不许穿越目录（与 docpage.image_path 同一口径）
+    if (/^[a-z][a-z0-9+.\-]*:/i.test(r) || r.charAt(0) === "/" || r.indexOf("..") >= 0) {
+      return false;
+    }
+    const abs = kb + "\\mineru\\" + String(item.key) + "\\" + r.replace(/\//g, "\\");
+    try {
+      self.openKbPath(abs, "图片原图");
+      return true;
+    } catch (e2) {
+      Zotero.debug("[zotero-kb] 打开原图失败：" + e2);
+      return false;
+    }
+  },
+
+  // 管道表 / 独立公式 / 独立图片行（与 mdhtml.py 同一套判据）
+  KBV_RE_TABLE_ROW: /^\s*\|.*\|\s*$/,
+  KBV_RE_TABLE_SEP: /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/,
+  KBV_RE_LINE_MATH: /^\s*(?:\$\$.+\$\$|\\\[.+\\\])\s*$/,
+  KBV_RE_LINE_IMG: /^\s*!\[[^\]]*\]\([^)]+\)\s*$/,
+
+  /**
+   * 把一页 markdown 切成**块**（派发包 §3.2 的口径），并保留块之间的原文分隔符 ——
+   * **一字不改地拼回去**是硬要求（kbviewJoinBlocks(parts) === 原文，桩测试钉住）：
+   *   · 空行分段；独立成行的 $$…$$ / \[…\] 自成一「块」；
+   *   · 管道表整块；独占一行的图片行单独一块；段内单换行仍属同一块。
+   *
+   * 返回 {prefix, blocks[], seps[], suffix}，拼法就是**纯字符串相加**：
+   *   prefix + blocks[0] + seps[0] + blocks[1] + … + suffix
+   * seps[i] 是 blocks[i] 与 blocks[i+1] 之间的原文（含换行；空行也在里面）。
+   */
+  kbviewSplitBlocks: function (md) {
+    var self = ZoteroKB;
+    const s = String(md == null ? "" : md).replace(/\r\n?/g, "\n");
+    const lines = s.split("\n");
+    const n = lines.length;
+    const off = new Array(n);
+    let acc = 0;
+    for (let i = 0; i < n; i++) { off[i] = acc; acc += lines[i].length + 1; }
+    const endOf = function (i) { return off[i] + lines[i].length; };
+    const blank = function (i) { return !lines[i].trim(); };
+    const lineMath = function (i) { return self.KBV_RE_LINE_MATH.test(lines[i]); };
+    const lineImg = function (i) { return self.KBV_RE_LINE_IMG.test(lines[i]); };
+    const tableAt = function (i) {
+      return i + 1 < n && self.KBV_RE_TABLE_ROW.test(lines[i])
+        && self.KBV_RE_TABLE_SEP.test(lines[i + 1]);
+    };
+    // 先算出每个块覆盖哪些行（[a, b)：左闭右开、互不重叠、按顺序）
+    const region = [];
+    let k = 0;
+    while (k < n) {
+      if (blank(k)) { k++; continue; }
+      let b;
+      if (lineMath(k)) {
+        b = k + 1;
+      } else if (tableAt(k)) {
+        b = k + 2;
+        while (b < n && self.KBV_RE_TABLE_ROW.test(lines[b])) b++;
+      } else if (lineImg(k)) {
+        b = k + 1;
+      } else {
+        b = k + 1;
+        while (b < n && !blank(b) && !lineMath(b) && !lineImg(b) && !tableAt(b)) b++;
+      }
+      region.push([k, b]);
+      k = b;
+    }
+    if (!region.length) return { prefix: s, blocks: [], seps: [], suffix: "" };
+    const prefix = s.slice(0, off[region[0][0]]);
+    const blocks = [];
+    const seps = [];
+    for (let r = 0; r < region.length; r++) {
+      const a = region[r][0], bb = region[r][1];
+      blocks.push(s.slice(off[a], endOf(bb - 1)));
+      if (r + 1 < region.length) {
+        seps.push(s.slice(endOf(bb - 1), off[region[r + 1][0]]));
+      }
+    }
+    const lastR = region[region.length - 1];
+    const suffix = s.slice(endOf(lastR[1] - 1));
+    return { prefix: prefix, blocks: blocks, seps: seps, suffix: suffix };
+  },
+
+  /** kbviewSplitBlocks 的逆（纯字符串相加）。 */
+  kbviewJoinBlocks: function (parts) {
+    if (!parts) return "";
+    let s = String(parts.prefix == null ? "" : parts.prefix);
+    const blocks = parts.blocks || [];
+    const seps = parts.seps || [];
+    for (let i = 0; i < blocks.length; i++) {
+      s += String(blocks[i] == null ? "" : blocks[i]);
+      if (i < seps.length) s += String(seps[i] == null ? "" : seps[i]);
+    }
+    s += String(parts.suffix == null ? "" : parts.suffix);
+    return s;
   },
 
 
