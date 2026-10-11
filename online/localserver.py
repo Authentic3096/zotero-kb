@@ -2414,6 +2414,59 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return self._send(401, {"error": "缺少或错误的 token",
                                     "hint": f"token 存在 {TOKEN_PATH}"})
+        if path == "/formula-target":
+            # 公式纠错：把用户选中的区域/点击位置定位到该页某一条 $$…$$（**不做识别**）。
+            # GET /formula-target?key=<K>&page=<0基页码>[&rects=[[x0,y0,x1,y1]]]
+            #   rects 是 Zotero 的左下原点 PDF 点；不给 rects 时返回该页全部公式让用户挑。
+            # ⚠ 与 /metafill 同一个坑：GET/POST 各一支，且都在最后的 return 404 之前。
+            qs = parse_qs(urlparse(self.path).query)
+            key = ((qs.get("key") or [""])[0] or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key 参数",
+                                        "hint": "GET /formula-target?key=<Zotero 条目 key>&page=0"})
+            try:
+                page0 = int(((qs.get("page") or ["0"])[0] or "0").strip())
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "page 必须是整数（0 基）"})
+            rect = None
+            raw_rects = ((qs.get("rects") or [""])[0] or "").strip()
+            if raw_rects:
+                try:
+                    arr = json.loads(raw_rects)
+                except (TypeError, ValueError):
+                    return self._send(400, {"error": "rects 不是合法 JSON"})
+                if isinstance(arr, list) and arr and isinstance(arr[0], (list, tuple)):
+                    rect = [float(v) for v in arr[0][:4]]
+                elif isinstance(arr, list) and len(arr) >= 4:
+                    rect = [float(v) for v in arr[:4]]
+                else:
+                    return self._send(400, {"error": "rects 形状不对（要 [[x0,y0,x1,y1]]）"})
+            try:
+                import formula as FM
+            except Exception as exc:      # noqa: BLE001
+                return self._send(500, {"error": "载入 offline/formula.py 失败：%s" % exc})
+            res = FM.find_formula(key, page0, rect)
+            if not res.get("ok"):
+                return self._send(404, {"error": res.get("why") or "定位失败",
+                                        "key": key, "page": page0})
+            matched = res.get("matched")
+
+            def _brief(b):
+                return ({k: b.get(k) for k in ("block_index", "eq_ordinal",
+                                               "latex", "bbox", "type")}
+                        if b else None)
+
+            return self._send(200, {
+                "ok": True, "key": key, "page": page0, "page1": page0 + 1,
+                "matched": _brief(matched),
+                "candidates": [_brief(c) for c in (res.get("candidates") or [])],
+                "blocks": [_brief(c) for c in (res.get("blocks") or [])],
+                "why": res.get("why") or "",
+                "page_text": res.get("page_text") or "",
+                "preview": FM.preview_png_b64(key, page0, block=matched, rect=rect),
+                "n_pages": res.get("n_pages"),
+                "mathtype": FM.mathtype_state(),
+            })
         if path == "/status":
             from searcher import Searcher
             s = Searcher()
@@ -2822,6 +2875,38 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": f"未知同步方式 {mode}"})
             return self._send(200 if res.get("ok") else 500, res)
 
+        if path == "/formula-apply":
+            # 公式纠错：把新 LaTeX 写回该页第 ordinal 条 $$…$$，并复用 /doc-edit 的重切重向量。
+            # POST /formula-apply {key, page(0基), latex, ordinal?, old_latex?}
+            try:
+                import formula as FM
+            except Exception as exc:      # noqa: BLE001
+                return self._send(500, {"error": "载入 offline/formula.py 失败：%s" % exc})
+            key = str((body or {}).get("key") or "").strip()
+            if not key:
+                return self._send(400, {"error": "需要 key",
+                                        "hint": "POST /formula-apply {key,page,latex}"})
+            try:
+                page0 = int((body or {}).get("page") or 0)
+            except (TypeError, ValueError):
+                return self._send(400, {"error": "page 必须是整数（0 基）"})
+            latex = str((body or {}).get("latex") or "").strip()
+            if not latex:
+                return self._send(400, {"error": "需要 latex"})
+            info = FM.page_info(key, page0)
+            if not info.get("ok"):
+                return self._send(404, {"error": info.get("why") or "取不到这一页",
+                                        "key": key, "page": page0})
+            try:
+                text = FM.replace_nth_formula(
+                    info["text"], int((body or {}).get("ordinal") or 0), latex,
+                    str((body or {}).get("old_latex") or ""))
+            except (ValueError, TypeError) as exc:
+                return self._send(400, {"error": str(exc), "key": key, "page": page0})
+            # 写回沿用**唯一写路径**：do_doc_edit 会 save_page + 派一次单篇重建。
+            code, payload = do_doc_edit({"key": key, "page": page0 + 1, "text": text})
+            return self._send(code, payload)
+
         if path == "/collection-suggest":
             use_model = bool(body.get("use_model", True))
             job = start_job("生成分类建议", do_collection_suggest, use_model)
@@ -3179,6 +3264,41 @@ def self_test(port: int) -> int:
     # 「改这一页」全靠它。这里钉死"删干净了"，免得日后又被加回来。
     for gone in ("/doc", "/doc-text", "/doc-raw", "/doc-page.png", "/kb-image"):
         call("GET", gone, expect=404)
+
+    print("\n[5f] 公式纠错（/formula-target 定位 + /formula-apply 回写）")
+    # ⚠ 只打**参数校验与错误分支**，绝不真的 POST /formula-apply（那会写修订层并触发重建）。
+    call("GET", "/formula-target", token=True, expect=400)                 # 缺 key
+    call("GET", "/formula-target?key=NOSUCHK1&page=0", token=True, expect=404)
+    call("GET", "/formula-target?key=" + ANY_KEY + "&page=abc", token=True, expect=400)
+    call("GET", "/formula-target?key=" + ANY_KEY + "&page=0&rects=oops",
+         token=True, expect=400)
+    call("GET", "/formula-target", token=False, expect=401)
+    # 正向：挑一个真有 MinerU 产物的条目
+    import glob as _glob
+    _structs = sorted(_glob.glob(os.path.join(S.KB_DIR, "mineru", "*",
+                                              "structured_content.json")))
+    FKEY = os.path.basename(os.path.dirname(_structs[0])) if _structs else ""
+    if FKEY:
+        ft = call("GET", "/formula-target?key=" + FKEY + "&page=0",
+                  token=True, expect=200)
+        okmt = (isinstance(ft.get("mathtype"), dict)
+                and "installed" in ft["mathtype"])
+        print(f"  {'PASS' if okmt else 'FAIL'}  返回 mathtype.installed"
+              f"（{ft.get('mathtype')}）")
+        passed, failed = (passed + 1, failed) if okmt else (passed, failed + 1)
+        okf = ("matched" in ft and "candidates" in ft and "page_text" in ft
+               and "blocks" in ft)
+        print(f"  {'PASS' if okf else 'FAIL'}  定位结果结构齐"
+              f"（{FKEY} p.0：公式 {len(ft.get('blocks') or [])} 条，"
+              f"命中 {(ft.get('matched') or {}).get('eq_ordinal')}）")
+        passed, failed = (passed + 1, failed) if okf else (passed, failed + 1)
+    else:
+        print("  [--]  库里没有 MinerU 产物，跳过 /formula-target 正向检查")
+    call("POST", "/formula-apply", {}, token=True, expect=400)
+    call("POST", "/formula-apply", {"key": ANY_KEY, "page": 0},
+         token=True, expect=400)                                            # 缺 latex
+    call("POST", "/formula-apply", {"key": "NOSUCHK1", "page": 0, "latex": "x"},
+         token=True, expect=404)
 
     print("\n[6] 异步任务：分类建议（纯确定性部分，不调模型）")
     job = call("POST", "/collection-suggest", {"use_model": False}, expect=202)

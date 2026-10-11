@@ -183,8 +183,9 @@ class OllamaGuide(tk.Toplevel):
         self.cancel_btn = ttk.Button(btns, text="停止", command=self.do_cancel,
                                      state="disabled")
         self.cancel_btn.pack(side="left", padx=6)
-        ttk.Button(btns, text="只下载安装器（我手动装）",
-                   command=self.do_download_only).pack(side="left", padx=6)
+        self.download_btn = ttk.Button(btns, text="只下载安装器（我手动装）",
+                                       command=self.do_download_only)
+        self.download_btn.pack(side="left", padx=6)
         ttk.Button(btns, text="重新体检", command=self.refresh_preflight).pack(
             side="left")
         ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
@@ -210,6 +211,10 @@ class OllamaGuide(tk.Toplevel):
 
     def refresh_preflight(self):
         self._set_pf(["正在体检（几秒）…"])
+        # ⚠ 体检期间**安装/下载两个按钮都要先置灰**：结果没回来之前不知道装没装，
+        #   这段时间可点的话，用户会在"正在体检"的假象下直接去点安装
+        #   （2026-07-… 用户实测报的 bug：扫描时按钮仍可点，扫描完才变灰）。
+        self._set_install_buttons(scanning=True)
 
         def work():
             res = preflight(True)
@@ -228,18 +233,29 @@ class OllamaGuide(tk.Toplevel):
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _apply(self, res, lines):
-        self._set_pf(lines)
+    def _set_install_buttons(self, scanning=False, installed=False, ok=True):
+        """统一的按钮可用性（体检中 / 已装 / 有阻塞项 三种情形）。
+
+        · 体检中：两个按钮都灰（结果未知，不许点）；
+        · 已装：安装与"只下载安装器"都灰（再下安装器没有意义）；
+        · 有阻塞项（ok=False）：只有安装灰，下载安装器仍可点（留着手动排查/离线装）。
+        """
         try:
-            if res.get("installed"):
-                # 已装 → 即使没有阻塞项也不给点（用户 2026-10-10 的规矩，
-                # 与 MinerU 引导同一种灰）。拉模型可以走命令行或被别处复用。
+            if scanning:
                 self.install_btn.configure(state="disabled")
-            else:
-                self.install_btn.configure(
-                    state="normal" if res["ok"] else "disabled")
+                self.download_btn.configure(state="disabled")
+                return
+            self.install_btn.configure(
+                state="disabled" if (installed or not ok) else "normal")
+            self.download_btn.configure(
+                state="disabled" if installed else "normal")
         except tk.TclError:
             pass
+
+    def _apply(self, res, lines):
+        self._set_pf(lines)
+        self._set_install_buttons(installed=bool(res.get("installed")),
+                                  ok=bool(res.get("ok")))
 
     # ------------------------------------------------------------ 安装
 

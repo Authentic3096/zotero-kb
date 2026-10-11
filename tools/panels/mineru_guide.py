@@ -445,6 +445,11 @@ class MineruGuide(tk.Toplevel):
 
     def refresh_preflight(self):
         self._set_pf(["正在体检（几秒）…"])
+        # ⚠ 体检期间先置灰：结果没回来前不知道装没装（与 Ollama 引导同一个 bug）。
+        try:
+            self.install_btn.configure(state="disabled")
+        except tk.TclError:
+            pass
         with_vlm = bool(self.with_vlm.get())
 
         def work():
