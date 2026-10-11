@@ -99,6 +99,9 @@ var ZoteroKB = {
       // ⚠ 第一件事就是把 ftl 挂到窗口文档上（见 initLocale 的说明）——
       //   后面的设置面板/内容窗格分区都要靠它把 l10nID 变成文字。
       step("initLocale", () => self.initLocale());
+      // 注册我们自己的 resource 包：自建列里的 <browser> 必须从 resource:// 加载
+      // 才能在父进程里跑、宿主才拿得到 contentWindow（真机实测，见 KB_RES_KEY）。
+      step("registerKbResource", () => self.registerKbResource());
       step("registerPrefs", () => self.registerPrefs());
       step("registerPrefObserver", () => self.registerPrefObserver());
       step("registerPrefPane", () => self.registerPrefPane());
@@ -115,9 +118,29 @@ var ZoteroKB = {
       // 能力探测：DSH 接上了没、本地模型可用不可用。右键菜单只读它的缓存
       // （菜单是同步构建的，等不了网络），所以这一步只负责"排上周期探测"。
       step("scheduleCapsRefresh", () => self.scheduleCapsRefresh());
-      // 右侧栏「知识库」分区（20-kbview.js）：只读展示 kb/ 里的 md。
-      // ⚠ 与已删掉的「窗格本地模型对话」不同 —— 那个是交互（调模型），这个是只读。
-      step("registerKbViewSection", () => self.registerKbViewSection());
+      // 右侧栏「知识库」那一列（20-kbview.js）：**自建列**，不再是 registerSection。
+      // 装不上（找不到 Zotero 的内部 DOM）时它会自己退回分区模式并把原因写进状态文件
+      // —— 见 kbviewDegrade。真正的装载在下面的 scheduleWindowUI 里做（要有窗口）。
+      step("scheduleKbViewColumn", () => {
+        const applyCol = () => {
+          try {
+            const win = Zotero.getMainWindow && Zotero.getMainWindow();
+            if (!win || !win.document) return false;
+            self.kbviewMount(win);
+            return true;
+          } catch (e) {
+            Zotero.debug("[zotero-kb] 装知识库侧栏失败：" + e);
+            return false;
+          }
+        };
+        if (applyCol()) return;
+        let n = 0;
+        const retry = () => {
+          if (applyCol() || ++n >= 20) return;
+          setTimeout(retry, 500);
+        };
+        setTimeout(retry, 500);
+      });
       // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
       //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
       //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，

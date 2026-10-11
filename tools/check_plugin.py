@@ -300,6 +300,21 @@ def main() -> int:
     print(f"  {'[OK]' if ok else '[XX]'} bootstrap.js 语法（AsyncFunction 方式）：{detail}")
     if not ok:
         problems.append("bootstrap.js 有语法错")
+    # ⚠ 自建列的页面脚本（content/*.js）也在这里查一遍。
+    #   2026-10-11 实测漏过：check_plugin 只查 bootstrap.js，而 CI 里那条
+    #   check_js_syntax.py 是**另一个 step** —— 本机单独跑 check_plugin 时，
+    #   content/kbview.js 的语法错（多了一对花括号）一路绿灯打进了 xpi，
+    #   真机上表现为"侧栏页面一片空白 + console 报 SyntaxError"。
+    page_dir = os.path.join(PLUGIN, "content")
+    if os.path.isdir(page_dir):
+        for fn in sorted(os.listdir(page_dir)):
+            if not fn.endswith(".js"):
+                continue
+            ppath2 = os.path.join(page_dir, fn)
+            ok2, detail2 = check_js_syntax.check(ppath2)
+            print(f"  {'[OK]' if ok2 else '[XX]'} content/{fn} 语法：{detail2}")
+            if not ok2:
+                problems.append(f"content/{fn} 有语法错")
 
     # 生命周期函数（Zotero 会直接调这几个）
     for fn in ("startup", "shutdown", "install", "uninstall"):
@@ -335,9 +350,18 @@ def main() -> int:
                 # 少任何一个都是"菜单该标的没标"，所以名字一起盯着。
                 "refreshCaps", "probeDsh", "probeLocalModel", "capLabel",
                 "scheduleCapsRefresh",
-                # 右侧栏「知识库」分区（20-kbview.js）—— 只读展示 kb/ 里的 md。
-                # 少任何一个分别是：分区不注册 / 卸载留空壳 / 渲染不出来 /
-                # 级别回退失灵 / markdown 渲染坏掉，所以名字一起盯着。
+                # 右侧栏「知识库」那一列（20-kbview.js，2026-10-11 改成**自建列**）。
+                # 少任何一个分别对应一种用户看得见的坏结果：
+                #   装不上 / 卸不净（多窗口出现两份）/ 开关不动 / 原生列藏了没还原 /
+                #   页面收不到内容 / 切条目不跟着变 / 页内动作（改这一页）没反应 /
+                #   降级兜底没了（面板整个消失）。所以名字一起盯着。
+                "registerKbResource", "unregisterKbResource", "kbviewFilesURI",
+                "kbviewMount", "kbviewUnmount", "kbviewUnmountAll",
+                "kbviewOpen", "kbviewClose", "kbviewToggle", "kbviewRoots",
+                "kbviewSaveNative", "kbviewRestoreNative", "kbviewAttachBridge",
+                "kbviewSend", "kbviewPayloadForItem", "kbviewPush",
+                "kbviewCurrentItem", "kbviewRefresh", "kbviewStartTimer",
+                "kbviewStopTimer", "kbviewDegrade",
                 "registerKbViewSection", "unregisterKbViewSection",
                 "kbviewRender", "kbviewPickLevel", "kbviewOrder",
                 "kbviewPath", "md2html",
@@ -478,13 +502,34 @@ def main() -> int:
     # "工具栏按钮在，但图标空白/巨大"，报错一点线索都没有。
     # 正则只取到 .扩展名为止 —— 否则会把 url(...) 后面的 `)` 一起吞进来。
     bsrc = open(os.path.join(PLUGIN, "bootstrap.js"), encoding="utf-8").read()
-    for rel in sorted(set(re.findall(
-            r'rootURI\s*\+\s*"([^"]+\.(?:svg|png|js|xhtml|css|json|ftl))"', bsrc))):
+    # 两路都收：
+    #   ① `rootURI + "..."` 这种**直接拼接**的写法（图标、settings.xhtml…）；
+    #   ② 任何以 `content/` 开头的字符串字面量 —— 自建列那个页面是
+    #      `base + "content/kbview.html"`（base 是 rootURI 的局部变量），
+    #      按 ① 那种模式扫不到，会变成"代码引用了、包里没有、还不报"。
+    refs = set(re.findall(
+        r'rootURI\s*\+\s*"([^"]+\.(?:svg|png|js|xhtml|html|css|json|ftl))"', bsrc))
+    refs |= set(re.findall(
+        r'"(content/[A-Za-z0-9_.\-]+\.(?:html|css|js))"', bsrc))
+    for rel in sorted(refs):
         if os.path.exists(os.path.join(PLUGIN, rel)):
             print(f"  [OK] 代码引用的资源 {rel} 存在")
         else:
             print(f"  [XX] bootstrap.js 引用了 {rel}，但文件不存在")
             problems.append(f"缺少被引用的资源 {rel}")
+    # 自建列那个页面里的 css/js 也要在（它们是从 HTML 里相对引用的，
+    # bootstrap.js 里扫不到 —— 漏打就是"列装上了、里面一片空白且无报错"）。
+    kbv_html = os.path.join(PLUGIN, "content", "kbview.html")
+    if os.path.exists(kbv_html):
+        page = open(kbv_html, encoding="utf-8").read()
+        for rel in sorted(set(re.findall(
+                r'(?:href|src)="([^"]+\.(?:css|js))"', page))):
+            got = os.path.join(PLUGIN, "content", rel)
+            if os.path.exists(got):
+                print(f"  [OK] 侧栏页面引用的资源 content/{rel} 存在")
+            else:
+                print(f"  [XX] content/kbview.html 引用了 {rel}，但文件不存在")
+                problems.append(f"缺少被引用的资源 content/{rel}")
 
     # ---------------------------------------------------------- 本地化（ftl）
     # 两个坑都是"没有任何报错"的那种：
@@ -650,6 +695,14 @@ def main() -> int:
         else:
             print("  [XX] 包里没有 locale/**/*.ftl —— 需要界面文案时无处安放")
             problems.append("xpi 缺 locale/**/*.ftl")
+        # content/ 也**是目录**（2026-10-11 起）：漏打的话自建列里一片空白，
+        # 而 Zotero 那条报错没有线索，所以在这里钉死。
+        page_in_xpi = [n for n in names if n.startswith("content/")]
+        if "content/kbview.html" in names:
+            print(f"  [OK] 包内侧栏页面：{', '.join(sorted(page_in_xpi))}")
+        else:
+            print("  [XX] 包里没有 content/kbview.html —— 自建列会是一片空白")
+            problems.append("xpi 缺 content/kbview.html")
         xpi_for_paths = xpi
 
     # 打包后立刻查"包内有没有写死的开发机路径"。

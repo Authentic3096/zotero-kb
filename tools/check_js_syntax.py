@@ -155,6 +155,10 @@ def main() -> int:
         #   只扫根目录的话，`src/*.js` 里的语法错要等到打包+装进 Zotero 才发现。
         files = sorted(glob.glob(os.path.join(PLUGIN, "*.js")))
         files += sorted(glob.glob(os.path.join(PLUGIN, "src", "*.js")))
+        # ⚠ content/*.js 是"知识库"自建列那个页面里的脚本（自建列 2026-10-11）——
+        #   它**不是** AsyncFunction 的源码，但用同一套 AsyncFunction 方式解析
+        #   一样能过（只是包一层 async 函数体），语法错照样抓得到。
+        files += sorted(glob.glob(os.path.join(PLUGIN, "content", "*.js")))
         files = [f for f in files if not f.endswith(".bak-iife")]
 
     print("=" * 64)

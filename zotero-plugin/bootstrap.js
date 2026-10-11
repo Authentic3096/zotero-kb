@@ -106,6 +106,9 @@ var ZoteroKB = {
       // ⚠ 第一件事就是把 ftl 挂到窗口文档上（见 initLocale 的说明）——
       //   后面的设置面板/内容窗格分区都要靠它把 l10nID 变成文字。
       step("initLocale", () => self.initLocale());
+      // 注册我们自己的 resource 包：自建列里的 <browser> 必须从 resource:// 加载
+      // 才能在父进程里跑、宿主才拿得到 contentWindow（真机实测，见 KB_RES_KEY）。
+      step("registerKbResource", () => self.registerKbResource());
       step("registerPrefs", () => self.registerPrefs());
       step("registerPrefObserver", () => self.registerPrefObserver());
       step("registerPrefPane", () => self.registerPrefPane());
@@ -122,9 +125,29 @@ var ZoteroKB = {
       // 能力探测：DSH 接上了没、本地模型可用不可用。右键菜单只读它的缓存
       // （菜单是同步构建的，等不了网络），所以这一步只负责"排上周期探测"。
       step("scheduleCapsRefresh", () => self.scheduleCapsRefresh());
-      // 右侧栏「知识库」分区（20-kbview.js）：只读展示 kb/ 里的 md。
-      // ⚠ 与已删掉的「窗格本地模型对话」不同 —— 那个是交互（调模型），这个是只读。
-      step("registerKbViewSection", () => self.registerKbViewSection());
+      // 右侧栏「知识库」那一列（20-kbview.js）：**自建列**，不再是 registerSection。
+      // 装不上（找不到 Zotero 的内部 DOM）时它会自己退回分区模式并把原因写进状态文件
+      // —— 见 kbviewDegrade。真正的装载在下面的 scheduleWindowUI 里做（要有窗口）。
+      step("scheduleKbViewColumn", () => {
+        const applyCol = () => {
+          try {
+            const win = Zotero.getMainWindow && Zotero.getMainWindow();
+            if (!win || !win.document) return false;
+            self.kbviewMount(win);
+            return true;
+          } catch (e) {
+            Zotero.debug("[zotero-kb] 装知识库侧栏失败：" + e);
+            return false;
+          }
+        };
+        if (applyCol()) return;
+        let n = 0;
+        const retry = () => {
+          if (applyCol() || ++n >= 20) return;
+          setTimeout(retry, 500);
+        };
+        setTimeout(retry, 500);
+      });
       // ⚠ 2026-10-05：这里原来还有三步 —— registerItemPane / registerReaderEvents
       //   / registerQuitGuard（内容窗格里的「本地模型」分区、阅读器选中入口、
       //   退出时提醒"对话不保存"）。用户判断那个窗格"没什么用而且 bug 多"，
@@ -236,7 +259,13 @@ Object.assign(ZoteroKB, {
     try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
     try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
     try { self.unregisterKbColumns(); } catch (e) { /* ignore */ }
-      try { self.unregisterKbViewSection(); } catch (e) { /* ignore */ }
+      // 自建列：**卸必须对称** —— 按钮、列、监听、定时器都要清干净，
+    // 否则下次启用会出现两份（Zotero 会复用主窗口）。
+    try { self.kbviewUnmountAll(); } catch (e) { /* ignore */ }
+    // 只读降级模式留下的分区
+    try { self.unregisterKbViewSection(); } catch (e) { /* ignore */ }
+    // 我们注册的 resource 包：留着会让下次启用指向旧包
+    try { self.unregisterKbResource(); } catch (e) { /* ignore */ }
     // ⚠ 2026-10-05：内容窗格分区（ItemPaneManager）、退出提醒（quit guard）、
     //   以及"对话不落盘所以清掉 chatState"这三件事随窗格一起删了。
     //   阅读器的监听本来也不需要手动摘（registerEventListener 传了 pluginID）。
@@ -391,11 +420,14 @@ Object.assign(ZoteroKB, {
     // ⚠ 旧版本只有 mineruGuideDone；升级上来的用户那条 pref 还是 true，
     //   所以 19-mineruguide.js 里**两个都认**，不会二次打扰。
     optionalGuideDone: "zotero-kb.optionalGuideDone",
-    // 右侧栏「知识库」分区显示哪一级（2026-10-05 新增，见 20-kbview.js）。
+    // 右侧栏「知识库」那一列显示哪一级（2026-10-05 新增，见 20-kbview.js）。
     // 默认「分节纲要」—— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
     kbviewLevel: "zotero-kb.kbviewLevel",
-    // 右侧栏「知识库」分区的字号（px）。**只作用于我们这一块**（容器上的内联
-    // font-size），不动 Zotero 的任何默认设置。
+    // 那一列的字号（px）。**只作用在我们这一列**，不动 Zotero 的任何默认设置。
+    //
+    // ⚠ 这里原来还有一个 `kbviewWidth`（窄/标准/宽档位），2026-10-11 删了：
+    //   用户要的是"覆盖在原侧边栏上、同宽窄能拉动"，也就是**宽度归原生 splitter**，
+    //   我们不去改窗格宽度。见 20-kbview.js 里那段注释。
     kbviewFont: "zotero-kb.kbviewFont",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
@@ -5768,6 +5800,10 @@ Object.assign(ZoteroKB, {
     try {
       if (!self.kbColKeys || !self.kbColKeys.length) self.registerKbColumns();
     } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里注册两列失败：" + e); }
+    // 「知识库」自建列（20-kbview.js）也属于"与窗口相关的 UI"：
+    // 每个主窗口各装一份（rail 按钮 + 列 + 页面）。多窗口互不干扰。
+    try { self.kbviewMount(win); }
+    catch (e2) { Zotero.debug("[zotero-kb] 窗口钩子里装知识库侧栏失败：" + e2); }
     // 工具栏按钮与条目右键菜单也属于"与窗口相关的 UI"，必须在窗口钩子里做
     try { self.registerToolbarButton(win); }
     catch (e) { Zotero.debug("[zotero-kb] 加工具栏按钮失败：" + e); }
@@ -5794,10 +5830,19 @@ Object.assign(ZoteroKB, {
         if (menu) menu.remove();
       }
     } catch (e) { /* ignore */ }
+    // 自建列要卸干净（按钮 / 列 / 定时器）—— 窗口关闭后那些 DOM 就没人管了
+    try { self.kbviewUnmount(win); } catch (e2) { /* ignore */ }
     self.mainWindow = null;
-    // 文档要求：窗口卸载时要停掉计时器，否则可能内存泄漏
-    // （只停轮询，列注册保留 —— 下次 onMainWindowLoad 会复用）
-    try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
+    // 文档要求：窗口卸载时要停掉计时器，否则可能内存泄漏。
+    // ⚠ 只有在**一个主窗口都不剩**时才停 —— 原来是无条件停，于是"关掉第二个窗口"
+    //   会把任务轮询一起停掉（而主窗口还在跑），后续 DSH 派活再也没人接。
+    //   实测踩到：关掉第二个窗口后，派出去的任务一直 pending 直到超时。
+    try {
+      const left = Zotero.getMainWindows ? Zotero.getMainWindows().length : 0;
+      if (!left) self.stopTaskPolling();
+    } catch (e) {
+      try { self.stopTaskPolling(); } catch (e2) { /* ignore */ }
+    }
   },
 });
 
@@ -6543,38 +6588,126 @@ Object.assign(ZoteroKB, {
 
 // ===== src/20-kbview.js =====
 /**
- * 20-kbview.js —— 条目右侧栏的「知识库」分区：把 kb/ 里的 markdown 显示出来。
+ * 20-kbview.js —— 条目右侧栏的「知识库」：把 kb/ 里的分级文件在一列里显示出来。
  *
- * 用户 2026-10-05 的原话：「zotero 的文献右侧栏是可以正确显示 md 格式的，能不能把
- * 知识库中的 md 在这里显示，方便和原文对照？」（要对着 PDF 读纲要那一层）
+ * ## 2026-10-11 改版（本文件的大变化，看这里就够了）
  *
- * ## ⚠ 与已经删掉的「窗格本地模型对话」（19-itempane.js）的区别
+ * 用户看了 `leike0813/zotero-agents` 的 ACP Chat 之后拍板"仿照他的做"：
+ * **我们这一列要能独占条目窗格，而不是像 registerSection 那样挤在分区列最下面**
+ * （Zotero 的 itemPane 是一列纵向堆叠，rail 只做 scrollToPane / pin，做不到独占）。
  *
- *   · 那个是**交互**：提问 → 调本地模型 → 多轮讨论。用户判定"没什么用而且 bug 多"，
- *     整条链（窗格 + 7 个端点 + kbchat/paras + 逐段检查页）都删了。
- *   · 这个是**只读展示**：读 `kb/` 里的 md 文件 → 渲染成 HTML。不发请求、不写数据、
- *     模型挂了也照样能看。
+ * 于是：
+ *   · **不再用 `ItemPaneManager.registerSection`** —— 自己往
+ *     `#zotero-item-pane` 里插一列，并把原生的分区列（`#zotero-item-pane-content`）
+ *     暂时 `hidden` 起来，视觉上独占；关闭时逐项还原（先存再改，见 kbviewSaveNative）。
+ *   · **列里放的是 XUL `<browser>`**，指向插件自带的 `content/kbview.html`。
+ *     正文在那份**普通 HTML 文档**里渲染，终于能正常写 CSS
+ *     （overflow-wrap:anywhere / max-width:100% / MathML / 宽表格滚动）。
+ *     老实现往 XUL 文档里塞 innerHTML，按 **XML** 解析 —— 一个没闭合的 `<br>`
+ *     就让整段内容被静默丢弃（2026-10-05 实测："读了 34414 字、正文一片空白"）。
+ *   · 宿主与页面之间用 **JSON 字符串**通信（见 kbviewSend / kbviewAttachBridge）：
+ *     宿主→页面直接调 `contentWindow.kbvReceive(json)`；页面→宿主调宿主注入的
+ *     `__kbvHostPost(json)`。都用字符串，避开跨 principal 传对象那一堆坑。
  *
- * 所以 `Zotero.ItemPaneManager` 这个 API 名字重新出现是**有意的**；
- * `tools/check_plugin.py` 的反向清单里只保留"对话窗格"那批函数名（paneSend/chatOf…）。
+ * ⚠ **装/卸必须对称**：Zotero 会复用主窗口，漏 `remove()` 就会出现两份。
+ * ⚠ **藏原生列之前先存原状态**（hidden / collapsed / width / splitter state），
+ *   关闭时逐项还原 —— 别把用户的分区列弄没了。
+ * ⚠ 这三个 id 都是**内部 id**，换 Zotero 版本可能变 → 一律"取不到就降级"：
+ *   退回老的 `registerSection` 模式（只读）并如实写状态文件，别让面板整个消失。
  *
- * ## l10n 的两个坑（上一轮实测踩过，写下来免得再踩）
+ * 数据分工：**宿主取数据**（IOUtils / kbDir / kbLevels / doc-edit 都在这儿），
+ * **页面只负责渲染与交互**。页面里不重复实现权限逻辑。
  *
- *   ① `header` / `sidenav` 的 `l10nID` 是**必填**，而且 FTL 里必须写成
- *      **只有名字、值留空** 的条目（`zotero-kb-kbview-header =`）。写错（比如给它
- *      加个值）会让 Zotero 的 `translateFragment` 把节点内容抹掉 —— 结果是
- *      "分区标题空白、`onRender` 拿到的 body 是 null"，而且**不报错**。
- *   ② zh-CN 与 en-US 两个 ftl 都要加，键名一致。
- *
- * ## 为什么正文不在这里生成
- *
- * 纲要（`views/<KEY>.outline.md`）是 Python 侧按节调模型生成的（一篇学位论文要几分钟）。
- * 窗格只**读现成的**：没有就显示"这一级还没生成" + 生成入口提示。
+ * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成 bootstrap.js。
  */
 Object.assign(ZoteroKB, {
 
   KBVIEW_ID: "zotero-kb-kbview",
-  kbviewPaneID: null,
+  kbviewPaneID: null,        // 只读降级模式（registerSection）返回的 id
+  kbviewHosts: null,         // Map<window, host>，见 kbviewMap
+
+  /**
+   * 我们自己的 `resource://` 包名。
+   *
+   * ⚠ 这一条是**真机实测逼出来的**（2026-10-11，Zotero 10.0.6 / Firefox 140）：
+   *   列里那个 `<browser>` 如果直接加载 `rootURI + "content/kbview.html"`
+   *   （rootURI 是 `jar:file:///…xpi!/`），会出现两难：
+   *     · 带 `maychangeremoteness="true"`（参考实现这么写）→ 浏览器变成**远程进程**，
+   *       页面能加载，但 `browser.contentWindow` 是 **null** —— 宿主根本碰不到页面；
+   *     · 去掉那个属性 → 留在父进程、`contentWindow` 有了，**但 jar: 地址压根不导航**
+   *       （实测 `currentURI` 永远 about:blank）。
+   *   Zotero 自己的 reader 是这么干的（`xpcom/reader.js:1992`）：
+   *     `createXULElement('browser')` + `type="content"` + src = **`resource://zotero/`**，
+   *     然后 `this._iframe.contentWindow` 直接用。也就是说**resource:// 地址才会在
+   *     父进程里加载**。所以插件启动时注册一个自己的 resource 包（插件本来就有权
+   *     注册包），页面从 `resource://zotero-kb/…` 走。
+   */
+  KB_RES_KEY: "zotero-kb",
+
+  /**
+   * 知识库目录的 resource 包名（**图片走它**）。
+   *
+   * ⚠ 为什么不用 `file:///`（老做法）：真机实测，`resource://` 的页面加载
+   *   `file://` 图片会被**安全策略拦掉** —— `naturalWidth` 永远是 0、
+   *   `complete` 永远 false（"图片全都加载不出来"）。改成再注册一个
+   *   `resource://zotero-kb-files/` → <知识库目录>，图片全都能加载
+   *   （实测 418×293 / complete=true）。
+   */
+  KB_FILES_RES: "zotero-kb-files",
+  _kbvFilesRoot: "",
+  _kbvFilesOK: false,
+
+  /** 知识库目录的 resource 前缀（懒注册；kbDir 变了会重注册）。 */
+  kbviewFilesURI: function () {
+    var self = ZoteroKB;
+    try {
+      const kb = String(self.kbDir() || "").replace(/[\\/]+$/, "");
+      if (!kb) return "";
+      if (self._kbvFilesRoot === kb && self._kbvFilesOK) {
+        return "resource://" + self.KB_FILES_RES + "/";
+      }
+      const res = Services.io.getProtocolHandler("resource")
+        .QueryInterface(Components.interfaces.nsIResProtocolHandler);
+      res.setSubstitution(self.KB_FILES_RES,
+                          Services.io.newFileURI(Zotero.File.pathToFile(kb)));
+      self._kbvFilesRoot = kb;
+      self._kbvFilesOK = true;
+      return "resource://" + self.KB_FILES_RES + "/";
+    } catch (e) {
+      self._kbvFilesOK = false;
+      Zotero.debug("[zotero-kb] 注册知识库 resource 包失败：" + e);
+      return "";
+    }
+  },
+
+  /** 注册 `resource://zotero-kb/` → 插件根目录（startup 时调；失败要能看见）。 */
+  registerKbResource: function () {
+    var self = ZoteroKB;
+    try {
+      const res = Services.io.getProtocolHandler("resource")
+        .QueryInterface(Components.interfaces.nsIResProtocolHandler);
+      res.setSubstitution(self.KB_RES_KEY, Services.io.newURI(self.rootURI, null, null));
+      self.writeStatusFile({ kbViewResource: "ok: resource://" + self.KB_RES_KEY + "/" });
+      return true;
+    } catch (e) {
+      self.writeStatusFile({ kbViewResource: "FAIL: " + e });
+      Zotero.debug("[zotero-kb] 注册 resource 包失败：" + e);
+      return false;
+    }
+  },
+
+  /** 注销（shutdown 时调）—— 留着会让下次启用指向旧包。 */
+  unregisterKbResource: function () {
+    var self = ZoteroKB;
+    try {
+      const res = Services.io.getProtocolHandler("resource")
+        .QueryInterface(Components.interfaces.nsIResProtocolHandler);
+      res.setSubstitution(self.KB_RES_KEY, null);
+      res.setSubstitution(self.KB_FILES_RES, null);
+      self._kbvFilesRoot = "";
+      self._kbvFilesOK = false;
+    } catch (e) { /* ignore */ }
+  },
 
   /**
    * XHTML 命名空间。
@@ -6582,24 +6715,23 @@ Object.assign(ZoteroKB, {
    * ⚠ 这个常量是**修 bug 用的**（2026-10-05 实测）：Zotero 主窗口是 XUL 文档，
    *   `doc.createElement("div")` 建出来的元素在 **XUL 命名空间**里 —— 给它设
    *   `innerHTML` 时按 **XML** 解析：片段里只要有一个没闭合的标签（比如 `<br>`），
-   *   **整段内容会被丢掉**，而且不报错（用户看到的正是"提示行显示读了 34414 字、
-   *   正文一片空白"）。用 `createElementNS(XHTML, …)` 建元素就会按 HTML 解析。
+   *   **整段内容会被丢掉**，而且不报错（用户看到的正是"读了 34414 字、正文一片空白"）。
+   * 现在自建列走 `<browser>` + 普通 HTML 文档（那条路不存在这个坑），
+   * 这个常量与 kbviewSetHtml 只留给**降级模式**用。
    */
   KB_XHTML: "http://www.w3.org/1999/xhtml",
 
+  /** 建一个 XHTML 命名空间的元素（降级模式里装 HTML 的容器要用它）。 */
+  kbviewEl: function (doc, tag) {
+    return doc.createElementNS(ZoteroKB.KB_XHTML, tag);
+  },
+
   /**
-   * 把一段 HTML **片段**灌进容器（对两种解析器都稳）。
-   *
-   * ⚠ 为什么不用 `el.innerHTML = html`（2026-10-05 实测）：
-   *   主窗口是 XUL 文档。往 XHTML 命名空间的元素设 innerHTML 会按 HTML 解析、
-   *   往 XUL 命名空间的元素设则按 **XML** 解析 —— 后者遇到一点不合规（未闭合的
-   *   `<br/>`、XML 不认识的实体、MathML 里的边角）就**整段丢弃且不报错**
-   *   （现象：提示行写着"读了 34414 字"、正文一片空白；用户反馈「每页正文完全
-   *   打不开，每一篇都是」，而带 32 个 `<math>` 的正文与 0 个 `<math>` 的摘要
-   *   表现不同，正好对上）。
-   * 现在统一：DOMParser 按 text/html 解析 → importNode 到本容器。
-   * HTML 解析是**宽容**的，片段里有什么都能落地；解析不了也只会少几个节点，
-   * 不会整段消失。真出异常时把异常文字显示出来（下次一眼看到原因）。
+   * 把一段 HTML **片段**灌进容器（对两种解析器都稳）。**降级模式专用。**
+   * ⚠ 绝不能写成 `while (root.firstChild) { el.appendChild(doc.importNode(
+   *   root.firstChild, true)) }` —— importNode 返回**副本**、不移除原节点，
+   *   于是 firstChild 永远为真 → 死循环 → 内存吃爆 → Zotero 卡死崩溃（实测过）。
+   *   一次 import 整棵 wrapper 最简也最不可能出错。
    */
   kbviewSetHtml: function (doc, el, text) {
     try {
@@ -6610,121 +6742,39 @@ Object.assign(ZoteroKB, {
         const root = parsed.getElementById("kbroot");
         if (root) {
           el.textContent = "";
-          // ⚠⚠ 这里**绝不能**写成 `while (root.firstChild) { frag.appendChild(
-          //   doc.importNode(root.firstChild, true)) }` —— `importNode` 返回的是
-          //   **副本**、不会移除原节点，于是 `firstChild` 永远为真 → **死循环**
-          //   疯狂追加节点 → 内存吃爆 → **Zotero 卡死并崩溃**（2026-10-05 实测，
-          //   用户装机后"打开就卡住然后崩了"）。
-          //   一次 import 整棵 wrapper 最简、最不可能出错。
           el.appendChild(doc.importNode(root, true));
           return true;
         }
       }
     } catch (e) {
-      // 落到下面的兜底
-      try {
-        el.textContent = "（渲染出错：" + e + "）";
-      } catch (e2) { /* ignore */ }
+      try { el.textContent = "（渲染出错：" + e + "）"; } catch (e2) { /* ignore */ }
       return false;
     }
     try {
       el.innerHTML = String(text == null ? "" : text);
       return true;
     } catch (e) {
-      try {
-        el.textContent = "（渲染出错：" + e + "）";
-      } catch (e2) { /* ignore */ }
+      try { el.textContent = "（渲染出错：" + e + "）"; } catch (e2) { /* ignore */ }
       return false;
     }
   },
 
-  /** 建一个 XHTML 命名空间的元素（窗格里凡是会装 HTML 的都该用它）。 */
-  kbviewEl: function (doc, tag) {
-    return doc.createElementNS(ZoteroKB.KB_XHTML, tag);
-  },
 
-  /** 注册分区（缺 ItemPaneManager 就如实记状态，不抛）。 */
-  registerKbViewSection: function () {
-    var self = ZoteroKB;
-    if (!Zotero.ItemPaneManager || !Zotero.ItemPaneManager.registerSection) {
-      self.writeStatusFile({ kbViewPane: "unavailable: ItemPaneManager 不存在" });
-      return false;
-    }
-    self.kbviewPaneID = Zotero.ItemPaneManager.registerSection({
-      paneID: self.KBVIEW_ID,
-      pluginID: self.id,
-      // ⚠ header/sidenav 的 l10nID 必填，且 FTL 里必须是"只有名字"的条目
-      header: { l10nID: "zotero-kb-kbview-header",
-                icon: self.rootURI + "toolbar-icon.svg" },
-      sidenav: { l10nID: "zotero-kb-kbview-sidenav",
-                 icon: self.rootURI + "sidenav-icon.svg" },
-      onItemChange: ({ item, tabType, setEnabled }) => {
-        try {
-          setEnabled(self.kbviewEnabled(item, tabType));
-        } catch (e) { /* ignore */ }
-      },
-      onRender: ({ doc, body, item }) => self.kbviewRender(doc, body, item),
-    });
-    self.writeStatusFile({
-      kbViewPane: self.kbviewPaneID ? ("ok: " + self.kbviewPaneID)
-                                    : "registerSection 返回 false",
-    });
-    return !!self.kbviewPaneID;
-  },
+  // ================================================================ 基础设置
 
-
-  /** 卸载（插件 disable/卸载时调；不调会留下一个打不开的空分区）。 */
-  unregisterKbViewSection: function () {
-    var self = ZoteroKB;
-    if (self.kbviewPaneID && Zotero.ItemPaneManager
-        && Zotero.ItemPaneManager.unregisterSection) {
-      Zotero.ItemPaneManager.unregisterSection(self.kbviewPaneID);
-    }
-    self.kbviewPaneID = null;
-  },
-
-
-  /**
-   * 把分区的**可见标题**设成「知识库预览」。
-   *
-   * 为什么要手动做这一步：`header.l10nID` 指向的 FTL 条目是**属性形态**
-   * （只有 `.label`、值为空）—— Fluent 只会把文案写进元素的 `label` 属性，
-   * 所以必须给分区元素加 `data-l10n-attrs="label"`；在 Fluent 翻完之前，
-   * 再用普通条目 `zotero-kb-kbview-title` 兜一次，免得标题短暂空白
-   * （旧窗格代码里验证过的写法，见 git 历史 19-itempane.js 的 setupSectionHeader）。
-   */
-  setupKbViewHeader: function (body) {
-    var self = ZoteroKB;
+  /** 界面文案（按钮 tooltip）：优先走 ftl，取不到就用中文兜底。 */
+  kbviewLabel: function () {
     try {
-      let sec = body && body.closest ? body.closest("collapsible-section") : null;
-      if (!sec && body && body.parentElement && body.parentElement.closest) {
-        sec = body.parentElement.closest("collapsible-section");
-      }
-      if (!sec) return false;
-      if (sec.getAttribute("data-l10n-attrs") !== "label") {
-        sec.setAttribute("data-l10n-attrs", "label");
-      }
-      if (!sec.getAttribute("label")) {
-        let msg = "";
-        try {
-          msg = Zotero.ftl && Zotero.ftl.formatValueSync
-            && Zotero.ftl.formatValueSync("zotero-kb-kbview-title");
-        } catch (e) { /* ignore */ }
-        sec.setAttribute("label", msg || "知识库预览");
-      }
-      return true;
-    } catch (e) {
-      return false;
-    }
+      const msg = Zotero.ftl && Zotero.ftl.formatValueSync
+        && Zotero.ftl.formatValueSync("zotero-kb-kbview-title");
+      if (msg && String(msg).trim()) return String(msg);
+    } catch (e) { /* 落回中文 */ }
+    return "知识库预览";
   },
 
-  /** 只有普通条目（有 pdf/元数据的那些）才显示这个分区。 */
+  /** 只有普通条目（有 pdf/元数据的那些）才显示这一列。 */
   kbviewEnabled: function (item, tabType) {
     if (!item) return false;
-    // ⚠ 2026-10-05：这里原来只认 `library`（照抄了被删掉的对话窗格），
-    //   于是**打开 PDF 的阅读器页签里分区整个消失**（用户截图反馈：
-    //   "在文献打开后就没有插件图标了"）。而"对着 PDF 读纲要"恰恰是最常用的场景，
-    //   所以 reader 必须开。未知页签类型也放行（有 item 就能显示）。
     if (tabType === "reader-unloaded") return false;
     try {
       return typeof item.isRegularItem === "function" ? !!item.isRegularItem() : true;
@@ -6732,7 +6782,6 @@ Object.assign(ZoteroKB, {
       return false;
     }
   },
-
 
   /** 用户选过的级别（pref），默认「分节纲要」—— 它就是给"对着原文读"用的那一层。 */
   kbviewLevel: function () {
@@ -6744,7 +6793,7 @@ Object.assign(ZoteroKB, {
     return "outline";
   },
 
-  /** 字号（px，只作用于本分区）。12~18，默认 13。 */
+  /** 字号（px，只作用于这一列）。12~20，默认 13。 */
   kbviewFont: function () {
     var self = ZoteroKB;
     try {
@@ -6758,42 +6807,38 @@ Object.assign(ZoteroKB, {
     var self = ZoteroKB;
     try {
       const v = parseInt(px, 10);
-      if (v >= 10 && v <= 24) {
-        Zotero.Prefs.set(self.PREFS.kbviewFont, v);
-      }
+      // ⚠ 写 pref 用 Zotero.Prefs.set：插件里**没有** setPref 这个包装
+      if (v >= 10 && v <= 24) Zotero.Prefs.set(self.PREFS.kbviewFont, v);
     } catch (e) { /* ignore */ }
   },
 
   setKbviewLevel: function (id) {
     var self = ZoteroKB;
-    // ⚠ 写 pref 用 Zotero.Prefs.set：插件里**没有** setPref 这个包装
-    //   （第一版我照着读的那半边想当然写了，真机一渲染就"不是函数"）。
-    try {
-      Zotero.Prefs.set(self.PREFS.kbviewLevel, String(id || ""));
-    } catch (e) { /* ignore */ }
+    try { Zotero.Prefs.set(self.PREFS.kbviewLevel, String(id || "")); }
+    catch (e) { /* ignore */ }
   },
 
+
+  // ⚠ 这里原来还有一套「窄 / 标准 / 宽」档位（kbviewWidth / setKbviewWidth /
+  //   kbviewWidthPx），实现是**改原生日志窗格的 width**。用户 2026-10-11 明确不要：
+  //   "覆盖在原侧边栏上，同宽窄能拉动，我也想要一样的" ——
+  //   那就是说**不要碰窗格宽度**：我们只是借这条原生窗格显示，宽度归原生的
+  //   splitter（#zotero-items-splitter / #zotero-context-splitter）管，
+  //   用户拖它，我们的列（flex:1）跟着变。所以那套档位整段删掉了，别再加回来。
+  // ================================================================ 分级与文件
 
   /** 某个级别的 md 在磁盘上的绝对路径（与 Python 侧 kbviews.level_path 同一套拼接）。 */
   kbviewPath: function (levelId, key) {
-    // ⚠ 别自己拼路径：`kbLevels(key)` 已经按同一套规则算好 `path`（并且带 exists）。
-    //   第一版我写了 `self.kbDirPath()` —— 插件里根本没有这个名字（是 `kbDir()`），
-    //   真机一渲染就会抛。
-    const lv = (ZoteroKB.kbLevels(key) || [])
-      .find((x) => x.id === levelId);
+    const lv = (ZoteroKB.kbLevels(key) || []).find((x) => x.id === levelId);
     return lv ? lv.path : "";
   },
 
-
   /**
    * 决定"这次读哪一级"：先看用户选的那一级，文件不在就依次退到
-   * 分节纲要 → 摘要与要点 → 完整档案，都读不到就返回 `{levelId:"", why:…}`。
-   *
-   * `existsFn(id) => bool` 由调用方注入（真机读磁盘、测试传假函数）——
-   * 逻辑是纯的，所以能单测。
+   * 分节纲要 → 摘要与要点 → 完整档案，都读不到就返回 `{levelId:""}`。
+   * `existsFn(id) => bool` 由调用方注入 —— 逻辑是纯的，所以能单测。
    */
   kbviewOrder: function (prefer) {
-    // 首选 → 分节纲要（中间层，最合"对着原文读"）→ 摘要级 → 完整档案
     const order = [];
     for (const id of [prefer, "outline", "tldr", "card"]) {
       if (id && order.indexOf(id) < 0) order.push(id);
@@ -6812,39 +6857,892 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /** 渲染分区：一行工具条（级别下拉 + 重新读取）+ markdown 正文。 */
+  // ================================================================ 自建列：宿主状态
+
+  /**
+   * 每个主窗口一份宿主状态。`Map<window, host>`：
+   *   host = { win, lib, read, timer, timerArmed, lastKey, onMessage }
+   *   dock = { kind, roots, button, container, browser, saved, open, ready }
+   * 用 Map 而不是挂在 window 上：卸载时能枚举干净，也不往 Zotero 的对象上加属性。
+   */
+  kbviewMap: function () {
+    var self = ZoteroKB;
+    if (!self.kbviewHosts) {
+      try { self.kbviewHosts = new Map(); } catch (e) { self.kbviewHosts = null; }
+    }
+    return self.kbviewHosts;
+  },
+
+  kbviewHost: function (win, create) {
+    var self = ZoteroKB;
+    const m = self.kbviewMap();
+    if (!m || !win) return null;
+    let h = m.get(win) || null;
+    if (!h && create) {
+      h = { win: win, lib: null, read: null, timer: null, timerArmed: false,
+            lastKey: "", onMessage: null };
+      m.set(win, h);
+    }
+    return h;
+  },
+
+  /** 一列的 DOM 落点。取不到（Zotero 内部结构变了）返回 null → 上层降级。 */
+  kbviewRoots: function (win, kind) {
+    const doc = win && win.document;
+    if (!doc) return null;
+    const byId = (id) => { try { return doc.getElementById(id); } catch (e) { return null; } };
+    if (kind === "reader") {
+      const cp = byId("zotero-context-pane");
+      const inner = byId("zotero-context-pane-inner");
+      const sn = byId("zotero-context-pane-sidenav");
+      if (!cp || !inner || !sn) return null;
+      const parent = inner.parentElement;
+      if (!parent) return null;
+      return { parent: parent, anchor: inner, sidenav: sn, deck: inner, pane: cp };
+    }
+    const pane = byId("zotero-item-pane");
+    const deck = byId("zotero-item-pane-content");
+    const sidenav = byId("zotero-view-item-sidenav");
+    if (!pane || !deck || !sidenav) return null;
+    // 参考实现是 insertBefore(container, sidenav) —— 那只在"sidenav 是 pane 的直接
+    // 子元素"时成立。这里先验证这条前提，不成立就降级（宁可不装，也不乱插）。
+    if (sidenav.parentElement !== pane) return null;
+    return { parent: pane, anchor: sidenav, sidenav: sidenav, deck: deck, pane: pane };
+  },
+
+  /** 列里那个页面的地址（走我们自己注册的 resource 包，理由见 KB_RES_KEY）。 */
+  kbviewPageURL: function () {
+    var self = ZoteroKB;
+    const base = "resource://" + self.KB_RES_KEY + "/";
+    return base + "content/kbview.html";
+  },
+
+
+  // ================================================================ 自建列：装 / 卸
+
+  /** 装一个窗口里的一列（幂等）。装不上返回 false，由 kbviewMount 决定是否降级。 */
+  kbviewMountPane: function (win, kind) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, true);
+    if (!host) return false;
+    const slot = kind === "reader" ? "read" : "lib";
+    if (host[slot]) return true;
+    const roots = self.kbviewRoots(win, kind);
+    if (!roots) return false;
+    const url = self.kbviewPageURL();
+    if (!url) return false;
+    const doc = win.document;
+    const btn = self.kbviewBuildButton(doc, win, kind);
+    const box = self.kbviewBuildContainer(doc, win, kind);
+    const br = self.kbviewBuildBrowser(doc, win, kind, url);
+    box.appendChild(br);
+    try {
+      roots.sidenav.appendChild(btn);                 // 天然在最下面
+      roots.parent.insertBefore(box, roots.anchor);    // 排在原生分区列之前
+    } catch (e) {
+      // 插一半失败：把已经插进去的清掉，别留残骸
+      try { btn.remove(); } catch (e2) { /* ignore */ }
+      try { box.remove(); } catch (e3) { /* ignore */ }
+      throw e;
+    }
+    host[slot] = { kind: kind, win: win, roots: roots, button: btn, container: box,
+                   browser: br, saved: null, open: false, ready: false };
+    self.writeStatusFile({ kbViewColumn: "ok: 自建列已装（" + kind + "）" });
+    Zotero.debug("[zotero-kb] 自建列已装：" + kind);
+    return true;
+  },
+
+  /** 装一个窗口的全部 UI（主入口；onMainWindowLoad 与 startup 各调一次）。 */
+  kbviewMount: function (win) {
+    var self = ZoteroKB;
+    if (!win || !win.document) return false;
+    const host = self.kbviewHost(win, true);
+    if (!host) return false;
+    let ok = false;
+    try { ok = self.kbviewMountPane(win, "library"); }
+    catch (e) { Zotero.debug("[zotero-kb] 装 library 列失败：" + e); ok = false; }
+    if (!ok) {
+      // 取不到落点 → 退回 registerSection（只读），并如实写状态文件。
+      self.kbviewDegrade("找不到 #zotero-item-pane / #zotero-view-item-sidenav / "
+                         + "#zotero-item-pane-content（Zotero 内部结构可能变了）");
+      return false;
+    }
+    // 阅读器那一列（#zotero-context-pane）是**尽力而为**：装不上不影响主功能，
+    // 也**不**因此降级（否则会出现"rail 上一个入口、分区列里还多一块"）。
+    try {
+      self.kbviewMountPane(win, "reader");
+    } catch (e2) {
+      Zotero.debug("[zotero-kb] 阅读器那列没装成（不影响条目库）：" + e2);
+    }
+    if (!host.onMessage) self.kbviewOnWindowMessage(win);
+    return true;
+  },
+
+  /** 卸一个窗口的全部 UI（对称：按钮、列、监听、定时器都要清）。 */
+  kbviewUnmount: function (win) {
+    var self = ZoteroKB;
+    if (!win) return;
+    const host = self.kbviewHost(win, false);
+    self.kbviewStopTimer(win);
+    if (host) {
+      const slots = ["lib", "read"];
+      for (const s of slots) {
+        const dock = host[s];
+        if (!dock) continue;
+        try { if (dock.open) self.kbviewRestoreNative(win, dock); }
+        catch (e) { Zotero.debug("[zotero-kb] 还原原生列失败：" + e); }
+        try { if (dock.button && dock.button.remove) dock.button.remove(); } catch (e2) { /* ignore */ }
+        try { if (dock.container && dock.container.remove) dock.container.remove(); } catch (e3) { /* ignore */ }
+        dock.open = false;
+        host[s] = null;
+      }
+      if (host.onMessage && win.removeEventListener) {
+        try { win.removeEventListener("message", host.onMessage, true); } catch (e4) { /* ignore */ }
+      }
+      host.onMessage = null;
+    }
+    const m = self.kbviewMap();
+    if (m) { try { m.delete(win); } catch (e5) { /* ignore */ } }
+    Zotero.debug("[zotero-kb] 自建列已卸");
+  },
+
+  /** 卸载插件时把所有窗口的列都清掉。 */
+  kbviewUnmountAll: function () {
+    var self = ZoteroKB;
+    const m = self.kbviewMap();
+    if (!m) return;
+    const wins = [];
+    try { m.forEach(function (v, k) { wins.push(k); }); } catch (e) { return; }
+    for (const w of wins) {
+      try { self.kbviewUnmount(w); } catch (e2) { /* ignore */ }
+    }
+    try { m.clear(); } catch (e3) { /* ignore */ }
+  },
+
+
+  // ================================================================ 自建列：DOM 构造
+
+  /** rail 上那个按钮：class="btn" 让它继承 Zotero 自己的 rail 样式（28×28 / 悬停）。 */
+  kbviewBuildButton: function (doc, win, kind) {
+    var self = ZoteroKB;
+    let btn = null;
+    try { btn = doc.createXULElement ? doc.createXULElement("toolbarbutton") : null; }
+    catch (e) { btn = null; }
+    if (!btn) btn = doc.createElement("toolbarbutton");
+    btn.setAttribute("id", "zotero-kb-kbview-entry-" + kind);
+    // ⚠ 绝不加 data-pane：ItemPaneSidenav#render() 会遍历 .btn[data-pane] 并按
+    //   "已注册的分区"隐藏/显示 —— 我们的按钮没注册过，会被它连父元素一起 hidden
+    //   （父元素就是 rail 本身，等于把整条 rail 藏掉）。
+    btn.setAttribute("class", "btn zotero-kb-kbview-entry");
+    btn.setAttribute("custom", "true");
+    btn.setAttribute("tooltiptext", self.kbviewLabel());
+    btn.setAttribute("aria-label", self.kbviewLabel());
+    btn.setAttribute("aria-pressed", "false");
+    btn.setAttribute("tabindex", "0");
+    btn.setAttribute("role", "button");
+    const icon = self.rootURI == null ? "" : String(self.rootURI) + "sidenav-icon.svg";
+    try {
+      // 图标用 context-fill（跟随主题）；rail 的 .btn 已经设了
+      // background-repeat/position 与 -moz-context-properties，这里只补图与填充色。
+      if (icon) btn.style.setProperty("background-image", 'url("' + icon + '")');
+      btn.style.setProperty("-moz-context-properties", "fill,stroke");
+      btn.style.setProperty("fill", "currentColor");
+    } catch (e2) { /* 图标是装饰，失败不影响功能 */ }
+    btn.addEventListener("command", function () {
+      try { ZoteroKB.kbviewToggle(win, kind); }
+      catch (e3) { Zotero.debug("[zotero-kb] 切换知识库侧栏失败：" + e3); }
+    });
+    return btn;
+  },
+
+  /** 我们那一列的容器（默认藏起来，打开时才 display:flex）。 */
+  kbviewBuildContainer: function (doc, win, kind) {
+    let box = null;
+    try { box = doc.createXULElement ? doc.createXULElement("vbox") : null; }
+    catch (e) { box = null; }
+    if (!box) box = doc.createElement("vbox");
+    box.setAttribute("id", "zotero-kb-kbview-column-" + kind);
+    box.setAttribute("class", "zotero-kb-kbview-column");
+    box.setAttribute("flex", "1");
+    box.setAttribute("style",
+      "display:none; flex:1 1 auto; min-width:0; min-height:0; height:100%;"
+      + " overflow:hidden; flex-direction:column; background:transparent;");
+    return box;
+  },
+
+  /**
+   * 列里的内容区：XUL `<browser type="content">`（参考实现也是这么做的）。
+   * 为什么不用 `<iframe>`：browser 是 Zotero 里加载自带页面的既定做法
+   * （Zotero 自己的 reader 就是 `createXULElement('browser')` + resource:// 地址），
+   * 真机实测 `<iframe>`（XUL 与 HTML 两种）在这个 XUL 窗口里**根本不导航**
+   * （`contentDocument` 永远停在 about:blank）。
+   */
+  kbviewBuildBrowser: function (doc, win, kind, url) {
+    var self = ZoteroKB;
+    let el = null;
+    try { el = doc.createXULElement ? doc.createXULElement("browser") : null; }
+    catch (e) { el = null; }
+    if (!el) { try { el = doc.createElement("browser"); } catch (e2) { el = null; } }
+    if (!el) return null;
+    el.setAttribute("id", "zotero-kb-kbview-frame-" + kind);
+    el.setAttribute("class", "zotero-kb-kbview-frame");
+    el.setAttribute("disableglobalhistory", "true");
+    // ⚠ 这里**故意没有** `maychangeremoteness="true"`（参考实现有）：
+    //   真机实测加了它这个 browser 会变成**远程进程**，contentWindow 变 null、
+    //   宿主与页面彻底失联。去掉它 + src 走 resource:// 才有 contentWindow。
+    //   详见 KB_RES_KEY 那段说明。
+    el.setAttribute("type", "content");
+    el.setAttribute("flex", "1");
+    el.setAttribute("src", url);
+    try {
+      el.style.setProperty("width", "100%");
+      el.style.setProperty("height", "100%");
+      el.style.setProperty("flex", "1 1 auto");
+      el.style.setProperty("min-height", "0");
+      el.style.setProperty("min-width", "0");
+      el.style.setProperty("display", "block");
+      el.style.setProperty("border", "0");
+    } catch (e3) { /* ignore */ }
+    el.addEventListener("load", function () {
+      try { self.kbviewAttachBridge(win, kind); }
+      catch (e4) { Zotero.debug("[zotero-kb] 侧栏页面桥接失败：" + e4); }
+    });
+    return el;
+  },
+
+
+  // ================================================================ 自建列：开 / 关
+
+  /** 把原生列的原状态**先存下来**（关闭时逐项还原，这是"自插 DOM"的第一大坑）。 */
+  kbviewSaveNative: function (win, dock) {
+    if (!dock || dock.saved) return;
+    const r = dock.roots;
+    // ⚠ **不存窗格宽度**：宽度归原生的 splitter（用户自己拖），我们从头到尾
+    //   没碰过它 —— 存了再还原会把用户在我们打开期间拖出来的宽度顶回去。
+    const saved = {
+      deckHidden: null, deckCollapsed: null, paneCollapsed: null,
+      sidenavHidden: null, splitterState: null, contextCollapsed: null,
+    };
+    try {
+      if (r.deck) {
+        saved.deckHidden = r.deck.getAttribute("hidden");
+        saved.deckCollapsed = r.deck.getAttribute("collapsed");
+      }
+      if (r.pane) saved.paneCollapsed = r.pane.getAttribute("collapsed");
+      if (r.sidenav) saved.sidenavHidden = r.sidenav.getAttribute("hidden");
+      const sp = win.document.getElementById(dock.kind === "reader"
+        ? "zotero-context-splitter" : "zotero-items-splitter");
+      if (sp) saved.splitterState = sp.getAttribute("state");
+      if (dock.kind === "reader" && win.ZoteroContextPane) {
+        saved.contextCollapsed = !!win.ZoteroContextPane.collapsed;
+      }
+    } catch (e2) { /* 存不下就尽量少动原生 DOM */ }
+    dock.saved = saved;
+  },
+
+  /** 逐项还原（不是"删掉就算了"）。 */
+  kbviewRestoreNative: function (win, dock) {
+    if (!dock || !dock.saved) return;
+    const s = dock.saved;
+    const r = dock.roots;
+    const put = function (el, name, val) {
+      if (!el) return;
+      try {
+        if (val == null) el.removeAttribute(name);
+        else el.setAttribute(name, val);
+      } catch (e) { /* ignore */ }
+    };
+    put(r.deck, "hidden", s.deckHidden);
+    put(r.deck, "collapsed", s.deckCollapsed);
+    put(r.pane, "collapsed", s.paneCollapsed);
+    put(r.sidenav, "hidden", s.sidenavHidden);
+    try {
+      const sp = win.document.getElementById(dock.kind === "reader"
+        ? "zotero-context-splitter" : "zotero-items-splitter");
+      if (sp && s.splitterState != null) sp.setAttribute("state", s.splitterState);
+    } catch (e2) { /* ignore */ }
+    try {
+      if (dock.kind === "reader" && win.ZoteroContextPane
+          && s.contextCollapsed != null) {
+        win.ZoteroContextPane.collapsed = !!s.contextCollapsed;
+      }
+    } catch (e3) { /* ignore */ }
+    dock.saved = null;
+  },
+
+  /** 打开前先把原生窗格撑开（收起状态下 rail 自己也看不见，谈不上点按钮）。 */
+  kbviewExpandPane: function (win, dock) {
+    const r = dock.roots;
+    try {
+      if (dock.kind === "reader") {
+        if (win.ZoteroContextPane) win.ZoteroContextPane.collapsed = false;
+        if (r.pane && r.pane.getAttribute("collapsed") === "true") {
+          r.pane.setAttribute("collapsed", "false");
+        }
+      } else if (r.pane && r.pane.getAttribute("collapsed") === "true") {
+        const sp = win.document.getElementById("zotero-items-splitter");
+        if (sp) sp.setAttribute("state", "open");
+        r.pane.setAttribute("collapsed", "false");
+      }
+      if (r.sidenav && r.sidenav.getAttribute("hidden") != null) {
+        r.sidenav.removeAttribute("hidden");
+      }
+    } catch (e) { /* ignore */ }
+  },
+
+  kbviewIsOpen: function (win, kind) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return false;
+    const dock = kind === "reader" ? host.read : host.lib;
+    return !!(dock && dock.open);
+  },
+
+  kbviewOpen: function (win, kind) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, true);
+    if (!host) return false;
+    const slot = kind === "reader" ? "read" : "lib";
+    if (!host[slot]) {
+      let ok = false;
+      try { ok = self.kbviewMountPane(win, kind); } catch (e) { ok = false; }
+      if (!ok) {
+        if (kind === "reader") {
+          self.writeStatusFile({ kbViewColumn: "reader 列不可用（不影响条目库那一列）" });
+        } else {
+          self.kbviewDegrade("装不上条目库那一列");
+        }
+        return false;
+      }
+    }
+    const dock = host[slot];
+    if (!dock) return false;
+    if (dock.open) return true;
+    self.kbviewSaveNative(win, dock);
+    self.kbviewExpandPane(win, dock);
+    try { dock.container.style.display = "flex"; } catch (e2) { /* ignore */ }
+    // 把原生的分区列让开 —— "独占一页"就是靠这一句
+    try { dock.roots.deck.setAttribute("hidden", "true"); } catch (e3) { /* ignore */ }
+    try {
+      dock.button.setAttribute("aria-pressed", "true");
+      dock.button.setAttribute("data-kbview-open", "true");
+    } catch (e4) { /* ignore */ }
+    dock.open = true;
+    host.lastKey = "?!reset";          // 强制下一拍重推内容
+    self.kbviewStartTimer(win);
+    // 立刻试一次挂桥（页面可能已经就绪），失败就交给上面的轮询
+    try { self.kbviewAttachBridge(win, kind); } catch (e5) { /* 轮询会再试 */ }
+    self.kbviewPush(win, kind, null);
+    self.writeStatusFile({ kbViewColumn: "open: " + kind });
+    return true;
+  },
+
+  kbviewClose: function (win, kind) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return false;
+    const slot = kind === "reader" ? "read" : "lib";
+    const dock = host[slot];
+    if (!dock || !dock.open) return false;
+    dock.open = false;
+    try { dock.container.style.display = "none"; } catch (e) { /* ignore */ }
+    self.kbviewRestoreNative(win, dock);
+    try {
+      dock.button.setAttribute("aria-pressed", "false");
+      dock.button.removeAttribute("data-kbview-open");
+    } catch (e2) { /* ignore */ }
+    if (!self.kbviewIsOpen(win, "library") && !self.kbviewIsOpen(win, "reader")) {
+      self.kbviewStopTimer(win);
+    }
+    self.writeStatusFile({ kbViewColumn: "closed: " + kind });
+    return true;
+  },
+
+  /** rail 按钮 / 开关的统一入口：开就关、关就开（同一时刻只开一列）。 */
+  kbviewToggle: function (win, kind) {
+    var self = ZoteroKB;
+    const other = kind === "reader" ? "library" : "reader";
+    if (self.kbviewIsOpen(win, kind)) return self.kbviewClose(win, kind);
+    if (self.kbviewIsOpen(win, other)) self.kbviewClose(win, other);
+    return self.kbviewOpen(win, kind);
+  },
+
+
+  // ================================================================ 自建列：与页面通信
+
+  /**
+   * 把回调挂到页面窗口上（页面用 window.__kbvHostPost(jsonText) 回来）。
+   *
+   * ⚠ 跨 principal 的两个要点：
+   *   ① 挂到 **wrappedJSObject** 上，页面才看得见（挂在 Xray wrapper 上是给自己看的）；
+   *   ② 只传 **JSON 字符串**，不传对象 —— 传对象要过 Xray，是最容易"权限被拒"的一步。
+   */
+  kbviewAttachBridge: function (win, kind) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return false;
+    const dock = kind === "reader" ? host.read : host.lib;
+    if (!dock || !dock.browser) return false;
+    if (dock.ready) return true;
+    const api = function (jsonText) {
+      try { ZoteroKB.kbviewOnHostCall(win, kind, jsonText); }
+      catch (e) { Zotero.debug("[zotero-kb] 侧栏回调出错：" + e); }
+    };
+    let n = 0;
+    try {
+      const w = dock.browser.contentWindow;
+      if (w) {
+        try { w.__kbvHostPost = api; n++; } catch (e) { /* Xray wrapper 上挂了没用 */ }
+        try {
+          if (w.wrappedJSObject) { w.wrappedJSObject.__kbvHostPost = api; n++; }
+        } catch (e2) { /* ignore */ }
+      }
+    } catch (e3) { /* 页面还没就绪 */ }
+    dock.ready = n > 0;
+    if (dock.open) self.kbviewPush(win, kind, null);
+    return n > 0;
+  },
+
+  /** 把一条消息送进页面（优先直接调，页面里也挂了 postMessage 兜底）。 */
+  kbviewSend: function (dock, msg) {
+    if (!dock || !dock.browser) return false;
+    const full = Object.assign({ __kbv: true }, msg);
+    let text = "";
+    try { text = JSON.stringify(full); } catch (e) { return false; }
+    const wins = [];
+    try {
+      const w = dock.browser.contentWindow;
+      if (w) {
+        // ⚠ **wrappedJSObject 优先**：页面是 resource:// 的特权文档，直接读
+        //   `contentWindow.kbvReceive` 会被 Xray 挡住（typeof 一直是 "undefined"），
+        //   真身只能从 wrappedJSObject 拿 —— 真机实测（2026-10-11）。
+        try { if (w.wrappedJSObject) wins.push(w.wrappedJSObject); } catch (e2) { /* ignore */ }
+        wins.push(w);
+      }
+    } catch (e3) { /* ignore */ }
+    for (const w of wins) {
+      try {
+        if (typeof w.kbvReceive === "function") { w.kbvReceive(text); return true; }
+      } catch (e4) { /* 试下一个 */ }
+    }
+    try {
+      if (wins.length && wins[0].postMessage) { wins[0].postMessage(full, "*"); return true; }
+    } catch (e5) { /* ignore */ }
+    return false;
+  },
+
+  /** 顺手也听一下主窗口的 message 事件（页面里那条 postMessage 兜底路能用上）。 */
+  kbviewOnWindowMessage: function (win) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host || host.onMessage) return;
+    host.onMessage = function (event) {
+      try {
+        const d = event && event.data;
+        if (!d || typeof d !== "object" || d.__kbv !== true) return;
+        const lib = host.lib;
+        const rd = host.read;
+        let kind = "";
+        if (lib && lib.browser && event.source === lib.browser.contentWindow) kind = "library";
+        else if (rd && rd.browser && event.source === rd.browser.contentWindow) kind = "reader";
+        if (!kind) return;
+        self.kbviewOnHostCall(win, kind, JSON.stringify(d));
+      } catch (e) { /* ignore */ }
+    };
+    try { win.addEventListener("message", host.onMessage, true); }
+    catch (e2) { Zotero.debug("[zotero-kb] 挂 message 监听失败：" + e2); }
+  },
+
+  /** 页面发回来的一条消息。 */
+  kbviewOnHostCall: function (win, kind, jsonText) {
+    var self = ZoteroKB;
+    let msg = null;
+    try { msg = JSON.parse(String(jsonText)); } catch (e) { msg = null; }
+    if (!msg || typeof msg.type !== "string") return;
+    const t = msg.type;
+    if (t === "close") { self.kbviewClose(win, kind); return; }
+    if (t === "reload") { self.kbviewPush(win, kind, null); return; }
+    if (t === "selectLevel") {
+      self.setKbviewLevel(msg.level);
+      self.kbviewPush(win, kind, msg.level);
+      return;
+    }
+    if (t === "setFont") {
+      self.setKbviewFont(msg.font);
+      self.kbviewPush(win, kind, null);
+      return;
+    }
+    if (t === "openPath") {
+      try { self.openKbPath(msg.path, "知识库文件"); }
+      catch (e) { Zotero.debug("[zotero-kb] 打开文件失败：" + e); }
+      return;
+    }
+    if (t === "log") {
+      Zotero.debug("[zotero-kb] 侧栏页面：" + msg.message);
+      return;
+    }
+    if (t === "exportDraft") { self.kbviewExportDraft(win, kind); return; }
+    if (t === "savePage") { self.kbviewSavePage(win, kind, msg.page, msg.text); return; }
+    if (t === "restorePage") { self.kbviewSavePage(win, kind, msg.page, null); return; }
+  },
+
+  /** 给某个窗口的一列送一句提示（只更新状态行，不重画正文）。 */
+  kbviewHint: function (win, kind, text) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return;
+    const dock = kind === "reader" ? host.read : host.lib;
+    if (dock) self.kbviewSend(dock, { type: "hint", text: String(text == null ? "" : text) });
+  },
+
+
+  // ================================================================ 自建列：内容
+
+  /**
+   * 当前该显示哪一篇。
+   *
+   * 原来这一步是 registerSection 的 onItemChange 回调给的；自建列没有这个回调，
+   * 所以自己取：阅读器页签取当前附件 → 用它的**父条目**（知识库按父条目的 key 建），
+   * 条目库页签取列表里唯一选中的那一条。
+   *
+   * ⚠ 取法必须和 Zotero 自己的 item-details 一致（它也是 parentID ? parent : item，
+   *   见 elements/contextPane.js 的 _addItemContext），否则会出现"选区在附件上、
+   *   我们查的是附件 key，永远没有知识库"。
+   */
+  kbviewCurrentItem: function (win) {
+    if (!win) return null;
+    let item = null;
+    try {
+      const tabs = win.Zotero_Tabs;
+      const selType = tabs ? String(tabs.selectedType || "") : "";
+      if (selType === "reader" && Zotero.Reader && Zotero.Reader.getByTabID) {
+        let reader = null;
+        try { reader = Zotero.Reader.getByTabID(tabs.selectedID); } catch (e) { reader = null; }
+        const id = reader && reader.itemID;
+        if (id) item = Zotero.Items.get(id);
+      }
+    } catch (e2) { item = null; }
+    if (!item) {
+      try {
+        const pane = win.ZoteroPane;
+        const sel = pane && pane.getSelectedItems ? pane.getSelectedItems() : null;
+        if (sel && sel.length === 1) item = sel[0];
+      } catch (e3) { item = null; }
+    }
+    if (!item) return null;
+    try {
+      if (item.parentID) {
+        const parent = Zotero.Items.get(item.parentID);
+        if (parent) item = parent;
+      }
+    } catch (e4) { /* 用原条目 */ }
+    return item;
+  },
+
+  /**
+   * 组装给页面的一份内容（宿主把该读的文件都读好，页面只管画）。
+   * 返回纯数据（可 JSON 化）。
+   */
+  kbviewPayloadForItem: async function (item, prefer) {
+    var self = ZoteroKB;
+    let levels = [];
+    try { levels = self.kbLevels() || []; } catch (e) { levels = []; }
+    const out = {
+      key: "", title: "",
+      levels: levels.map(function (lv) { return { id: lv.id, label: lv.label }; }),
+      level: self.kbviewLevel(), picked: "", fellBack: false, hint: "",
+      html: "", textLength: 0, isHtml: false, fulltext: false,
+      pages: {}, edited: [], stale: [],
+      empty: false, emptyWhy: "", probe: "",
+      font: self.kbviewFont(), busy: false,
+    };
+    if (!item) {
+      out.empty = true;
+      out.emptyWhy = "先在左边选中一篇文献（一次只能选一篇）。";
+      return out;
+    }
+    try { out.key = String(item.key || ""); } catch (e) { out.key = ""; }
+    try { out.title = String((item.getField && item.getField("title")) || ""); }
+    catch (e2) { out.title = ""; }
+    if (!self.kbviewEnabled(item, "library")) {
+      out.empty = true;
+      out.emptyWhy = "这一条不是普通文献条目（附件 / 笔记没有知识库）。";
+      return out;
+    }
+    let list = [];
+    try { list = self.kbLevels(out.key) || []; } catch (e3) { list = []; }
+    const byId = {};
+    for (const lv of list) byId[lv.id] = lv;
+    const picked = self.kbviewPickLevel(
+      prefer || out.level, function (id) { return !!(byId[id] && byId[id].exists); });
+    out.picked = picked.levelId;
+    out.fellBack = !!picked.fellBack;
+    if (!picked.levelId) {
+      out.empty = true;
+      out.emptyWhy = "知识库里还没有这一篇的任何分级文件。";
+      let kb = "";
+      try { kb = String(self.kbDir() || ""); } catch (e4) { kb = ""; }
+      out.probe = (kb ? ("知识库目录：" + kb + "；")
+                      : "知识库目录未确定（面板「运行环境」→ 服务状态）；")
+        + "试过：" + ((byId[out.level] || {}).path || "");
+      return out;
+    }
+    const path = (byId[picked.levelId] || {}).path
+      || self.kbviewPath(picked.levelId, out.key);
+    // 优先读同名 .html（LaTeX 已渲染成 MathML，Firefox 原生显示公式）；
+    // 没有才退回 md，由 md2html 现场渲染（那时公式是原文文本）。
+    const htmlPath = String(path).replace(/\.md$/i, ".html");
+    let text = "";
+    let isHtml = false;
+    try {
+      if (self._exists(htmlPath)) { text = await IOUtils.readUTF8(htmlPath); isHtml = true; }
+    } catch (e5) { /* 读不到就走 md */ }
+    if (!text) {
+      try { text = await IOUtils.readUTF8(path); } catch (e6) { text = ""; }
+    }
+    let html = isHtml ? text : self.md2html(text);
+    html = self.kbviewFixImgs(html, out.key);
+    out.html = html;
+    out.textLength = text.length;
+    out.isHtml = isHtml;
+    out.fulltext = picked.levelId === "fulltext";
+    const label = (byId[picked.levelId] || {}).label || picked.levelId;
+    out.hint = label
+      + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
+      + "　" + text.length + " 字"
+      + (isHtml ? "　公式已渲染" : "　公式为原文文本");
+    if (out.fulltext) {
+      // 逐页编辑要的是 **markdown 源文本**（图片行、公式、表格都是 markdown）——
+      // 服务端渲染好的 HTML 里拿不回来，所以这里单独读一次 .md。
+      let mdText = "";
+      try { mdText = await IOUtils.readUTF8(path); } catch (e7) { mdText = ""; }
+      if (!mdText && !isHtml) mdText = text;
+      try { out.pages = self.kbviewSplitMd(mdText); } catch (e8) { out.pages = {}; }
+      let meta = {};
+      try { meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(out.key)); }
+      catch (e9) { meta = {}; }
+      out.edited = (meta && meta.edited) || [];
+      out.stale = (meta && meta.stale) || [];
+    }
+    return out;
+  },
+
+  /** 取当前条目 → 组装 → 发给页面。 */
+  kbviewPush: async function (win, kind, prefer) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return false;
+    const dock = kind === "reader" ? host.read : host.lib;
+    if (!dock) return false;
+    let payload = null;
+    try { payload = await self.kbviewPayloadForItem(self.kbviewCurrentItem(win), prefer); }
+    catch (e) {
+      Zotero.debug("[zotero-kb] 组装侧栏内容失败：" + e);
+      return false;
+    }
+    payload.type = "render";
+    return self.kbviewSend(dock, payload);
+  },
+
+  /** 重新取当前条目 → 组装 → 发给页面（所有打开着的列都发）。 */
+  kbviewPushOpen: async function (win) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return;
+    if (host.lib && host.lib.open) await self.kbviewPush(win, "library", null);
+    if (host.read && host.read.open) await self.kbviewPush(win, "reader", null);
+  },
+
+  /** 轮询看"当前条目变了没"（自建列没有 onItemChange 回调，只能自己盯）。 */
+  kbviewRefresh: function (win) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return;
+    const open = (host.lib && host.lib.open) || (host.read && host.read.open);
+    if (!open) { self.kbviewStopTimer(win); return; }
+    // 桥没挂上就再试一次。
+    // ⚠ 为什么不靠 `<browser>` 的 load 事件（kbviewBuildBrowser 里挂了那个监听）：
+    //   真机实测（Zotero 10.0.6 / Firefox 140）**XUL `<browser>` 不触发 load 事件**
+    //   —— 页面加载得好好的（contentWindow.kbvPageReady === true），但
+    //   dock.ready 一直是 false，于是页面上的按钮（切级别 / 收起 / 改这一页）
+    //   一个都不管用。改成"打开期间每拍补挂一次"，挂上就停。
+    if (host.lib && host.lib.open && !host.lib.ready) {
+      try { self.kbviewAttachBridge(win, "library"); } catch (e0) { /* 下一拍再试 */ }
+    }
+    if (host.read && host.read.open && !host.read.ready) {
+      try { self.kbviewAttachBridge(win, "reader"); } catch (e1) { /* 下一拍再试 */ }
+    }
+    const item = self.kbviewCurrentItem(win);
+    let key = "";
+    try { key = item && item.key ? String(item.key) : ""; } catch (e) { key = ""; }
+    if (key === host.lastKey) return;
+    host.lastKey = key;
+    self.kbviewPushOpen(win).catch(function (e2) {
+      Zotero.debug("[zotero-kb] 推送侧栏内容失败：" + e2);
+    });
+  },
+
+  /**
+   * 延时调度。
+   * ⚠ 这个沙箱里 setInterval / 链式 setTimeout **不可靠**（见 18-taskpoll.js 的
+   *   实测），所以统一用 Services.tm 的主线程定时器，setTimeout 只作兜底。
+   */
+  kbviewLateDispatch: function (fn, ms) {
+    try {
+      const tm = Services.tm;
+      const target = tm.mainThread
+        || (tm.currentThread && tm.currentThread.QueryInterface(
+              Components.interfaces.nsIThread));
+      if (target && tm.newTimer) {
+        let qi;
+        try { qi = ChromeUtils.generateQI(["nsITimerCallback"]); }
+        catch (e) { qi = function () { return this; }; }
+        const timer = tm.newTimer({
+          observe: function () { try { fn(); } catch (e2) { Zotero.debug("" + e2); } },
+          QueryInterface: qi,
+        }, ms);
+        if (timer) return timer;
+      }
+    } catch (e3) { /* 落回 setTimeout */ }
+    try { return setTimeout(fn, ms); } catch (e4) { return null; }
+  },
+
+  kbviewStartTimer: function (win) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host || host.timerArmed) return;
+    host.timerArmed = true;
+    const tick = function () {
+      if (!host.timerArmed) return;
+      try { self.kbviewRefresh(win); }
+      catch (e) { Zotero.debug("[zotero-kb] 侧栏轮询出错：" + e); }
+      if (host.timerArmed) host.timer = self.kbviewLateDispatch(tick, 400);
+    };
+    host.timer = self.kbviewLateDispatch(tick, 400);
+  },
+
+  kbviewStopTimer: function (win) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    if (!host) return;
+    host.timerArmed = false;
+    try { if (host.timer && host.timer.cancel) host.timer.cancel(); } catch (e) { /* ignore */ }
+    host.timer = null;
+  },
+
+
+  // ================================================================ 自建列：页内动作
+
+  /** 「导出草稿」：把整份有效正文写成 edits/<key>.draft.md（只在「按页正文」显示）。 */
+  kbviewExportDraft: async function (win, kind) {
+    var self = ZoteroKB;
+    const item = self.kbviewCurrentItem(win);
+    if (!item) return false;
+    self.kbviewHint(win, kind, "正在导出草稿…");
+    try {
+      const r = await self.request("POST", "/doc-edit", { key: item.key, action: "draft" });
+      if (r && r.path) {
+        self.kbviewHint(win, kind, "草稿已写出：" + r.path);
+        try { self.openKbPath(r.path, "正文草稿"); } catch (e) { /* 打不开不影响导出 */ }
+        return true;
+      }
+      self.kbviewHint(win, kind, "导出失败：" + JSON.stringify(r == null ? {} : r).slice(0, 120));
+    } catch (e2) {
+      self.kbviewHint(win, kind, "导出失败：" + ((e2 && e2.message) ? e2.message : e2));
+    }
+    return false;
+  },
+
+  /** 保存 / 恢复一页正文（text == null 表示恢复原版）。 */
+  kbviewSavePage: async function (win, kind, page, text) {
+    var self = ZoteroKB;
+    const item = self.kbviewCurrentItem(win);
+    if (!item) return false;
+    const body = { key: item.key, page: page };
+    if (text == null) body.action = "restore";
+    else body.text = String(text);
+    const ok = await self.kbviewRunDocEdit(body, function (m) {
+      self.kbviewHint(win, kind, m);
+    });
+    await self.kbviewPush(win, kind, null);
+    return ok;
+  },
+
+
+  // ================================================================ 降级：老的「分区」模式（只读）
+
+  /**
+   * 退回 `ItemPaneManager.registerSection`。
+   *
+   * 什么时候走到这里：自建列找不到 `#zotero-item-pane` / `#zotero-view-item-sidenav`
+   * / `#zotero-item-pane-content`（换 Zotero 版本、内部 id 变了）。
+   * 这一档**只读**：能看分级内容，但没有"改这一页 / 导出草稿 / 独占一页"那些交互
+   * —— 总比面板整个消失强，而且状态文件里会如实写下来（"非静默降级"）。
+   */
+  kbviewDegrade: function (why) {
+    var self = ZoteroKB;
+    self.writeStatusFile({ kbViewColumn: "degraded: " + why });
+    Zotero.debug("[zotero-kb] 自建列不可用，退回分区模式：" + why);
+    try { self.registerKbViewSection(); } catch (e) { /* ignore */ }
+  },
+
+  /** 注册分区（降级模式）。缺 ItemPaneManager 就如实记状态，不抛。 */
+  registerKbViewSection: function () {
+    var self = ZoteroKB;
+    if (self.kbviewPaneID) return true;
+    if (!Zotero.ItemPaneManager || !Zotero.ItemPaneManager.registerSection) {
+      self.writeStatusFile({ kbViewPane: "unavailable: ItemPaneManager 不存在" });
+      return false;
+    }
+    self.kbviewPaneID = Zotero.ItemPaneManager.registerSection({
+      paneID: self.KBVIEW_ID,
+      pluginID: self.id,
+      // ⚠ header/sidenav 的 l10nID 必填，且 FTL 里必须是"只有名字"的条目
+      header: { l10nID: "zotero-kb-kbview-header",
+                icon: self.rootURI + "toolbar-icon.svg" },
+      sidenav: { l10nID: "zotero-kb-kbview-sidenav",
+                 icon: self.rootURI + "sidenav-icon.svg" },
+      onItemChange: ({ item, tabType, setEnabled }) => {
+        try { setEnabled(self.kbviewEnabled(item, tabType)); }
+        catch (e) { /* ignore */ }
+      },
+      onRender: ({ doc, body, item }) => self.kbviewRender(doc, body, item),
+    });
+    self.writeStatusFile({
+      kbViewPane: self.kbviewPaneID
+        ? ("ok: " + self.kbviewPaneID + "（降级模式）")
+        : "registerSection 返回 false",
+    });
+    return !!self.kbviewPaneID;
+  },
+
+  /** 卸载降级分区（插件 disable/卸载时调；不调会留下一个打不开的空分区）。 */
+  unregisterKbViewSection: function () {
+    var self = ZoteroKB;
+    if (self.kbviewPaneID && Zotero.ItemPaneManager
+        && Zotero.ItemPaneManager.unregisterSection) {
+      Zotero.ItemPaneManager.unregisterSection(self.kbviewPaneID);
+    }
+    self.kbviewPaneID = null;
+  },
+
+  /** 降级模式的分区渲染：一行提示 + 级别下拉 + 正文（只读）。 */
   kbviewRender: async function (doc, body, item) {
     var self = ZoteroKB;
     if (!doc || !body) return;
-    self.setupKbViewHeader(body);      // 可见标题「知识库预览」
-    // 清掉上一次的内容（Zotero 会复用 body）
     try {
       const old = body.querySelector(".zotero-kb-kbview");
       if (old) old.remove();
     } catch (e) { /* ignore */ }
-
     const wrap = self.kbviewEl(doc, "div");
     wrap.className = "zotero-kb-kbview";
-    // 字号：只在本容器上设（不动 Zotero 的默认设置）。
-    // 限高 + 内部滚动：正文再长也只在我们这一块里滚，不去挤 Zotero 自己的分区
-    //（用户反馈"我的插件窗口总被上面的挤位置"）。
-    // ⚠ 滚动条要加在**正文容器**上，不能加在 wrap 上 ——
-    //   加在 wrap 上会把工具条（级别/字号/重新读取/提示）一起滚上去
-    //   （用户反馈：「滚动会把完整档案、字号都滚上去，这个应该保持在顶部」）。
-    //   结构：wrap 是竖向 flex + 限高，bar 固定，view 自己滚。
     wrap.setAttribute("style",
       "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
       + " max-height:85vh; display:flex; flex-direction:column; overflow:hidden;");
-
-    // 工具条：**单行不换行**（用户反馈：提示文字换行后"重新读取"被挤到第二行）。
-    // 做法：select/按钮 nowrap，提示占剩余宽度并省略号截断（min-width:0 是关键，
-    // flex 子项默认 min-width:auto 不会收缩）。
     const bar = self.kbviewEl(doc, "div");
     bar.setAttribute("style", "display:flex; gap:6px; align-items:center;"
       + " flex-wrap:nowrap; margin-bottom:4px; flex:0 0 auto;");
     const sel = self.kbviewEl(doc, "select");
-    // ⚠ 原来写了 `max-width:7.5em` —— 窗格里 select 的字号继承自 Zotero（比 12px 大），
-    //   加上下拉箭头就截断成「摘要与要」（用户截图反馈）。改成按内容自适应。
     sel.setAttribute("style", "flex:0 0 auto; white-space:nowrap;");
     for (const lv of (self.kbLevels() || [])) {
       const op = self.kbviewEl(doc, "option");
@@ -6853,164 +7751,49 @@ Object.assign(ZoteroKB, {
       sel.appendChild(op);
     }
     sel.value = self.kbviewLevel();
-    // 字号下拉（小/标准/较大/大）—— 只改这一块的字号
-    const fontSel = self.kbviewEl(doc, "select");
-    fontSel.setAttribute("style", "flex:0 0 auto; white-space:nowrap;");
-    for (const opt of [[12, "小"], [13, "标准"], [15, "较大"], [17, "大"],
-                       [20, "特大"]]) {
-      const o = self.kbviewEl(doc, "option");
-      o.setAttribute("value", String(opt[0]));
-      o.textContent = opt[1];
-      fontSel.appendChild(o);
-    }
-    fontSel.value = String(self.kbviewFont());
-    fontSel.addEventListener("change", () => {
-      self.setKbviewFont(fontSel.value);
-      wrap.setAttribute("style",
-        "padding:4px 6px; font-size:" + self.kbviewFont() + "px; line-height:1.55;"
-        + " max-height:85vh; display:flex; flex-direction:column; overflow:hidden;");
-    });
-
     const btn = self.kbviewEl(doc, "button");
     btn.textContent = "重新读取";
     btn.setAttribute("style", "padding:1px 6px; flex:0 0 auto; white-space:nowrap;");
     const hint = self.kbviewEl(doc, "span");
     hint.setAttribute("style", "opacity:0.65; font-size:11px; flex:1 1 auto;"
       + " min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;");
-    hint.setAttribute("title", "");
-    // 「导出草稿」：把整份**有效正文**写成 edits\<key>.draft.md，给外部编辑器改。
-    // 只在「按页正文」这一级显示（别的级别没有逐页正文）。存回时服务端逐页比对，
-    // 只有真变了的页进修订层 —— 所以重解析不会把整篇冻在旧稿上。
-    const draftBtn = self.kbviewEl(doc, "button");
-    draftBtn.textContent = "导出草稿";
-    draftBtn.setAttribute("style", "padding:1px 6px; flex:0 0 auto; white-space:nowrap;");
-    draftBtn.setAttribute("title", "导出整份正文为 edits 下的草稿文件（供外部编辑器修改）");
-    draftBtn.style.display = "none";
-    draftBtn.addEventListener("click", async () => {
-      draftBtn.disabled = true;
-      hint.textContent = "正在导出草稿…";
-      try {
-        const r = await self.request("POST", "/doc-edit",
-                                     { key: item.key, action: "draft" });
-        if (r && r.path) {
-          hint.textContent = "草稿已写出：" + r.path;
-          try { self.openKbPath(r.path, "正文草稿"); } catch (e) { /* 打不开也不影响导出 */ }
-        } else {
-          hint.textContent = "导出失败：" + JSON.stringify(r == null ? {} : r).slice(0, 120);
-        }
-      } catch (e) {
-        hint.textContent = "导出失败：" + ((e && e.message) ? e.message : e);
-      }
-      hint.setAttribute("title", hint.textContent);
-      draftBtn.disabled = false;
-    });
-    bar.append(sel, fontSel, draftBtn, btn, hint);
+    bar.append(sel, btn, hint);
     wrap.append(bar);
-
     const view = self.kbviewEl(doc, "div");
-    view.className = "zotero-kb-kbview-body";
-    // 只有正文滚动（min-height:0 是 flex 子项能收缩的关键）
     view.setAttribute("style", "flex:1 1 auto; min-height:0; overflow:auto;");
     wrap.append(view);
     body.append(wrap);
-
-    const paint = async (prefer) => {
+    const paint = async function (prefer) {
       hint.textContent = "读取中…";
-      // 存在性直接问 `kbLevels(key)`（它内部用同步 `_exists`，且路径已经算好），
-      // 再交给纯函数 `kbviewPickLevel` 决策 —— 真机与测试走同一条规则。
-      const levels = self.kbLevels(item.key);
-      const byId = {};
-      for (const lv of levels) byId[lv.id] = lv;
-      const picked = self.kbviewPickLevel(
-        prefer, (id) => !!(byId[id] && byId[id].exists));
-      if (!picked.levelId) {
-        view.textContent = "";
-        const p = self.kbviewEl(doc, "div");
-        p.setAttribute("style", "opacity:0.75;");
-        // 把"知识库目录 + 试过的路径"一并显示：用户反馈"有的文献打不开"时，
-        // 这一行就能看出是"没建索引"还是"知识库位置没定下来"（省一轮来回）。
-        p.textContent = "知识库里还没有这一篇的任何分级文件。"
-          + "先在管理面板「手动更新」建一次索引，"
-          + "或用右键菜单「重建本条目知识库」。";
-        const probe = self.kbviewEl(doc, "div");
-        probe.setAttribute("style", "opacity:0.6; font-size:11px; margin-top:4px;"
-          + " word-break:break-all;");
-        const kb = self.kbDir();
-        probe.textContent = (kb ? ("知识库目录：" + kb + "；")
-                                : "知识库目录未确定（面板「运行环境」→ 服务状态）；")
-          + "试过：" + (byId[self.kbviewLevel()] || {}).path;
-        view.append(probe);
-        view.append(p);
-        hint.textContent = "";
+      let payload = null;
+      try { payload = await self.kbviewPayloadForItem(item, prefer); }
+      catch (e) { payload = null; }
+      if (!payload) { hint.textContent = "读取失败"; return; }
+      hint.textContent = payload.empty
+        ? "（这一篇还没有知识库内容）" : String(payload.hint || "");
+      hint.setAttribute("title", hint.textContent);
+      if (payload.empty) {
+        self.kbviewSetHtml(doc, view, "<p style='opacity:0.75'>"
+          + String(payload.emptyWhy || "") + "</p>");
         return;
       }
-      const path = (byId[picked.levelId] || {}).path
-        || self.kbviewPath(picked.levelId, item.key);
-      // 优先读同名 `.html`（LaTeX 已渲染成 MathML，Firefox 原生显示公式）；
-      // 没有才退回 md，由 md2html 现场渲染（那时公式是原文文本）。
-      const htmlPath = path.replace(/\.md$/i, ".html");
-      let text = "";
-      let isHtml = false;
-      try {
-        if (self._exists(htmlPath)) {
-          text = await IOUtils.readUTF8(htmlPath);
-          isHtml = true;
-        }
-      } catch (e) { /* 读不到就走 md */ }
-      if (!text) {
-        try {
-          text = await IOUtils.readUTF8(path);
-        } catch (e) {
-          text = "";
-        }
-      }
-      draftBtn.style.display = picked.levelId === "fulltext" ? "" : "none";
-      const lvLabel = (byId[picked.levelId] || {}).label || picked.levelId;
-      const hintText = lvLabel
-        + (picked.fellBack ? "（默认那一级还没生成，已回退）" : "")
-        + "　" + text.length + " 字"
-        + (isHtml ? "　公式已渲染" : "　公式为原文文本");
-      hint.textContent = hintText;
-      hint.setAttribute("title", hintText);   // 截断了也能悬停看全
-      // 图片路径是相对 <kb>/mineru/<key>/ 的（kb 文件里不写本机路径）——
-      // 注入前改写成绝对 file://，否则窗格里全是裂图。
-      let html = isHtml ? text : self.md2html(text);
-      html = self.kbviewFixImgs(html, item.key);
-      self.kbviewSetHtml(doc, view, html
+      self.kbviewSetHtml(doc, view, payload.html
         || "<p style='opacity:0.75'>（这一级是空的）</p>");
-      // 注入后如果容器是空的（极少数解析失败），说明白，别让用户对着空白猜
-      if (!view.firstChild) {
-        self.kbviewSetHtml(doc, view,
-          "<p style='opacity:0.75'>这一级的内容没渲染出来（"
-          + text.length + " 字已读到）—— 请把这一行报给维护者。</p>");
-      }
-      // 「按页正文」这一级：每页挂「改这一页」+ 图片缩略图/点击打开原图。
-      // 只在正文这一级做（别的级别没有 ## p.N 页锚点）。
-      // ⚠ 渲染路径必须**同步**返回（用户反馈"菜单要立刻弹出来"）：这里只接线，
-      //   真正的网络请求都在用户点按钮之后。
-      if (picked.levelId === "fulltext") {
-        self.kbviewWirePages(doc, view, item, path, function () {
-          return paint(sel.value);
-        }).catch(function (e) {
-          Zotero.debug("[zotero-kb] 正文编辑接线失败：" + e);
-        });
-      }
     };
-
     sel.addEventListener("change", () => {
       self.setKbviewLevel(sel.value);
       paint(sel.value).catch(() => {});
     });
     btn.addEventListener("command", () => { paint(sel.value).catch(() => {}); });
     btn.addEventListener("click", () => { paint(sel.value).catch(() => {}); });
-
     await paint(self.kbviewLevel());
   },
 
 
+  // ================================================================ 纯函数与文件工具（自建列 / 降级模式共用）
+
   /**
-   * 把正文 markdown 按 `## p.N` 切成 {页码: 该页 markdown}（**纯函数**，桩测试直接测）。
-   *
+   * 把正文 markdown 按 "## p.N" 切成 {页码: 该页 markdown}（**纯函数**，桩测试直接测）。
    * 为什么在插件侧再切一次：服务端渲染好的 HTML 里拿不回 markdown 源文本，而
    * 「改这一页」要编辑的正是 markdown（图片行、公式、表格都是 markdown）。
    */
@@ -7033,7 +7816,6 @@ Object.assign(ZoteroKB, {
     return out;
   },
 
-
   /** 轮询一个 job 直到结束（最多约 6 分钟）。返回 job 对象，拿不到返回 {}。 */
   kbviewWaitJob: async function (jobId, onTick) {
     var self = ZoteroKB;
@@ -7049,21 +7831,18 @@ Object.assign(ZoteroKB, {
     return { state: "timeout" };
   },
 
-
   /**
    * 保存/恢复一页正文：POST /doc-edit -> 等 job -> 返回是否成功。
-   *
    * 保存之后服务端会**重切重向量**（用户口径"改完立即"），所以这里必须等它跑完
-   * 再重绘，否则窗格读到的还是旧内容。
+   * 再重绘，否则页面读到的还是旧内容。
    */
   kbviewRunDocEdit: async function (body, onStatus) {
     var self = ZoteroKB;
     var note = onStatus || function () {};
     note("正在重建切片…");
     var res = null;
-    try {
-      res = await self.request("POST", "/doc-edit", body);
-    } catch (e) {
+    try { res = await self.request("POST", "/doc-edit", body); }
+    catch (e) {
       note("请求失败：" + ((e && e.message) ? e.message : e));
       return false;
     }
@@ -7080,192 +7859,57 @@ Object.assign(ZoteroKB, {
     return false;
   },
 
-
   /**
-   * 「按页正文」接线：给每个 `## p.N` 页块挂上「改这一页 / 恢复原版」+ 图片交互。
-   *
-   * 页块由 mdhtml / md2html 渲染成 `<div class="kb-page" data-kbpage="N">`，
-   * 所以这里只要 query 一遍 DOM 就能拿到每页；markdown 源文本另外从 `.md` 读。
-   * 全过程只读，不阻塞渲染。
-   */
-  kbviewWirePages: async function (doc, view, item, mdPath, repaint) {
-    var self = ZoteroKB;
-    var els = [];
-    try { els = Array.from(view.querySelectorAll(".kb-page")); }
-    catch (e) { return; }
-    if (!els.length) return;
-    // 图片：限高 + 点击打开原图（不引 lightbox 依赖）
-    try {
-      Array.from(view.querySelectorAll("img")).forEach(function (img) {
-        img.setAttribute("style", "max-width:100%; max-height:180px;"
-          + " height:auto; display:block; margin:4px 0; cursor:zoom-in;");
-        img.addEventListener("click", function () {
-          var src = String(img.getAttribute("src") || "");
-          var path = src.indexOf("file:///") === 0
-            ? decodeURIComponent(src.slice(8)).replace(/\//g, "\\") : "";
-          if (path) self.openKbPath(path, "正文原图");
-        });
-      });
-    } catch (e) { /* 图片接线失败不影响编辑 */ }
-
-    var mdText = "";
-    try { mdText = await IOUtils.readUTF8(mdPath); } catch (e) { mdText = ""; }
-    var mdPages = self.kbviewSplitMd(mdText);
-    var meta = {};
-    try {
-      meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(item.key));
-    } catch (e) { meta = {}; }
-    var edited = {};
-    (meta && meta.edited || []).forEach(function (n) { edited[n] = true; });
-    var stale = {};
-    (meta && meta.stale || []).forEach(function (n) { stale[n] = true; });
-    els.forEach(function (el) {
-      var n = parseInt(el.getAttribute("data-kbpage"), 10);
-      if (!n) return;
-      self.kbviewDecoratePage(doc, el, item, n, mdPages[n] || "",
-                              !!edited[n], !!stale[n], repaint);
-    });
-  },
-
-
-  /** 给一个页块加工具条与编辑态（工具条在页块内部顶部）。 */
-  kbviewDecoratePage: function (doc, el, item, page, mdText, edited, stale, repaint) {
-    var self = ZoteroKB;
-    var busy = false;
-    var bar = self.kbviewEl(doc, "div");
-    bar.setAttribute("style", "display:flex; gap:6px; align-items:center;"
-      + " flex-wrap:wrap; border-bottom:1px dashed rgba(127,127,127,0.4);"
-      + " margin:2px 0 4px; padding-bottom:2px; font-size:11px;");
-    var tag = self.kbviewEl(doc, "span");
-    tag.textContent = "p." + page
-      + (edited ? " · 已修订" : "") + (stale ? " · 基于旧解析" : "");
-    tag.setAttribute("style", (edited ? "background:rgba(255,196,0,0.35);"
-      + " padding:0 4px; border-radius:3px;" : "opacity:0.7;"));
-    if (stale) tag.setAttribute("title", "这一页的解析结果变过，你改的是旧版 —— 仍用你的版本，请核对一下");
-    var editBtn = self.kbviewEl(doc, "button");
-    editBtn.textContent = edited ? "修改这一页" : "改这一页";
-    editBtn.setAttribute("style", "padding:0 5px; font-size:11px;");
-    var restoreBtn = self.kbviewEl(doc, "button");
-    restoreBtn.textContent = "恢复原版";
-    restoreBtn.setAttribute("style", "padding:0 5px; font-size:11px;");
-    restoreBtn.disabled = !edited;
-    var status = self.kbviewEl(doc, "span");
-    status.setAttribute("style", "opacity:0.7;");
-    bar.append(tag, editBtn, restoreBtn, status);
-    el.insertBefore(bar, el.firstChild);
-
-    var setBusy = function (b) {
-      busy = b;
-      editBtn.disabled = b;
-      restoreBtn.disabled = b || !edited;
-    };
-    var submit = function (body) {
-      if (busy) return;
-      setBusy(true);
-      self.kbviewRunDocEdit(body, function (msg) { status.textContent = msg; })
-        .then(function (ok) {
-          if (ok) {
-            repaint().catch(function () {});
-          } else {
-            setBusy(false);
-          }
-        })
-        .catch(function (e) {
-          status.textContent = "失败：" + ((e && e.message) ? e.message : e);
-          setBusy(false);
-        });
-    };
-    var openEditor = function () {
-      if (busy) return;
-      if (el.querySelector(".zotero-kb-page-edit")) return;
-      var ta = self.kbviewEl(doc, "textarea");
-      ta.className = "zotero-kb-page-edit";
-      ta.setAttribute("style", "width:100%; min-height:220px; font-family:monospace;"
-        + " font-size:12px; white-space:pre-wrap; box-sizing:border-box;");
-      ta.value = mdText;
-      var save = self.kbviewEl(doc, "button");
-      save.textContent = "保存";
-      var cancel = self.kbviewEl(doc, "button");
-      cancel.textContent = "取消";
-      var row = self.kbviewEl(doc, "div");
-      row.setAttribute("style", "display:flex; gap:6px; margin:4px 0;");
-      row.append(save, cancel);
-      var holder = self.kbviewEl(doc, "div");
-      holder.append(ta, row);
-      el.appendChild(holder);
-      save.addEventListener("click", function () {
-        submit({ key: item.key, page: page, text: ta.value });
-      });
-      cancel.addEventListener("click", function () {
-        repaint().catch(function () {});
-      });
-    };
-    editBtn.addEventListener("click", openEditor);
-    restoreBtn.addEventListener("click", function () {
-      submit({ key: item.key, page: page, action: "restore" });
-    });
-  },
-
-
-  /**   * 把 `<img src="相对路径">` 改写成能加载的绝对 `file://`。
+   * 把 `<img src="相对路径">` 改写成能加载的 `resource://zotero-kb-files/…`，
+   * 并把**绝对路径**写进 `data-kbv-path`（页面上点图"看原图"仍交给系统默认程序）。
    *
    * kb 文件里图片是 `images/xxx.jpg`（相对 `<kb>/mineru/<key>/`），这样知识库
-   * 整体搬家不用重写任何文件。窗格是特权 chrome 文档，`file://` 一般可加载；
-   * 绝对/协议相对的 src 原地不动（幂等），没有 kbDir 时原样返回（宁可裂图，
-   * 也不要拼出半个坏 URL）。
+   * 整体搬家不用重写任何文件；绝对/协议相对的 src 原地不动（幂等），
+   * 拿不到 kbDir 时原样返回（宁可裂图，也不要拼出半个坏 URL）。
+   *
+   * ⚠ 这里**不能**用 `file://`：resource:// 的页面加载 file:// 图片会被安全策略
+   *   拦掉，表现是图片全都空白（naturalWidth=0）—— 真机实测踩到，见 KB_FILES_RES。
    */
   kbviewFixImgs: function (html, key) {
     var self = ZoteroKB;
     var s = String(html == null ? "" : html);
     if (s.indexOf("<img") < 0) return s;
     var base = "";
+    var dir = "";
     try {
-      var kb = self.kbDir();
+      const kb = String(self.kbDir() || "").replace(/[\\/]+$/, "");
       if (kb && key) {
-        base = String(kb).replace(/[\\/]+$/, "") + "\\mineru\\" + key + "\\";
+        dir = kb + "\\mineru\\" + key + "\\";
+        base = self.kbviewFilesURI();
       }
-    } catch (e) { base = ""; }
-    if (!base) return s;
-    var uriOf;
-    try {
-      uriOf = function (rel) {
-        var abs = base + String(rel).replace(/\//g, "\\");
-        return Services.io.newFileURI(Zotero.File.pathToFile(abs)).spec;
-      };
-    } catch (e) { return s; }
-    return s.replace(/(<img\b[^>]*?\bsrc=")([^"]*)(")/g,
-      function (m, pre, src, post) {
-        // 已经是绝对 URL（http:/file:/data:/…）、协议相对、或锚点 → 不动
+    } catch (e) { base = ""; dir = ""; }
+    if (!base || !dir) return s;
+    return s.replace(/(<img\b[^>]*?)\bsrc="([^"]*)"/g,
+      function (m, pre, src) {
         if (!src || /^(?:[a-z][a-z0-9+.\-]*:|\/\/|#)/i.test(src)) return m;
-        try { return pre + uriOf(src) + post; } catch (e) { return m; }
+        const rel = String(src).replace(/\\/g, "/").replace(/^\.\//, "");
+        const abs = dir + rel.replace(/\//g, "\\");
+        return pre + 'src="' + base + "mineru/" + key + "/" + rel
+          + '" data-kbv-path="' + abs.replace(/"/g, "&quot;") + '"';
       });
   },
 
-
   /**
    * 最小 markdown → HTML（**纯函数**，桩测试直接测它）。
-   *
-   * 覆盖知识库 md 里真正用到的语法：`#` 标题、`-`/数字列表、`>` 引用、
-   * `**粗**`、`*斜*`、`` `代码` ``、`[文字](链接)`、`$$公式$$`、`![图注](图片)`、
-   * **管道表**（MinerU 的表格块就是它）、空行分段。**不做嵌套列表**。
-   *
-   * ⚠ 先转义 HTML 再套标记：md 是我们自己生成的，但笔记原文里有 `<`、`&`
-   *   （用户笔记里就有），不转义会让窗格渲染坏掉甚至注入。
+   * 覆盖知识库 md 里真正用到的语法：# 标题、-/数字列表、> 引用、**粗**、*斜*、
+   * 反引号代码、[文字](链接)、$$公式$$、![图注](图片)、管道表、空行分段。
+   * ⚠ 先转义 HTML 再套标记：md 是我们自己生成的，但笔记原文里有 <、&。
    */
   md2html: function (md) {
     const esc = (s) => String(s == null ? "" : s)
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const inline = (s) => esc(s)
-      // 行内公式：先处理，免得里面的 * 和 _ 被当成强调
       .replace(/\$\$([^$]+)\$\$/g,
                '<code style="background:rgba(127,127,127,0.15);'
                + ' padding:0 3px; border-radius:3px;">$1</code>')
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
       .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-      // 图片：渲染成真的 <img>（用户要"侧边栏能看正文并渲染里面的图表"）。
-      // 路径**保持相对**（kb 文件里就是 images/xxx.jpg），由 kbviewFixImgs 在注入前
-      // 改写成绝对 file:// —— 知识库搬家不用重写文件。自闭合，窗格可能按 XML 解析。
       .replace(/!\[([^\]]*)\]\(([^)]+)\)/g,
                '<img src="$2" alt="$1" style="max-width:100%; height:auto;'
                + ' display:block; margin:4px 0;" />')
@@ -7276,10 +7920,7 @@ Object.assign(ZoteroKB, {
     let buf = [];
     let pageOpen = false;
     const flushBuf = () => {
-      if (buf.length) {
-        out.push("<p>" + buf.join("<br>") + "</p>");
-        buf = [];
-      }
+      if (buf.length) { out.push("<p>" + buf.join("<br>") + "</p>"); buf = []; }
     };
     const closeList = () => {
       if (list) { out.push("</" + list + ">"); list = ""; }
@@ -7296,7 +7937,6 @@ Object.assign(ZoteroKB, {
     const lines = String(md == null ? "" : md).split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       const rawI = lines[i];
-      // 管道表：本行 |...| + 下一行 |---| → 画成 <table>（MinerU 的表格块就是它）
       if (/^\s*\|.*\|\s*$/.test(rawI)
           && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?/.test(lines[i + 1])) {
         flushBuf(); closeList();
@@ -7327,8 +7967,6 @@ Object.assign(ZoteroKB, {
       const line = raw.replace(/\s+$/, "");
       if (!line.trim()) { flushBuf(); closeList(); continue; }
       let m;
-      // 页码锚点：把 ## p.N 包成 <div class="kb-page" data-kbpage="N">，
-      // 窗格靠它把「按页正文」切成可编辑的页块（与 mdhtml.render 同一套 DOM）。
       if ((m = line.match(/^(#{1,6})\s+p\.(\d+)\s*$/))) {
         flushBuf(); closeList();
         if (pageOpen) out.push("</div>");
@@ -7343,9 +7981,8 @@ Object.assign(ZoteroKB, {
       if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
         flushBuf(); closeList();
         const lvl = m[1].length;
-        // em：跟随容器字号（窗格有字号调节，写死 px 会盖住它）
         const size = { 1: "1.35em", 2: "1.18em", 3: "1.06em" }[lvl] || "1em";
-        out.push(`<div style="font-weight:600; font-size:${size}; margin:6px 0 2px;">`
+        out.push('<div style="font-weight:600; font-size:' + size + '; margin:6px 0 2px;">'
                  + inline(m[2]) + "</div>");
         continue;
       }
@@ -7368,7 +8005,6 @@ Object.assign(ZoteroKB, {
                  + inline(m[1]) + "</blockquote>");
         continue;
       }
-      // 独立成行的公式块：$$…$$ 或 \[…\]
       if ((m = line.match(/^\s*\$\$(.+)\$\$\s*$/) || line.match(/^\s*\\\[(.+)\\\]\s*$/))) {
         flushBuf(); closeList();
         out.push("<div style='margin:4px 0; padding:3px 6px; font-family:monospace;"

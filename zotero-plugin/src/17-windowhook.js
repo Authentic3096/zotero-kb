@@ -34,6 +34,10 @@ Object.assign(ZoteroKB, {
     try {
       if (!self.kbColKeys || !self.kbColKeys.length) self.registerKbColumns();
     } catch (e) { Zotero.debug("[zotero-kb] 窗口钩子里注册两列失败：" + e); }
+    // 「知识库」自建列（20-kbview.js）也属于"与窗口相关的 UI"：
+    // 每个主窗口各装一份（rail 按钮 + 列 + 页面）。多窗口互不干扰。
+    try { self.kbviewMount(win); }
+    catch (e2) { Zotero.debug("[zotero-kb] 窗口钩子里装知识库侧栏失败：" + e2); }
     // 工具栏按钮与条目右键菜单也属于"与窗口相关的 UI"，必须在窗口钩子里做
     try { self.registerToolbarButton(win); }
     catch (e) { Zotero.debug("[zotero-kb] 加工具栏按钮失败：" + e); }
@@ -60,9 +64,18 @@ Object.assign(ZoteroKB, {
         if (menu) menu.remove();
       }
     } catch (e) { /* ignore */ }
+    // 自建列要卸干净（按钮 / 列 / 定时器）—— 窗口关闭后那些 DOM 就没人管了
+    try { self.kbviewUnmount(win); } catch (e2) { /* ignore */ }
     self.mainWindow = null;
-    // 文档要求：窗口卸载时要停掉计时器，否则可能内存泄漏
-    // （只停轮询，列注册保留 —— 下次 onMainWindowLoad 会复用）
-    try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
+    // 文档要求：窗口卸载时要停掉计时器，否则可能内存泄漏。
+    // ⚠ 只有在**一个主窗口都不剩**时才停 —— 原来是无条件停，于是"关掉第二个窗口"
+    //   会把任务轮询一起停掉（而主窗口还在跑），后续 DSH 派活再也没人接。
+    //   实测踩到：关掉第二个窗口后，派出去的任务一直 pending 直到超时。
+    try {
+      const left = Zotero.getMainWindows ? Zotero.getMainWindows().length : 0;
+      if (!left) self.stopTaskPolling();
+    } catch (e) {
+      try { self.stopTaskPolling(); } catch (e2) { /* ignore */ }
+    }
   },
 });

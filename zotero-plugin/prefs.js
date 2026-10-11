@@ -43,8 +43,12 @@ pref("extensions.zotero.zotero-kb.optionalGuideDone", false);
 // —— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
 pref("extensions.zotero.zotero-kb.kbviewLevel", "outline");
 
-// 「知识库」分区的字号（px，只作用于这一块）
+// 「知识库」那一列的字号（px，只作用于这一列）
 pref("extensions.zotero.zotero-kb.kbviewFont", 13);
+
+// ⚠ 宽度**没有**首选项：那一列的宽度就是原生条目窗格的宽度（用户拖
+//   #zotero-items-splitter / #zotero-context-splitter 即可）——用户 2026-10-11
+//   明确要「覆盖在原侧边栏上、同宽窄能拉动」，所以别再加「窄/标准/宽」档位。
 
 // ---- 运行环境（三个位置互相独立，谁也不能由谁推算）
 //

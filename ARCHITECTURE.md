@@ -833,25 +833,36 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 ③ 那段"把配置同步进插件 pref"的 JS 不能塞进 f-string（嵌套 dict 花括号会让
 f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --check` 单测。
 
-#### B14. 右侧栏「知识库」分区
-用户：「zotero 的文献右侧栏是可以正确显示 md 格式的，能不能把知识库中的 md 在这里
-显示，方便和原文对照？」→ `zotero-plugin/src/20-kbview.js`。
+#### B14. 右侧栏「知识库」：**自建一列**，独占条目窗格
+用户先说「把知识库里的 md 显示在右侧栏，方便和原文对照」，看过 `leike0813/zotero-agents`
+的 ACP Chat 后又拍板「仿他的做，要能独占一页」→ `zotero-plugin/src/20-kbview.js`
++ `zotero-plugin/content/kbview.{html,css,js}`。
 
-- **只读展示**：读 `kb/` 里现成的 md → `md2html()` → 写进分区 body。
-  不发请求、不写数据；文件不在就显示"还没生成"的文案（**不在窗格里现场生成** ——
-  纲要要按节调模型，一篇学位论文几分钟）。
-- **级别下拉**：摘要与要点 / 分节纲要 / 完整档案 / 按页正文 / 图注与表格 / 权重与经验；
-  选择记进 pref（默认**分节纲要**）；文件缺失时按 纲要 → 摘要 → 档案 回退并在
-  提示行写明"已回退"。
-- ⚠ **与已删除的「窗格本地模型对话」（19-itempane）的区别**（别把这次回退当成复辟）：
-  那个是交互（提问→调模型→多轮讨论），用户判定没用且 bug 多，整条链删了；
-  这个是只读。所以 `ItemPaneManager` 重新出现是有意的 ——
-  `check_plugin.py` 反向清单里只留"对话窗格"那批函数名（`paneSend`/`chatOf`…）。
-- ⚠ **l10n 必填且必须"只有名字、值留空"**：`header`/`sidenav` 的 `l10nID`
-  若在 ftl 里带了值，Zotero 的 `translateFragment` 会把节点内容抹掉 ——
-  结果是"分区标题空白 + `onRender` 拿到的 body 是 null"，**且不报错**（实测踩过）。
-- `md2html()` 是纯函数（桩测试 8 项）：标题/列表/引用/粗斜体/行内代码/链接/
-  `$$公式$$`（保留 LaTeX、等宽底纹）/图片降级成图注；**先转义 HTML 再套标记**。
+- **为什么不能再用 `ItemPaneManager.registerSection`**：Zotero 的 itemPane 是一列纵向堆叠，
+  rail 只做 `scrollToPane` / pin —— 注册进去的分区**永远只能堆在分区列最下面**，做不到独占。
+  所以改成自己往 `#zotero-item-pane` 里插一列（`insertBefore(container, #zotero-view-item-sidenav)`），
+  打开时把原生的 `#zotero-item-pane-content` 临时 `hidden`，视觉上独占。
+- **rail 按钮 append 到 `#zotero-view-item-sidenav`**（天然就在最下面），`class="btn"`
+  继承 Zotero 自己的 rail 样式。⚠ **绝不能给它 `data-pane`** —— `ItemPaneSidenav#render()`
+  会按"已注册的分区"隐藏 `.btn[data-pane]` 的**父元素**，而父元素就是 rail 本身。
+- **页面跑在 XUL `<browser type="content">` 里，地址是 `resource://zotero-kb/content/kbview.html`**：
+  插件在 startup 注册自己的 `resource://` 包（`KB_RES_KEY`）。⚠ 直接加载 `rootURI`（`jar:`）
+  的两难、以及 `maychangeremoteness` 让它变远程进程的坑，见 `接手.md` §5.9 ——
+  Zotero 自己的 reader 也是 `createXULElement('browser')` + `resource://`。
+- **分工**：**宿主取数据**（IOUtils / kbDir / `kbLevels()` / `doc-edit` / `kbviewFixImgs`），
+  **页面只渲染**（普通 HTML/CSS/JS，终于能正常写 CSS：`overflow-wrap:anywhere`、
+  `max-width:100%`、MathML、宽表格横向滚动）。跨 principal 只传 **JSON 字符串**，
+  经 `contentWindow.wrappedJSObject.kbvReceive` 与注入的 `__kbvHostPost`。
+- **图片走 `resource://zotero-kb-files/`**（→ 知识库目录），**不能走 `file://`**
+  （resource:// 页面加载 file:// 图片会被安全策略拦掉，静默空白）。
+- **宽度归原生 splitter**（用户要"同宽窄能拉动"）：列只是 `flex:1` 撑满原生条目窗格，
+  我们**不改窗格 width**；`hidden`/`collapsed`/splitter state 关闭时逐项还原。
+- **条目切换**自己盯（自建列没有 `onItemChange` 回调）：打开期间每 400ms 比一次
+  `kbviewCurrentItem()`（阅读器页签取附件→**父条目**，与 Zotero 的 item-details 一致）。
+- **取不到内部 id 就降级**（换 Zotero 版本）：退回 `registerSection` 只读模式并写状态文件，
+  **不让面板整个消失**。
+- 「改这一页 / 恢复原版 / 导出草稿」仍是原逻辑，只换了传输层；`md2html()` 与
+  `kbviewSplitMd()` 仍是纯函数（桩测试盯着）。
 
 #### B15. 能力探测的菜单状态行
 第一版把「（未连接）/（检测中）」挂在**顶层标题**上，出现两个问题：
@@ -1118,7 +1129,8 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 | 父子切块 | ✅ 父块（节/章）不进 FTS/向量；子块 300 字带 `section_path`；命中子块返回父块上下文 | `maintain.py check`（FTS 与应索引子块一一对应）+ 归档→还原 `parent_id` 无悬空 |
 | 混合检索 | ✅ 中文短语召回 + 向量 + RRF + 权重上浮 + small-to-big 上下文 | 关键词与语义两路实测均可用 |
 | MCP 接入 | ✅ **13 工具 + 4 资源** | AI 里 `kb_search` 等可直接调用 |
-| Zotero 插件 | ✅ 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** + 右侧栏预览（图片/表格/按页改正文） | 真机验收（v1.8.0 / v1.9.0） |
+| Zotero 插件 | ✅ 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** | 真机验收（v1.8.0 / v1.9.0） |
+| 「知识库」侧栏 | ✅ **自建一列**独占条目窗格：rail 最下面一个图标 → 开/关；正文/图片/MathML/宽表格都正常；逐页编辑；宽度跟原生一样可拖；多窗口各一份、禁用后 DOM 干净 | 真机验收 9 项（v1.10.0，见 `接手.md` §5.9） |
 | 条目生命周期 | ✅ 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `trash_acceptance.py` 真机六步 + `tests/test_sections.py` |
 | 本地服务 | ✅ 96 项自检 | `online/localserver.py --test` |
 | 测试 | ✅ 37 个测试文件全过（0 失败） | `tools/run_tests.py`（工作文件夹） |

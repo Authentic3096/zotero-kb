@@ -23,7 +23,13 @@ Object.assign(ZoteroKB, {
     try { self.stopTaskPolling(); } catch (e) { /* ignore */ }
     try { self.unregisterWeightColumn(); } catch (e) { /* ignore */ }
     try { self.unregisterKbColumns(); } catch (e) { /* ignore */ }
-      try { self.unregisterKbViewSection(); } catch (e) { /* ignore */ }
+      // 自建列：**卸必须对称** —— 按钮、列、监听、定时器都要清干净，
+    // 否则下次启用会出现两份（Zotero 会复用主窗口）。
+    try { self.kbviewUnmountAll(); } catch (e) { /* ignore */ }
+    // 只读降级模式留下的分区
+    try { self.unregisterKbViewSection(); } catch (e) { /* ignore */ }
+    // 我们注册的 resource 包：留着会让下次启用指向旧包
+    try { self.unregisterKbResource(); } catch (e) { /* ignore */ }
     // ⚠ 2026-10-05：内容窗格分区（ItemPaneManager）、退出提醒（quit guard）、
     //   以及"对话不落盘所以清掉 chatState"这三件事随窗格一起删了。
     //   阅读器的监听本来也不需要手动摘（registerEventListener 传了 pluginID）。
@@ -178,11 +184,14 @@ Object.assign(ZoteroKB, {
     // ⚠ 旧版本只有 mineruGuideDone；升级上来的用户那条 pref 还是 true，
     //   所以 19-mineruguide.js 里**两个都认**，不会二次打扰。
     optionalGuideDone: "zotero-kb.optionalGuideDone",
-    // 右侧栏「知识库」分区显示哪一级（2026-10-05 新增，见 20-kbview.js）。
+    // 右侧栏「知识库」那一列显示哪一级（2026-10-05 新增，见 20-kbview.js）。
     // 默认「分节纲要」—— 那一层就是为"对着 PDF 读"设计的（每节带页码范围）。
     kbviewLevel: "zotero-kb.kbviewLevel",
-    // 右侧栏「知识库」分区的字号（px）。**只作用于我们这一块**（容器上的内联
-    // font-size），不动 Zotero 的任何默认设置。
+    // 那一列的字号（px）。**只作用在我们这一列**，不动 Zotero 的任何默认设置。
+    //
+    // ⚠ 这里原来还有一个 `kbviewWidth`（窄/标准/宽档位），2026-10-11 删了：
+    //   用户要的是"覆盖在原侧边栏上、同宽窄能拉动"，也就是**宽度归原生 splitter**，
+    //   我们不去改窗格宽度。见 20-kbview.js 里那段注释。
     kbviewFont: "zotero-kb.kbviewFont",
     // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。

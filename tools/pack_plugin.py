@@ -48,7 +48,11 @@ EXCLUDE_DIRS = {"src"}
 #   `header.l10nID` / `sidenav.l10nID` 是**必填**项 —— 漏了整目录的症状是
 #   "内容窗格里分区标题空白"，而且**没有任何报错**（本机的报错口径里没有这类）。
 #   原来的收集逻辑只收根目录下的**文件**，目录会被整目录跳过。
-RECURSE_DIRS = ("locale",)
+# ⚠ 2026-10-11：加 `content/` —— 「知识库」自建列把界面放在
+#   `content/kbview.html`（+ .css / .js），由 XUL <browser> 按 rootURI 加载。
+#   打包器原来只收根目录下的**文件**，不收任何目录，于是这三份会被漏掉 ——
+#   症状是"列装上了、里面一片空白（resource 404）"，而 Zotero 那条报错没有线索。
+RECURSE_DIRS = ("locale", "content")
 
 # 打进包的文件。
 # ⚠ 这里必须**自动列全**，不能只写死几个 —— 曾经因为硬编码列表漏掉了

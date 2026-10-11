@@ -170,7 +170,16 @@ const Services = {
   },
   locale: { availableLocales: ["zh-CN", "en-US"] },
   // 图片相对路径 → file:// （20-kbview.js 的 kbviewFixImgs 用它；桩里给个够用的实现）
-  io: { newFileURI: (f) => ({ spec: "file:///" + String(f.path).replace(/\\/g, "/") }) },
+  io: {
+    newFileURI: (f) => ({ spec: "file:///" + String(f.path).replace(/\\/g, "/") }),
+    newURI: (u) => ({ spec: String(u) }),
+    // 自建列要注册 resource 包（resource://zotero-kb/ 与 …-files/），桩里给个空实现
+    getProtocolHandler: () => ({
+      QueryInterface() { return this; },
+      setSubstitution() {},
+      resolveURI: (u) => ({ spec: String(u.spec) }),
+    }),
+  },
   dirsvc: { get: () => ({ path: "D:\\" }) },
   // ⚠ 为了能测「Ollama 装在本机默认位置」那条分支：`ollamaExePath()` 读
   //   %LOCALAPPDATA%，桩里给它一个中性值（别写真实用户名，发布审计会拦）。
@@ -337,18 +346,25 @@ if (KB) {
   // ⚠ 2026-10-05 晚改成正向：用户要求「把知识库 md 显示在右侧栏」→
   //   现在**应该**注册一个分区（zotero-kb-kbview）。被删掉的是"对话窗格"，
   //   所以上面那批 paneSend/chatOf 函数名仍然必须不存在（见 check_plugin）。
-  check("注册了「知识库」分区",
+  // ---- ⑥b 2026-10-11：自建列（不再用 registerSection）
+  //
+  // 桩环境里 Zotero.getMainWindow().document 没有主窗口那份 DOM，所以 startup 时
+  // 会自动**降级**回分区模式 —— 下面这组断言钉的正是那条兜底路（"取不到就不让
+  // 面板消失"）。真正的自建列在后面的 fake DOM 里单独测。
+  check("取不到主窗口 DOM 时降级注册了「知识库」分区",
     calls.sections.length === 1
     && calls.sections[0].paneID === "zotero-kb-kbview",
     JSON.stringify(calls.sections.map((s) => s.paneID)));
   const sec0 = calls.sections[0] || {};
-  check("分区 header/sidenav 的 l10nID 与图标都在（缺了就是标题空白且不报错）",
+  check("降级分区的 header/sidenav l10nID 与图标都在（缺了就是标题空白且不报错）",
     sec0.header && sec0.header.l10nID === "zotero-kb-kbview-header"
     && sec0.header.icon && sec0.sidenav
     && sec0.sidenav.l10nID === "zotero-kb-kbview-sidenav"
     && sec0.sidenav.icon, JSON.stringify(sec0.header));
-  // ⚠ 2026-10-05：**阅读器页签也必须开** —— 用户截图反馈"在文献打开后就没有
-  //   插件图标了"（原来照抄了被删掉的对话窗格，只认 library）。
+  check("状态文件里如实记了降级原因（不是静默降级）",
+    (calls.status.some((s) => String(s.kbViewColumn || "").indexOf("degraded") >= 0)),
+    JSON.stringify(calls.status.filter((s) => s.kbViewColumn).slice(-2)));
+  // ⚠ 阅读器也要认（用户："在文献打开后就没有插件图标了"）——
   //   "对着 PDF 读纲要"正是最常用的场景。
   check("分区在条目库与阅读器页签都开、非普通条目不开",
     KB.kbviewEnabled({ isRegularItem: () => true }, "library") === true
@@ -357,25 +373,260 @@ if (KB) {
     && KB.kbviewEnabled({ isRegularItem: () => true }, "reader-unloaded") === false
     && KB.kbviewEnabled(null, "library") === false);
 
-  // .html（公式已渲染成 MathML）优先、没有才回退 md
+  // ---- ⑥c 自建列本体：用一份假 DOM 把"装 → 开 → 关 → 卸"整条走一遍
+  //
+  // 为什么值得专门做一份假 DOM：真机验证要重启 Zotero，而自建列最容易出的两类
+  // 事故（**漏 remove 导致两份**、**关了列没还原原生分区列**）在静态代码里看不出来。
+  const fake = (function () {
+    const ids = {};
+    const camel = (k) => String(k).replace(/-([a-z])/g, (m, c) => c.toUpperCase());
+    const mkStyle = () => ({
+      setProperty(k, v) { this[camel(k)] = v; },
+      // 真的 CSSStyleDeclaration 会把 style="a:b;c:d" 属性解析成属性访问；
+      // 假 DOM 不模拟这一步的话，"列默认 display:none" 这类断言会假失败。
+      _apply(text) {
+        String(text).split(";").forEach((part) => {
+          const i = part.indexOf(":");
+          if (i < 0) return;
+          const n = part.slice(0, i).trim();
+          if (n) this[camel(n)] = part.slice(i + 1).trim();
+        });
+      },
+    });
+    const mkEl = (tag) => {
+      const el = {
+        tagName: tag, children: [], parentElement: null, attributes: {},
+        style: mkStyle(), listeners: {},
+        classList: { add() {}, remove() {}, contains: () => false },
+        setAttribute(k, v) {
+          this.attributes[k] = String(v);
+          if (k === "id") ids[String(v)] = this;
+          if (k === "style") this.style._apply(String(v));
+        },
+        getAttribute(k) {
+          return Object.prototype.hasOwnProperty.call(this.attributes, k)
+            ? this.attributes[k] : null;
+        },
+        removeAttribute(k) { delete this.attributes[k]; },
+        hasAttribute(k) {
+          return Object.prototype.hasOwnProperty.call(this.attributes, k);
+        },
+        addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); },
+        removeEventListener() {},
+        fire(t) { (this.listeners[t] || []).forEach((fn) => fn({ target: this })); },
+        appendChild(c) {
+          if (c.parentElement) c.parentElement.removeChild(c);
+          this.children.push(c); c.parentElement = this; return c;
+        },
+        insertBefore(c, ref) {
+          if (c.parentElement) c.parentElement.removeChild(c);
+          const i = ref ? this.children.indexOf(ref) : -1;
+          if (i < 0) this.children.push(c); else this.children.splice(i, 0, c);
+          c.parentElement = this; return c;
+        },
+        removeChild(c) {
+          const i = this.children.indexOf(c);
+          if (i >= 0) { this.children.splice(i, 1); c.parentElement = null; }
+          return c;
+        },
+        remove() { if (this.parentElement) this.parentElement.removeChild(this); },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        get firstChild() { return this.children[0] || null; },
+        set textContent(v) { this._text = v; this.children = []; },
+        get textContent() { return this._text; },
+      };
+      return el;
+    };
+    const doc = {
+      createXULElement: (t) => mkEl(t),
+      createElement: (t) => mkEl(t),
+      createElementNS: (ns, t) => mkEl(t),
+      getElementById: (id) => ids[id] || null,
+      querySelector: () => null,
+      head: mkEl("head"),
+      documentElement: mkEl("htmlElement"),
+    };
+    // <item-pane id="zotero-item-pane">
+    //   <deck id="zotero-item-pane-content" selectedIndex="0"/>
+    //   <item-pane-sidenav id="zotero-view-item-sidenav"/>
+    const pane = mkEl("item-pane");
+    pane.setAttribute("id", "zotero-item-pane");
+    const deck = mkEl("deck");
+    deck.setAttribute("id", "zotero-item-pane-content");
+    deck.setAttribute("selectedIndex", "0");
+    const sidenav = mkEl("item-pane-sidenav");
+    sidenav.setAttribute("id", "zotero-view-item-sidenav");
+    pane.appendChild(deck);
+    pane.appendChild(sidenav);
+    const win = {
+      document: doc,
+      listeners: {},
+      addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); },
+      removeEventListener() {},
+      Zotero_Tabs: { selectedType: "library", selectedID: "t1" },
+      ZoteroPane: { getSelectedItems: () => [fakeItem] },
+      innerWidth: 1400,
+    };
+    const fakeItem = {
+      key: "ABCD1234", libraryID: 1, parentID: null,
+      isRegularItem: () => true,
+      getField: (f) => (f === "title" ? "测试文献" : ""),
+    };
+    return { win, doc, pane, deck, sidenav, ids, fakeItem };
+  })();
+
+  check("自建列能装上（返回 true）", KB.kbviewMount(fake.win) === true);
+  const host = KB.kbviewHost(fake.win, false);
+  check("rail 上多了我们的按钮（且不放在 .inherit-flex 里、不带 data-pane）",
+    !!host && !!host.lib && host.lib.button.parentElement === fake.sidenav
+    && host.lib.button.getAttribute("class").indexOf("btn") >= 0
+    && host.lib.button.getAttribute("data-pane") === null
+    && host.lib.button.getAttribute("id") === "zotero-kb-kbview-entry-library",
+    JSON.stringify(fake.sidenav.children.map((c) => c.getAttribute("id"))));
+  check("按钮的图标走 rootURI（sidenav-icon.svg）",
+    !!host && String(host.lib.button.style.backgroundImage || "").indexOf("sidenav-icon.svg") >= 0,
+    host && host.lib.button.style.backgroundImage);
+  check("我们那一列插在原生分区列与 rail 之间（不是塞进分区列里）",
+    !!host && host.lib.container.parentElement === fake.pane
+    && fake.pane.children.indexOf(host.lib.container) === 1
+    && fake.pane.children.indexOf(fake.sidenav) === 2
+    && fake.pane.children.indexOf(fake.deck) === 0,
+    JSON.stringify(fake.pane.children.map((c) => c.getAttribute("id"))));
+  check("列默认是藏起来的（display:none）",
+    !!host && host.lib.container.style.display === "none");
+  check("列里装的是 <browser>，src 指向插件的 content/kbview.html",
+    !!host && host.lib.browser.tagName === "browser"
+    && String(host.lib.browser.getAttribute("src")).indexOf("content/kbview.html") >= 0,
+    host && host.lib.browser.getAttribute("src"));
+
+  // 打开：原生分区列让开 + 按钮按下 + 轮询起来
+  KB.kbviewOpen(fake.win, "library");
+  check("打开后原生分区列被藏起来（hidden=true）",
+    fake.deck.getAttribute("hidden") === "true");
+  check("打开后我们那一列显示出来（display:flex）",
+    host.lib.container.style.display === "flex");
+  check("打开后按钮标成按下（aria-pressed=true）",
+    host.lib.button.getAttribute("aria-pressed") === "true"
+    && host.lib.button.getAttribute("data-kbview-open") === "true");
+  check("打开后条目切换轮询起来了（timerArmed=true）",
+    host.timerArmed === true);
+  check("打开时先存下了原生列的原状态（hidden 原值是 null）",
+    !!host.lib.saved && host.lib.saved.deckHidden === null);
+
+  // rail 按钮点一下 = 切换（command 事件）
+  fake.sidenav.children[0].fire("command");
+  check("再点一下 rail 按钮 → 收起（原生分区列还原）",
+    fake.deck.getAttribute("hidden") === null
+    && host.lib.container.style.display === "none"
+    && host.lib.button.getAttribute("aria-pressed") === "false"
+    && host.timerArmed === false,
+    JSON.stringify({ hidden: fake.deck.getAttribute("hidden"),
+                     disp: host.lib.container.style.display,
+                     armed: host.timerArmed }));
+
+  // 原状态是「本来就 hidden」时，关掉之后必须还是 hidden（别替用户改状态）
+  fake.deck.setAttribute("hidden", "true");
+  KB.kbviewOpen(fake.win, "library");
+  KB.kbviewClose(fake.win, "library");
+  check("原生列原本就 hidden → 关掉后仍然 hidden（逐项还原，不是一律清掉）",
+    fake.deck.getAttribute("hidden") === "true",
+    String(fake.deck.getAttribute("hidden")));
+  fake.deck.removeAttribute("hidden");
+
+  // 多窗口：同一份逻辑对第二个窗口要各装一份
+  check("kbviewCurrentItem 认「当前选中的那一条」",
+    (function () {
+      const it = KB.kbviewCurrentItem(fake.win);
+      return it && it.key === "ABCD1234";
+    })());
+  check("kbviewCurrentItem 在附件上取**父条目**（知识库按父条目 key 建）",
+    (function () {
+      const savedGet = Zotero.Items.get;
+      Zotero.Items.get = (id) => (id === 77
+        ? { key: "PARENT01", libraryID: 1, parentID: null, isRegularItem: () => true }
+        : null);
+      const savedSel = fake.win.ZoteroPane.getSelectedItems;
+      fake.win.ZoteroPane.getSelectedItems = () => [
+        { key: "ATTACH01", libraryID: 1, parentID: 77, isRegularItem: () => false }];
+      const it = KB.kbviewCurrentItem(fake.win);
+      fake.win.ZoteroPane.getSelectedItems = savedSel;
+      Zotero.Items.get = savedGet;
+      return it && it.key === "PARENT01";
+    })());
+
+  // 内容组装（async，断言放到文件末尾那个 async IIFE 里结算）
+  const payloadNoItem = KB.kbviewPayloadForItem(null, null);
+  const payloadNoFiles = KB.kbviewPayloadForItem(fake.fakeItem, null);
+  check("kbviewPayloadForItem 返回 thenable（async）",
+    !!payloadNoItem && typeof payloadNoItem.then === "function");
+
+  // 卸载：按钮与列都要**一个不剩**（Zotero 会复用主窗口，漏了就是两份）
+  KB.kbviewUnmount(fake.win);
+  check("卸载后按钮与列都没了（DOM 干净）",
+    fake.sidenav.children.length === 0
+    && fake.pane.children.length === 2
+    && fake.pane.children[0] === fake.deck
+    && fake.pane.children[1] === fake.sidenav,
+    JSON.stringify({ sidenav: fake.sidenav.children.length,
+                     pane: fake.pane.children.length }));
+  check("卸载后宿主状态也清了（Map 里没有这个窗口）",
+    KB.kbviewHost(fake.win, false) === null);
+  check("卸载后原生分区列的 hidden 是干净的",
+    fake.deck.getAttribute("hidden") === null);
+
+  // ---- ⑥d 源码与资源层面的断言（这几条是"文件漏打/名字写错"的保险）
   const kvSrc = fs.readFileSync(
     path.join(PLUGIN, "src", "20-kbview.js"), "utf8");
-    // ⚠ 2026-10-05 实测的坑：Zotero 主窗口是 XUL 文档，`doc.createElement("div")`
-  //   建出来的元素在 XUL 命名空间 → 给它设 innerHTML 时按 **XML** 解析，
-  //   片段里一个没闭合的标签（`<br>`）就让**整段被丢弃**（提示行显示"读了 34414 字"
-  //   而正文空白）。必须用 createElementNS(XHTML, …)。
-  check("窗格容器用 XHTML 命名空间（否则 HTML 片段会被整段丢弃）",
-    kvSrc.indexOf("createElementNS") >= 0
-    && kvSrc.indexOf("KB_XHTML") >= 0
-    && kvSrc.indexOf("kbviewEl(doc, \"div\")") >= 0);
-  check("工具条单行不换行（提示过长不再把按钮挤到第二行）",
-    kvSrc.indexOf("flex-wrap:nowrap") >= 0
-    && kvSrc.indexOf("text-overflow:ellipsis") >= 0);
-  check("提示行同时写进 title（截断了也能悬停看全）",
-    kvSrc.indexOf('hint.setAttribute("title", hintText)') >= 0);
-  check("窗格优先读 .html（公式渲染），没有才回退 md",
+  check("自建列用的是 insertBefore(container, sidenav)，不是往分区列里塞",
+    kvSrc.indexOf("insertBefore(box, roots.anchor)") >= 0
+    && kvSrc.indexOf("sidenav.appendChild(btn)") >= 0);
+  check("藏原生列之前先存原状态（kbviewSaveNative / kbviewRestoreNative）",
+    kvSrc.indexOf("kbviewSaveNative") >= 0
+    && kvSrc.indexOf("kbviewRestoreNative") >= 0
+    && kvSrc.indexOf('put(r.deck, "hidden", s.deckHidden)') >= 0);
+  check("页面→宿主只传 JSON 字符串（跨 principal 不传对象）",
+    kvSrc.indexOf("__kbvHostPost") >= 0
+    && kvSrc.indexOf("wrappedJSObject") >= 0
+    && kvSrc.indexOf("kbvReceive") >= 0);
+  check("定时器走 Services.tm（沙箱的 setTimeout 不可靠）",
+    kvSrc.indexOf("Services.tm") >= 0 && kvSrc.indexOf("newTimer") >= 0);
+  check("页面优先读 .html（公式渲染），没有才回退 md",
     kvSrc.indexOf('.md$/i, ".html"') >= 0
     && kvSrc.indexOf("公式已渲染") >= 0);
+  const pageHtml = fs.readFileSync(
+    path.join(PLUGIN, "content", "kbview.html"), "utf8");
+  check("content/kbview.html 外链了自己的 css/js（不内联，避开 CSP）",
+    pageHtml.indexOf('href="kbview.css"') >= 0
+    && pageHtml.indexOf('src="kbview.js"') >= 0
+    && pageHtml.indexOf("<script>") < 0
+    && pageHtml.indexOf("<style") < 0);
+  check("content/ 三件套都在（漏打就是'列装上了、里面一片空白'）",
+    fs.existsSync(path.join(PLUGIN, "content", "kbview.html"))
+    && fs.existsSync(path.join(PLUGIN, "content", "kbview.css"))
+    && fs.existsSync(path.join(PLUGIN, "content", "kbview.js")));
+  const pageJs = fs.readFileSync(
+    path.join(PLUGIN, "content", "kbview.js"), "utf8");
+  check("侧栏页面把正文按 .kb-page 分块并给出「改这一页 / 恢复原版」",
+    // ⚠ 选择器必须是**服务端的** .kb-page：第一版写成 .kbv-page（自己的命名空间），
+    //   真机上只表现为"4 个页块一个工具条都没有"，静态看不出来。
+    pageJs.indexOf('querySelectorAll(".kb-page")') >= 0
+    && pageJs.indexOf("改这一页") >= 0
+    && pageJs.indexOf("恢复原版") >= 0,
+    pageJs.indexOf('querySelectorAll(".kb-page")'));
+  const pageCss = fs.readFileSync(
+    path.join(PLUGIN, "content", "kbview.css"), "utf8");
+  check("侧栏样式表给 .kb-page 写了页块样式（同样的类名）",
+    // ⚠ 这里查的是 "`.kb-page {`" 这个**带花括号**的完整选择器：光查 "`.kbv-page`"
+    //   会被我们自己的 "`.kbv-page-head`（工具条）" 误判成"用错类名"。
+    pageCss.indexOf(".kb-page {") >= 0
+    && pageCss.indexOf(".kb-page:first-of-type") >= 0);
+  check("点图看原图走 data-kbv-path（不再自己解 file:// 路径）",
+    pageJs.indexOf("data-kbv-path") >= 0
+    && pageJs.indexOf("openPath") >= 0
+    && pageJs.indexOf("charAt(0)") < 0);
+  check("侧栏页面导出了 kbvReceive（宿主直接调它送内容）",
+    pageJs.indexOf("window.kbvReceive") >= 0);
 
   // ---- md2html：知识库 md 里真正用到的语法（纯函数，最容易出错的一块）
   const html = KB.md2html([
@@ -405,9 +656,14 @@ if (KB) {
   const oldKbDir = KB.kbDir;
   KB.kbDir = () => "C:\\kb";
   const fixedImg = KB.kbviewFixImgs('<img src="images/a.jpg">', "ABC");
-  check("kbviewFixImgs 把相对 src 改写成 file://（含 mineru/<key>）",
-    fixedImg.indexOf("file:///") >= 0 && fixedImg.indexOf("mineru") >= 0
-    && fixedImg.indexOf("ABC") >= 0, fixedImg);
+  check("kbviewFixImgs 把相对 src 改写成 resource://zotero-kb-files/（含 mineru/<key>）",
+    // ⚠ 不能是 file://：resource:// 页面加载 file:// 图片会被安全策略拦掉
+    //   （真机实测图片全空白）
+    fixedImg.indexOf("resource://zotero-kb-files/mineru/ABC/images/a.jpg") >= 0,
+    fixedImg);
+  check("kbviewFixImgs 同时把绝对路径写进 data-kbv-path（点图看原图靠它）",
+    fixedImg.indexOf('data-kbv-path="C:\\kb\\mineru\\ABC\\images\\a.jpg"') >= 0,
+    fixedImg);
   check("kbviewFixImgs 不动绝对 URL",
     KB.kbviewFixImgs('<img src="http://x/a.jpg">', "ABC")
       === '<img src="http://x/a.jpg">');
@@ -701,6 +957,21 @@ if (KB) {
       && s.panel.length === 1
       && s.panel[0].indexOf("--ollama-guide") >= 0,
       JSON.stringify(s));
+
+    // ---- ⑥c 的两条 async 断言（放在这里结算，print 前）
+    const p0 = await payloadNoItem;
+    check("没有任何条目时给出空状态 + 提示「先选中一篇」",
+      !!p0 && p0.empty === true && p0.emptyWhy.indexOf("选中一篇") >= 0,
+      JSON.stringify(p0));
+    const p1 = await payloadNoFiles;
+    check("这一篇没有任何分级文件时给空状态 + 诊断行（不抛、不空白）",
+      !!p1 && p1.empty === true && p1.key === "ABCD1234"
+      && p1.emptyWhy.indexOf("分级文件") >= 0 && typeof p1.probe === "string",
+      JSON.stringify(p1 && { empty: p1.empty, why: p1.emptyWhy }));
+    check("payload 带上了级别清单（下拉框靠它）",
+      !!p1 && Array.isArray(p1.levels) && p1.levels.length >= 4
+      && typeof p1.font === "number",
+      JSON.stringify(p1 && p1.levels));
 
     KB.projectRoot = savedRootFn;
     console.log("\n通过 " + pass + "，失败 " + fail);

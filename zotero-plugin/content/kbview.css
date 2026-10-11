@@ -1,0 +1,278 @@
+/*
+  kbview.css —— 「知识库」独占侧栏的排版
+
+  这一层是**这一包的目的之一**：老实现往 XUL 文档里塞 HTML 片段（按 XML 解析、
+  CSS 只能内联写死），于是"图片溢出、宽表格顶破、公式不换行"这类问题一直修不干净。
+  现在正文跑在普通 HTML 文档里，用真正的样式表一次解决。
+
+  规则按重要性排：
+    · 溢出：正文最宽的三种东西是**图片 / 表格 / 行内公式**，各自都要能横向滚或缩；
+    · 深色模式：跟着系统走（color-scheme + prefers-color-scheme）；
+    · 逐页编辑：fulltext 级每个 .kbv-page 上面一条工具条。
+*/
+
+:root {
+  color-scheme: light dark;
+  --kbv-font-size: 13px;
+  --kbv-line: rgba(127, 127, 127, 0.35);
+  --kbv-soft: rgba(127, 127, 127, 0.12);
+  --kbv-fg: #1b1b1b;
+  --kbv-muted: rgba(27, 27, 27, 0.62);
+  --kbv-bg: #ffffff;
+  --kbv-bar: #f4f4f5;
+  --kbv-accent: #0a6cff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --kbv-fg: #e6e6e6;
+    --kbv-muted: rgba(230, 230, 230, 0.62);
+    --kbv-bg: #1c1b1a;
+    --kbv-bar: #262523;
+    --kbv-accent: #6cb2ff;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--kbv-bg);
+  color: var(--kbv-fg);
+  font: 13px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+button, select { font: inherit; color: inherit; }
+
+.kbv-root {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- 顶部工具条：单行不换行（别把按钮挤到第二行） ---- */
+.kbv-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--kbv-line);
+  background: var(--kbv-bar);
+}
+
+.kbv-sel {
+  flex: 0 0 auto;
+  max-width: 9em;
+  padding: 1px 2px;
+  border: 1px solid var(--kbv-line);
+  border-radius: 4px;
+  background: var(--kbv-bg);
+}
+
+.kbv-btn {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--kbv-line);
+  border-radius: 4px;
+  background: var(--kbv-bg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.kbv-btn:hover:not([disabled]) { background: var(--kbv-soft); }
+.kbv-btn[disabled] { opacity: 0.5; cursor: default; }
+
+.kbv-close {
+  margin-inline-start: auto;
+  padding: 1px 7px;
+  font-size: 13px;
+  line-height: 1.2;
+}
+
+/* 提示行：占满剩余宽度并省略号截断（min-width:0 是关键 —— flex 子项默认不收缩） */
+.kbv-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--kbv-muted);
+}
+
+/* ---- 正文区：只有它滚 ---- */
+.kbv-view {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 6px 8px 24px;
+  font-size: var(--kbv-font-size);
+  overflow-wrap: anywhere;   /* 老实现做不到的那一条 */
+  word-break: break-word;
+}
+
+.kbv-view:focus { outline: none; }
+
+.kbv-view > *:first-child { margin-top: 0; }
+
+/* 段落 / 标题 */
+.kbv-view p { margin: 0.45em 0; }
+.kbv-view h1, .kbv-view h2, .kbv-view h3,
+.kbv-view h4, .kbv-view h5, .kbv-view h6 {
+  margin: 0.7em 0 0.3em;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.kbv-view h1 { font-size: 1.35em; }
+.kbv-view h2 { font-size: 1.2em; }
+.kbv-view h3 { font-size: 1.08em; }
+.kbv-view h4, .kbv-view h5, .kbv-view h6 { font-size: 1em; }
+
+.kbv-view ul, .kbv-view ol { margin: 0.3em 0; padding-inline-start: 1.4em; }
+.kbv-view li { margin: 0.1em 0; }
+
+.kbv-view blockquote {
+  margin: 0.45em 0;
+  padding: 1px 8px;
+  border-inline-start: 3px solid var(--kbv-line);
+  color: var(--kbv-muted);
+}
+
+.kbv-view a { color: var(--kbv-accent); }
+
+.kbv-view code {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--kbv-soft);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.95em;
+}
+
+.kbv-view pre {
+  margin: 0.5em 0;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--kbv-soft);
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.kbv-view hr { border: none; border-top: 1px solid var(--kbv-line); margin: 0.8em 0; }
+
+/* ---- 图片：不许溢出，点一下看原图 ---- */
+.kbv-view img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 6px 0;
+  border-radius: 3px;
+  cursor: zoom-in;
+  background: var(--kbv-soft);
+}
+
+/* ---- 公式：MathML 由 Firefox 原生渲染 ---- */
+.kbv-view math { font-size: 1.05em; }
+.kbv-view math[display="block"] {
+  display: block;
+  margin: 0.5em 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* ---- 表格：宽表格**自己横向滚**，不顶破容器 ----
+   为什么用 display:block：设成块级后单元格仍按表格布局排，但外层可以滚动
+   （这是唯一既保住表格布局、又能横向滚动的老办法）。 */
+.kbv-view table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  margin: 0.55em 0;
+  font-size: 0.95em;
+}
+.kbv-view th, .kbv-view td {
+  border: 1px solid var(--kbv-line);
+  padding: 2px 6px;
+  text-align: start;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+.kbv-view th { background: var(--kbv-soft); font-weight: 600; }
+
+/* ---- 逐页正文（fulltext 级）：每页一块 + 一条工具条 ----
+   ⚠ 选择器是服务端渲染出来的 `.kb-page`（不是 .kbv-* 那套自己的命名空间）。 */
+.kb-page {
+  border-top: 1px dashed var(--kbv-line);
+  margin-top: 10px;
+  padding-top: 4px;
+}
+.kb-page:first-of-type { border-top: none; margin-top: 0; }
+
+.kbv-page-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0 0 4px;
+  font-size: 11px;
+}
+
+.kbv-tag { color: var(--kbv-muted); }
+.kbv-tag.kbv-edited {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(255, 196, 0, 0.35);
+  color: var(--kbv-fg);
+}
+
+.kbv-mini {
+  padding: 0 5px;
+  font-size: 11px;
+  border: 1px solid var(--kbv-line);
+  border-radius: 4px;
+  background: var(--kbv-bg);
+  cursor: pointer;
+}
+.kbv-mini:hover:not([disabled]) { background: var(--kbv-soft); }
+.kbv-mini[disabled] { opacity: 0.45; cursor: default; }
+
+.kbv-status { color: var(--kbv-muted); }
+
+.kbv-editor {
+  width: 100%;
+  min-height: 240px;
+  margin-top: 4px;
+  padding: 6px;
+  border: 1px solid var(--kbv-line);
+  border-radius: 4px;
+  background: var(--kbv-bg);
+  color: var(--kbv-fg);
+  font: 12px/1.5 Consolas, "Cascadia Mono", monospace;
+  white-space: pre-wrap;
+  resize: vertical;
+}
+
+.kbv-editor-row { display: flex; gap: 6px; margin: 4px 0 8px; }
+
+/* ---- 空状态 / 诊断行 ---- */
+.kbv-empty { margin: 0.6em 0; color: var(--kbv-fg); }
+.kbv-probe {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--kbv-muted);
+  word-break: break-all;
+}
+.kbv-hidden { display: none !important; }
