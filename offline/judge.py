@@ -257,6 +257,14 @@ def pick_model(preferred: str = "", host: str = "") -> str:
     return models[0]
 
 
+# Ollama 的上下文窗口默认值。**和"每次喂多少字"是耦合的**：
+# 单次请求 = 正文（`digest.SECTION_INPUT_CHARS`，现在 9000）+ 提示词骨架（≈700）
+# + 回答（几百到一千 token），所以这里取 16384 留余量。
+# ⚠ 改 `SECTION_INPUT_CHARS` 时**必须**一起看这里，反过来也一样 ——
+#   `tests/test_digest.py::test_num_ctx_covers_section` 会把这条钉红。
+DEFAULT_NUM_CTX = 16384
+
+
 def _generate_ollama(prompt: str, system: str, model: str, json_mode: bool,
                      timeout: float, temperature: float, host: str,
                      num_ctx: int = 0) -> dict:
@@ -265,10 +273,9 @@ def _generate_ollama(prompt: str, system: str, model: str, json_mode: bool,
         "model": model,
         "prompt": prompt,
         "stream": False,
-        # num_ctx 默认 8192：这些任务每次只吃几百到几千字。
-        # 窗格聊天要注入整篇正文时才传更大的值（显存/内存换上下文）。
+        # 默认窗口见 DEFAULT_NUM_CTX（与单节上限耦合，别单改一处）。
         "options": {"temperature": temperature,
-                    "num_ctx": int(num_ctx) if num_ctx else 8192},
+                    "num_ctx": int(num_ctx) if num_ctx else DEFAULT_NUM_CTX},
     }
     if system:
         payload["system"] = system
@@ -444,8 +451,9 @@ def generate(prompt: str, system: str = "", model: str = "",
     temperature 压到 0.1：这些任务要的是稳定复现，不是文采。
     json_mode 让模型输出结构化 JSON（两家协议都支持约束解码）。
 
-    num_ctx 只对 Ollama 有意义（默认 8192）：窗格里的聊天要注入整篇上下文，
-    8k 装不下；OpenAI 兼容后端由服务端自己决定窗口，这里忽略。
+    num_ctx 只对 Ollama 有意义（默认见 `DEFAULT_NUM_CTX`）：它要装得下
+    调用方一次喂进去的正文（`digest.SECTION_INPUT_CHARS`）加提示词与回答；
+    OpenAI 兼容后端由服务端自己决定窗口，这里忽略。
     """
     cfg = load_llm_config()
     prov = (provider or cfg.get("provider") or "ollama").strip().lower()
