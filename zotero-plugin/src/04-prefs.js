@@ -18,8 +18,7 @@ Object.assign(ZoteroKB, {
     // MinerU 首次安装引导是否已经问过（问过就不再弹，见 19-mineruguide.js）
     defaults[this.PREFS.mineruGuideDone] = false;
     defaults[this.PREFS.optionalGuideDone] = false;
-    // ⚠ 2026-10-05：chatQuitWarn / chatNumCtx 随「内容窗格聊天」一起删了
-    //   （见 00-core.js 的 startup 里那段说明）。prefs.js 的默认值也删了。
+    // chatQuitWarn / chatNumCtx 已废弃：内容窗格聊天整块下线了，不要再加回来。
     for (const [key, value] of Object.entries(defaults)) {
       try {
         if (Zotero.Prefs.get(key) === undefined) {

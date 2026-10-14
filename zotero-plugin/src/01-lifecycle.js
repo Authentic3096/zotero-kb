@@ -191,7 +191,7 @@ Object.assign(ZoteroKB, {
     //   用户要的是"覆盖在原侧边栏上、同宽窄能拉动"，也就是**宽度归原生 splitter**，
     //   我们不去改窗格宽度。见 20-kbview.js 里那段注释。
     kbviewFont: "zotero-kb.kbviewFont",
-    // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
+    // 已废弃：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },
 });

@@ -460,7 +460,7 @@ Object.assign(ZoteroKB, {
     //   用户要的是"覆盖在原侧边栏上、同宽窄能拉动"，也就是**宽度归原生 splitter**，
     //   我们不去改窗格宽度。见 20-kbview.js 里那段注释。
     kbviewFont: "zotero-kb.kbviewFont",
-    // ⚠ 2026-10-05：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
+    // 已废弃：`chatQuitWarn` / `chatNumCtx` 两个 pref 随内容窗格聊天
     //   一起删了（见 00-core.js 里那段说明）。prefs.js 里的默认值也一并删了。
   },
 });
@@ -1211,8 +1211,7 @@ Object.assign(ZoteroKB, {
     // MinerU 首次安装引导是否已经问过（问过就不再弹，见 19-mineruguide.js）
     defaults[this.PREFS.mineruGuideDone] = false;
     defaults[this.PREFS.optionalGuideDone] = false;
-    // ⚠ 2026-10-05：chatQuitWarn / chatNumCtx 随「内容窗格聊天」一起删了
-    //   （见 00-core.js 的 startup 里那段说明）。prefs.js 的默认值也删了。
+    // chatQuitWarn / chatNumCtx 已废弃：内容窗格聊天整块下线了，不要再加回来。
     for (const [key, value] of Object.entries(defaults)) {
       try {
         if (Zotero.Prefs.get(key) === undefined) {
@@ -9748,6 +9747,9 @@ Object.assign(ZoteroKB, {
   KB_ADMIN_ROUTES: {
     // 页面顶部那句话（admin.js::boot 用 /health）与状态卡
     "GET /health": { method: "kb.health", from: "query" },
+    // 知识库位置：老 HTTP 服务停着也要能用（原来只有 8765 上那条）
+    "GET /kb-location": { method: "kb.location", from: "query" },
+    "POST /kb-location": { method: "kb.locationMigrate", from: "body" },
     "GET /status": { method: "kb.status", from: "query" },
     // ⚠ 状态页用的是 `/kb-status`（Tk 面板的口径），与上面的 /status 同义。
     //   两个都留着：老前端/新前端都不用改。

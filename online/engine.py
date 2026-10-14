@@ -249,6 +249,34 @@ def _m_health(params: dict) -> dict:
     return LS.health_payload()
 
 
+def _m_kb_location(params: dict) -> dict:
+    """`GET /kb-location`：当前位置、Zotero 数据目录、跟随规则。
+
+    数据源与 HTTP 那条**同一份**（`schemas` 的 KB_DIR / ZOTERO_DATA_DIR /
+    LOCATION_FILE）—— 不另存一份，免得两边说法不一样。
+    """
+    import schemas as _S
+    return {"kb_dir": _S.KB_DIR,
+            "zotero_data_dir": _S.ZOTERO_DATA_DIR,
+            "location_file": _S.LOCATION_FILE,
+            "default_follow": os.path.join(_S.ZOTERO_DATA_DIR, "zotero-kb")}
+
+
+def _m_kb_location_migrate(params: dict) -> dict:
+    """`POST /kb-location {migrate_to}`：迁移知识库（复制 + 备份 + 校验）。
+
+    直接调 `localserver._migrate_kb`（实现只有那一份）—— 老 HTTP 服务停着也能用，
+    这正是把这条路搬进引擎的原因。迁移期间会阻塞，时间由库大小决定。
+    """
+    target = str(params.get("migrate_to") or "").strip()
+    if not target:
+        raise RpcError("需要 migrate_to（迁移到哪个目录）")
+    res = LS._migrate_kb(target)
+    if not res.get("ok"):
+        raise RpcError(str(res.get("error") or "迁移失败"))
+    return res
+
+
 def _m_status(params: dict) -> dict:
     """状态卡的数字。
 
@@ -3099,6 +3127,8 @@ def _rid():
 METHODS = {
     "ping": _m_ping,
     "kb.health": _m_health,
+    "kb.location": _m_kb_location,
+    "kb.locationMigrate": _m_kb_location_migrate,
     "kb.status": _m_status,
     "kb.structure": _m_structure,
     "jobs.list": _m_jobs_list,

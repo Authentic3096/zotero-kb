@@ -148,6 +148,9 @@ Object.assign(ZoteroKB, {
   KB_ADMIN_ROUTES: {
     // 页面顶部那句话（admin.js::boot 用 /health）与状态卡
     "GET /health": { method: "kb.health", from: "query" },
+    // 知识库位置：老 HTTP 服务停着也要能用（原来只有 8765 上那条）
+    "GET /kb-location": { method: "kb.location", from: "query" },
+    "POST /kb-location": { method: "kb.locationMigrate", from: "body" },
     "GET /status": { method: "kb.status", from: "query" },
     // ⚠ 状态页用的是 `/kb-status`（Tk 面板的口径），与上面的 /status 同义。
     //   两个都留着：老前端/新前端都不用改。

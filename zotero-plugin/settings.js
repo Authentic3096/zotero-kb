@@ -393,7 +393,22 @@ async function kbFillOllamaModels(doc, root) {
       }
       return;
     }
-    const models = (data.models || []);
+    let models = (data.models || []).filter((m) => m && m.name);
+    // ① 只列**带上下文后缀**的派生模型（`-4k` / `-16k` / `-24k`…）。
+    //    裸 tag（`qwen3.5:9b`）看不出多少上下文，挑到它就是"不知道自己在用什么窗口"。
+    //    万一本机一个派生模型都没有（别人机器上可能如此），就照旧全列出来，免得列表空白；
+    //    当前选中的若是裸 tag，也留着（否则选择会跳掉），但后面会提醒一句。
+    const MODEL_SUFFIX = /-\d+k$/i;
+    const suffixed = models.filter((m) => MODEL_SUFFIX.test(String(m.name)));
+    if (suffixed.length) {
+      models = suffixed;
+      const savedNow = KB.getPref(KB.PREFS.model, "");
+      if (savedNow && !MODEL_SUFFIX.test(savedNow)
+          && !models.some((m) => m.name === savedNow)) {
+        models = models.concat([{ name: savedNow,
+                                  note: "未指定上下文，建议换成带后缀的派生模型" }]);
+      }
+    }
     rebuild(models, data.hint, data.recommended);
     if (!hint) return;
     if (!data.ok) {
@@ -401,8 +416,14 @@ async function kbFillOllamaModels(doc, root) {
         + "　" + (data.hint || "");
       hint.style.color = "#c00";
     } else if (!models.length) {
-      hint.textContent = "⚠ Ollama 在跑，但还没装模型。先拉一个："
-        + "ollama pull qwen3:4b-instruct";
+      hint.textContent = "⚠ 这台机器上还没有带上下文后缀的模型。列表只列带后缀的"
+        + "派生模型（例如 qwen3:4b-instruct-24k），这样一眼能看出上下文多大。";
+      hint.style.color = "#c60";
+    } else if (String(KB.getPref(KB.PREFS.model, ""))
+               && !MODEL_SUFFIX.test(String(KB.getPref(KB.PREFS.model, "")))) {
+      hint.textContent = "本机已装 " + models.length + " 个模型"
+        + (data.recommended ? ("；推荐 " + data.recommended) : "")
+        + "。当前选的这个没带上下文后缀，建议换成带后缀的。";
       hint.style.color = "#c60";
     } else {
       hint.textContent = "本机已装 " + models.length + " 个模型"
@@ -483,19 +504,19 @@ async function kbInitPane(doc) {
     const KB = Zotero.ZoteroKB;
     if (!KB) return null;
     try {
-      const r = await KB.request("GET", "/kb-location");
+      const r = await KB.kbAdminHostRoute("GET", "/kb-location", null);
       if (r && r.kb_dir) {
         kbDirEl.textContent = r.kb_dir;
         if (verbose && kbSt) {
-          kbSt.textContent = "✓ 已从服务端读取";
+          kbSt.textContent = "✓ 已从引擎读取";
           kbSt.style.color = "#0a0";
         }
         return r;
       }
-      kbDirEl.textContent = "（服务端没返回位置）";
+      kbDirEl.textContent = "（引擎没返回位置）";
       return null;
     } catch (e) {
-      kbDirEl.textContent = "（读不到 —— 服务没启动？）";
+      kbDirEl.textContent = "（读不到位置：引擎还没起来。点「刷新」重试）";
       return null;
     }
   };
@@ -508,7 +529,7 @@ async function kbInitPane(doc) {
     kbOpen.addEventListener("click", async () => {
       const KB = Zotero.ZoteroKB;
       try {
-        const r = await KB.request("GET", "/kb-location");
+        const r = await KB.kbAdminHostRoute("GET", "/kb-location", null);
         if (r && r.kb_dir) {
           Zotero.File.pathToFile(r.kb_dir).reveal();
         }
@@ -520,10 +541,11 @@ async function kbInitPane(doc) {
       const KB = Zotero.ZoteroKB;
       if (!KB) return;
       let info = null;
-      try { info = await KB.request("GET", "/kb-location"); } catch (e) { /* ignore */ }
+      try { info = await KB.kbAdminHostRoute("GET", "/kb-location", null); }
+      catch (e) { /* ignore */ }
       if (!info || !info.default_follow) {
         if (kbSt) {
-          kbSt.textContent = "✗ 读不到建议位置（服务没启动？）";
+          kbSt.textContent = "✗ 取不到建议位置：引擎没响应，点「刷新」重试";
           kbSt.style.color = "#c00";
         }
         return;
@@ -537,14 +559,15 @@ async function kbInitPane(doc) {
         + "\n\n说明：\n"
         + "· 是**复制**，旧目录会保留（确认没问题后你自己删）\n"
         + "· 会先自动备份一份\n"
-        + "· 迁移完成后要**重启知识库服务**才生效\n\n继续吗？");
+        + "· 迁移完成后要**重启 Zotero** 才生效\n\n继续吗？");
       if (!ok) return;
       if (kbSt) { kbSt.textContent = "迁移中…（可能要几十秒）"; kbSt.style.color = "#888"; }
       try {
-        const r = await KB.request("POST", "/kb-location", { migrate_to: target });
+        const r = await KB.kbAdminHostRoute("POST", "/kb-location",
+                                            { migrate_to: target });
         if (r && r.ok) {
           if (kbSt) {
-            kbSt.textContent = "✓ 已迁移到 " + r.kb_dir + "（请重启服务）";
+            kbSt.textContent = "✓ 已迁移到 " + r.kb_dir + "（重启 Zotero 后生效）";
             kbSt.style.color = "#0a0";
           }
           if (kbDirEl) kbDirEl.textContent = r.kb_dir;
