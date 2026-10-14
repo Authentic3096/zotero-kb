@@ -24,7 +24,6 @@ import os
 import re
 import sys
 import time
-from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -95,8 +94,8 @@ def kb_error(exc: Exception) -> str:
     return jdump({"error": f"{type(exc).__name__}: {exc}"})
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+# ⚠ 这里原本有一个 `now_iso()`，**没有任何调用点**（2026-10-15 清理时删）。
+#   需要时间戳就调 `S.now_iso()` —— 实现只有 schemas 那一份。
 
 
 def jdump(obj) -> str:

@@ -87,6 +87,18 @@ Object.assign(ZoteroKB, {
   serverOnStartup: async function () {
     var self = ZoteroKB;
     try {
+      // W3 线3（2026-10-14）：**自动拉起本地服务变成一个开关**
+      // （pref `zotero-kb.autoStartService`，默认 true = 老行为）。
+      // 为什么要它：用户拍板停掉 8765 之后，如果这条自动拉起还在，Zotero 一重启
+      // 它就把服务又拉起来了 —— 那样"停服务"是假的。这里只关"自动拉起"这一个动作，
+      // **别的功能一个都不动**（插件此时已全部走引擎桥/文件信箱，不依赖该服务）。
+      if (!self.getPref("zotero-kb.autoStartService", true)) {
+        Zotero.debug("[zotero-kb] 本地服务自动拉起已关闭"
+                     + "（pref zotero-kb.autoStartService=false）—— 不再启动 8765");
+        self.serverStartedByMe = false;
+        self.writeStatusFile({ serverStartedByMe: false, serverAutoStart: false });
+        return;
+      }
       // 清掉上次可能残留的标记，避免误判成"是我们拉起的"
       try {
         const fp = self.serverFlagPath();

@@ -48,11 +48,12 @@ TYPE_CN = {
 
 
 def human_size(n: int) -> str:
-    if n >= 1024 * 1024:
-        return f"{n / 1024 / 1024:.0f} MB"
-    if n >= 1024:
-        return f"{n / 1024:.0f} KB"
-    return f"{n} B"
+    """实现只有一份：`schemas.human_size()`（原先 maintain / engine 各有一份）。
+
+    ⚠ 合并后 MB 的精度从 `.0f`（"12 MB"）改成 `.1f`（"12.3 MB"）—— 与
+      maintain / 管理面板的口径一致；`INDEX.md` 是人读的索引，这里更整齐。
+    """
+    return S.human_size(n)
 
 
 def build(db: str | None = None) -> str:

@@ -448,10 +448,14 @@ def audit_install():
               not bad_pkgs, f"{bad_pkgs}")
 
     for f in ("scripts/install-env.cmd", "scripts/install-env.ps1",
-              "scripts/_kbtools.vbs", "scripts/0-panel.vbs",
+              "scripts/_kbtools.vbs",
               "scripts/1-convert.cmd", "scripts/4-service.vbs"):
         check(f"安装/运行脚本存在：{os.path.basename(f)}",
               os.path.exists(os.path.join(ROOT, f)))
+    # W4（2026-10-14）：Tk 面板已退役 —— 它的启动脚本必须**不存在**，
+    # 否则就是"删代码但留了能把它拉起来的入口"（那等于没退役）。
+    check("Tk 面板启动脚本 0-panel.vbs 已删除（W4）",
+          not os.path.exists(os.path.join(ROOT, "scripts", "0-panel.vbs")))
 
     ps1 = read(os.path.join(ROOT, "scripts", "install-env.ps1"))
     check("install-env.ps1 不用 $ErrorActionPreference=Stop"

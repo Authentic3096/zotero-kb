@@ -41,7 +41,6 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
@@ -52,9 +51,8 @@ import schemas as S  # noqa: E402
 VERSION = 1
 RE_PAGE = re.compile(r"^##\s*p\.(\d+)\s*$")
 
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+# ⚠ 时间戳只有一份实现：`schemas.now_iso()`（原先本模块也写了一份，2026-10-15 合并）
+now_iso = S.now_iso
 
 
 def edits_dir(kb_dir: str = "") -> str:

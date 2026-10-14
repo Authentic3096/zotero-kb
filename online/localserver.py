@@ -273,11 +273,52 @@ def do_doc_edit(body: dict) -> tuple:
     return 202, res
 
 
+def do_status() -> dict:
+    """状态卡的数字（GET /status 的业务实现）。
+
+    抽成模块级函数是为了让 stdio 引擎 `online/engine.py` 的 `kb.status`
+    **复用同一份**（2026-10-13，范围 B 第一波）。引擎在它的返回值上再补一个
+    `fulltext_chars`（`SUM(items.fulltext_chars)`）—— 那是 W1 状态卡要的新数字，
+    不塞进这里是为了不改动 HTTP 的 `/status` 响应（旧服务的行为一个字不许变）。
+    """
+    from searcher import Searcher
+
+    s = Searcher()
+    try:
+        return s.stats()
+    finally:
+        s.close()
+
+
+def do_jobs_list() -> dict:
+    """GET /jobs 的响应体：长任务列表（**不含 log**）。
+
+    与 HTTP 完全同形（`{"jobs": [...]}`），引擎的 `jobs.list` 直接返回它。
+    不含 log 的理由同 HTTP：列表里每条的 log 可能上百行，列表页不需要。
+    """
+    with JOBS_LOCK:
+        return {"jobs": [
+            {k: v for k, v in j.items() if k != "log"} for j in JOBS.values()]}
+
+
+def do_jobs_get(job_id: str) -> dict | None:
+    """GET /jobs/<id> 的响应体：一条任务的全部字段（含 log）；没有则 None。
+
+    ⚠ 返回**副本**（dict(job)）而不是表里的那个活字典：调用方可能在锁外
+      序列化它，而 worker 线程同时在改 state/log —— 拷一份出去最稳。
+      （HTTP 那边原来是锁外直接 `_send(job)`，序列化瞬间可能读到半个状态；
+       改走这里之后顺带修好了，返回的 JSON 形状不变。）
+    """
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        return dict(job) if job else None
+
+
 # 「生成分节纲要」的停止标记。
 #
 # 为什么要有它：纲要要一节一节调本地模型（论文几十秒、学位论文几分钟），
 # 用户在 Zotero 里点了以后总得能停下来。面板那条路的「停止当前任务」是它
-# 自己 kill 子进程（tools/panels/base.py），而插件这条路是**服务端线程**里
+# 自己 kill 子进程（tools/panels/base.py（已退役 2026-10-14）），而插件这条路是**服务端线程**里
 # 跑的，杀不掉也没必要杀 —— 在**节与节之间**看一眼这个标记就够（真正耗时的
 # 是模型调用，节边界就是安全点，见 digest.build 的 should_stop）。
 #
@@ -428,6 +469,28 @@ def _task_get(tid: str) -> dict | None:
 # 实现搬到了 offline/experience.py::draft_experience。
 
 
+def start_reindex_job(keys: list[str] | None, full: bool) -> str:
+    """派一次建索引（POST /reindex 的业务实现），返回 job id。
+
+    抽出来给 stdio 引擎的 `kb.reindex` 复用（2026-10-13，范围 B 第一波）——
+    任务标题与参数顺序只有这一份，两处各自拼就会漂移。
+    """
+    return start_job("重建知识库索引" + ("（全量）" if full else "（增量）"),
+                     do_reindex, keys, full)
+
+
+def start_digest_job(key: str, force: bool = False) -> str:
+    """派一次「生成分节纲要」（POST /digest 的业务实现），返回 job id。
+
+    抽出来给 stdio 引擎的 `kb.digest` 复用。⚠ 这里包含**清停止标记**那一步：
+      不清的话，用户上一次点了「停止」之后，这一次刚派出去的任务第一件事
+      就是收工（HTTP 那边原来就在路由里 clear，搬过来语义一致）。
+    """
+    _DIGEST_CANCEL.clear()
+    return start_job("生成分节纲要 " + key, do_digest, key,
+                     force=force, progress=True)
+
+
 def do_exp_draft(text: str, ref_id: int = 0, model: str = "") -> dict:
     """把用户的大白话整理成一条经验草稿（**不写库**）。"""
     import experience as EXP
@@ -446,7 +509,7 @@ def do_set_weight(key: str, pinned: bool | None = None,
     """写一条条目的权重（标重点 / 取消重点 / 改人工分 / 写备注）。
 
     为什么要这个端点：原来只有 **读** 权重的接口，写权重得靠管理面板
-    跑一段内联 Python（`gui.py` 的 do_weight 就是那么做的）。
+    跑一段内联 Python（旧 Tk 面板的 do_weight 就是这么做的，面板已退役 2026-10-14）。
     但用户在 Zotero 里看到某篇想标重点时，右键菜单是最短路径 ——
     插件没法跑那段内联代码，所以得有个 HTTP 写接口。
 
@@ -641,7 +704,16 @@ def do_col_status() -> dict:
 
 
 def do_item_info(keys: list[str]) -> dict:
-    """给插件返回某几条文献在知识库里的状态（用于"这条切过片没有"）。"""
+    """给插件返回某几条文献在知识库里的状态（用于"这条切过片没有"）。
+
+    除了"在不在库 / 切了多少片"，还一并给出 **first_author / year / collections /
+    fulltext_chars / weight** —— 外部工具（如 DSH 那个按条目挑文献的插件）要靠这几列
+    做一张可排序的选文献表，逐条查库既慢又要另开一条数据路径。
+
+    加这两个字段（2026-10-13）是**纯增量**：`Searcher.get_item()` 就是
+    `SELECT * FROM items`，`first_author` / `year` 本来就在表里（面板的
+    `exp_editor.picker_rows()` 一直在用），只是原来没往外吐。老调用方无感。
+    """
     from searcher import Searcher
 
     s = Searcher()
@@ -658,6 +730,8 @@ def do_item_info(keys: list[str]) -> dict:
                 "key": key,
                 "in_kb": True,
                 "title": item["title"],
+                "first_author": item.get("first_author") or "",
+                "year": item.get("year"),
                 "fulltext_chars": item["fulltext_chars"],
                 "n_chunks": n_chunks,
                 "n_annotations": item["n_annotations"],
@@ -1592,7 +1666,7 @@ def _ollama_probe() -> dict:
 
     为什么不直接把 /health 的 ollama 改成这个结构：面板「运行环境」页
     读的是 /health 并把 ollama 当**路径字符串**填进输入框、还 os.path.exists 它
-    （见 tools/panels/tab_env.py::refresh_env）—— 改成结构会当场把它弄崩。
+    （见 tools/panels/tab_env.py（已退役 2026-10-14）::refresh_env）—— 改成结构会当场把它弄崩。
     所以保留字符串键 ollama，另加结构化的 ollama_info。
     """
     path = S.resolve_ollama()
@@ -1615,6 +1689,45 @@ def _ollama_probe() -> dict:
                 "没找到 Ollama（可选组件）。不装也能用："
                 "改用 OpenAI 兼容 API，或干脆不用模型功能。",
     }
+
+
+def do_models() -> dict:
+    """本机 Ollama 有哪些模型（`GET /models` 的响应体）。
+
+    为什么要提成模块级函数（2026-10-13，范围 B W2）：stdio 引擎的 `llm.models`
+    要的是**同一份**。这段逻辑原来长在 `Handler.do_GET` 里，两份实现迟早漂移
+    （这个项目反复吃过这种亏），所以搬到这里，HTTP 侧只留一行 `_send(200, do_models())`。
+    **HTTP 的响应体一个字没改。**
+    """
+    import judge as _j
+
+    ok, names = _j.ollama_models()
+    rec = _j.pick_model() if ok else ""
+    out = []
+    for n in names:
+        tag = ""
+        low = n.lower()
+        if low == rec.lower():
+            tag = "推荐（质量更好）"
+        elif "1.7b" in low or ":0." in low or "1b" in low or "2b" in low:
+            tag = "更轻量、更快"
+        out.append({"name": n, "note": tag})
+    payload = {
+        "ok": ok,
+        "models": out,
+        "recommended": rec,
+        "host": (_j.load_llm_config().get("ollama_host") or _j.OLLAMA_HOST),
+    }
+    if not ok:
+        payload["error"] = "连不上本机的 Ollama"
+        payload["hint"] = (
+            "Ollama 没在运行。装好之后它一般会随系统启动；"
+            "也可以手动跑一下 Ollama 程序，或在管理面板的"
+            "「运行环境」页点「启动本地服务」旁边的 Ollama 检测。")
+    elif not names:
+        payload["hint"] = ("Ollama 在跑但一个模型都没有。"
+                           "先拉一个：ollama pull qwen3:4b-instruct")
+    return payload
 
 
 def env_report() -> dict:
@@ -1640,7 +1753,10 @@ def env_report() -> dict:
     ollama_info = _ollama_probe()
 
     root = _S.resolve_project_root()
-    panel = os.path.join(root, "tools", "gui.py")
+    # ⚠ W4（2026-10-14）：Tk 面板退役后 tools\gui.py 已删 —— 这个"项目根标记"换成
+    #   仍然存在、语义等价的 **online\engine.py**（引擎宿主脚本）。键名 `panel` /
+    #   `has_panel` 保留不动，免得动到插件设置页那几个消费者。
+    panel = os.path.join(root, "online", "engine.py")
 
     sources = _S.resolve_sources()
     ollama_info["source"] = (sources.get("ollama") or {}).get("source", "")
@@ -1665,16 +1781,62 @@ def env_report() -> dict:
             "exists": os.path.isdir(root),
             "source": (sources.get("project_root") or {}).get("source", ""),
             "has_venv": os.path.isdir(os.path.join(root, ".venv")),
-            "has_panel": os.path.isfile(panel),
+            "has_panel": os.path.isfile(panel),   # 见上面：判据已换成 online\engine.py
             "panel": panel,
             "hint": "" if os.path.isfile(panel) else
-                    "这个目录里没有 tools\\gui.py，可能选错了。"
+                    "这个目录里没有 online\\engine.py，可能选错了。"
                     "它应该是包含 offline\\、online\\、zotero-plugin\\ 的那个目录。",
         },
         "ollama": ollama_info,
         "location_file": _S.LOCATION_FILE,
         "user_location_file": _S.USER_LOCATION_FILE,
         "runtime_state": _S.read_runtime_state(),
+    }
+
+
+def health_payload() -> dict:
+    """GET /health 的响应体（**不含** token）。
+
+    为什么把它从 Handler 里提出来（2026-10-13，范围 B 第一波）：stdio 引擎
+    `online/engine.py` 的 `kb.health` 要给的正是这同一份信息。**抽出来复用、
+    不重写**，否则"HTTP 报什么"与"引擎报什么"两份迟早漂移 —— 而这个项目的
+    规矩是"实现只有一份"。
+
+    ⚠ 返回值**故意不含 token**：token 的加与不加由调用方决定，因为 HTTP 那边
+      要看请求带不带 Origin/Referer（浏览器来的不给 token，见 Handler.do_GET），
+      而 stdio 引擎根本没有"浏览器"这回事，永远不需要 token。
+    """
+    return {
+        "ok": True, "service": "zotero-kb", "version": "1.0",
+        "kb_dir": S.KB_DIR,
+        # ⚠ 项目根（代码/venv 所在）与知识库位置（数据所在）**是两回事**：
+        #   知识库默认跟着 Zotero 数据目录走，而 venv / gui.py / 脚本
+        #   仍在项目目录里。插件要启动管理面板就必须知道**项目根**，
+        #   不能从 kb_dir 反推 —— 本机就因为反推，面板报"找不到 py 环境"
+        #   （kb 搬走后，反推出的目录是 Zotero 数据目录，那里没有 .venv）。
+        # ⚠ 这三个值走 schemas 的 resolve_*（支持用户在插件设置里指定），
+        #   不是模块加载时定死的常量 —— 用户改完设置不用重启服务。
+        "project_root": S.resolve_project_root(),
+        "python": _python_exe(),
+        "panel": os.path.join(S.resolve_project_root(), "online", "engine.py"),
+        # ⚠ 两个键都要：
+        #   · ollama 是**路径字符串** —— 面板「运行环境」页拿它填输入框
+        #     （tools/panels/tab_env.py（已退役 2026-10-14）::refresh_env，还 os.path.exists 它）；
+        #   · ollama_info 是**结构化状态** —— 插件 19-caps.js 按
+        #     {exists, api_up, models} 判断本地模型可用不可用。
+        #   2026-10-10 之前只有前者，于是插件 info.exists 恒 undefined，
+        #   明明连上也显示「未连接」。
+        "ollama": S.resolve_ollama(),
+        "ollama_info": _ollama_probe(),
+        # MinerU 是可选组件：这里只报**路径**（一次文件系统检查，快）。
+        # 要"版本/后端/档位"这种要跑子进程的信息，走 /mineru-check。
+        "mineru": S.resolve_mineru(),
+        # 来源（"这个值从哪来"）：面板「运行环境」页紧接着每个值显示它。
+        # 插件不用这一项（它只读 project_root / python / ollama），
+        # 所以是纯增量、不影响任何现有前端。
+        "sources": S.resolve_sources(),
+        "env_file": _env_file_info(),
+        "time": datetime.now().isoformat(timespec="seconds"),
     }
 
 
@@ -2372,38 +2534,9 @@ class Handler(BaseHTTPRequestHandler):
             origin = self.headers.get("Origin") or ""
             referer = self.headers.get("Referer") or ""
             from_web = bool(origin) or referer.startswith(("http://", "https://"))
-            payload = {
-                "ok": True, "service": "zotero-kb", "version": "1.0",
-                "kb_dir": S.KB_DIR,
-                # ⚠ 项目根（代码/venv 所在）与知识库位置（数据所在）**是两回事**：
-                #   知识库默认跟着 Zotero 数据目录走，而 venv / gui.py / 脚本
-                #   仍在项目目录里。插件要启动管理面板就必须知道**项目根**，
-                #   不能从 kb_dir 反推 —— 本机就因为反推，面板报"找不到 py 环境"
-                #   （kb 搬走后，反推出的目录是 Zotero 数据目录，那里没有 .venv）。
-                # ⚠ 这三个值走 schemas 的 resolve_*（支持用户在插件设置里指定），
-                #   不是模块加载时定死的常量 —— 用户改完设置不用重启服务。
-                "project_root": S.resolve_project_root(),
-                "python": _python_exe(),
-                "panel": os.path.join(S.resolve_project_root(), "tools", "gui.py"),
-                # ⚠ 两个键都要：
-                #   · ollama 是**路径字符串** —— 面板「运行环境」页拿它填输入框
-                #     （tools/panels/tab_env.py::refresh_env，还 os.path.exists 它）；
-                #   · ollama_info 是**结构化状态** —— 插件 19-caps.js 按
-                #     {exists, api_up, models} 判断本地模型可用不可用。
-                #   2026-10-10 之前只有前者，于是插件 info.exists 恒 undefined，
-                #   明明连上也显示「未连接」。
-                "ollama": S.resolve_ollama(),
-                "ollama_info": _ollama_probe(),
-                # MinerU 是可选组件：这里只报**路径**（一次文件系统检查，快）。
-                # 要"版本/后端/档位"这种要跑子进程的信息，走 /mineru-check。
-                "mineru": S.resolve_mineru(),
-                # 来源（"这个值从哪来"）：面板「运行环境」页紧接着每个值显示它。
-                # 插件不用这一项（它只读 project_root / python / ollama），
-                # 所以是纯增量、不影响任何现有前端。
-                "sources": S.resolve_sources(),
-                "env_file": _env_file_info(),
-                "time": datetime.now().isoformat(timespec="seconds"),
-            }
+            # ⚠ 响应体是**抽出来的** health_payload()（stdio 引擎 kb.health 复用同一份，
+            #   见它的注释）；这里只负责"给不给 token"——那是 HTTP 通道特有的事。
+            payload = health_payload()
             if from_web:
                 payload["token_withheld"] = (
                     "请求带 Origin/Referer（像是浏览器发起的），出于安全不返回 token。"
@@ -2468,12 +2601,8 @@ class Handler(BaseHTTPRequestHandler):
                 "mathtype": FM.mathtype_state(),
             })
         if path == "/status":
-            from searcher import Searcher
-            s = Searcher()
-            try:
-                return self._send(200, s.stats())
-            finally:
-                s.close()
+            # ⚠ 业务在模块级的 do_status()（stdio 引擎的 kb.status 复用同一份）
+            return self._send(200, do_status())
         if path == "/doc-edit":
             # 修订层的**只读**状态：哪几页被改过、哪几页「基于旧解析」。
             # 插件渲染「按页正文」时用它给每页打标记。
@@ -2489,13 +2618,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/pending":
             return self._send(200, {"pending": _read_pending()})
         if path == "/jobs":
-            with JOBS_LOCK:
-                return self._send(200, {"jobs": [
-                    {k: v for k, v in j.items() if k != "log"} for j in JOBS.values()]})
+            return self._send(200, do_jobs_list())
         if path.startswith("/jobs/"):
             job_id = path.split("/", 2)[2]
-            with JOBS_LOCK:
-                job = JOBS.get(job_id)
+            job = do_jobs_get(job_id)
             if not job:
                 return self._send(404, {"error": f"没有 {job_id}"})
             return self._send(200, job)
@@ -2572,35 +2698,10 @@ class Handler(BaseHTTPRequestHandler):
             #
             # ⚠ Ollama 没在跑时要返回**能看懂的原因**，不能只给空列表 ——
             #   否则用户看到空下拉框会以为是插件坏了。
-            import judge as _j
-            ok, names = _j.ollama_models()
-            rec = _j.pick_model() if ok else ""
-            out = []
-            for n in names:
-                tag = ""
-                low = n.lower()
-                if low == rec.lower():
-                    tag = "推荐（质量更好）"
-                elif "1.7b" in low or ":0." in low or "1b" in low or "2b" in low:
-                    tag = "更轻量、更快"
-                out.append({"name": n, "note": tag})
-            payload = {
-                "ok": ok,
-                "models": out,
-                "recommended": rec,
-                "host": (_j.load_llm_config().get("ollama_host")
-                         or _j.OLLAMA_HOST),
-            }
-            if not ok:
-                payload["error"] = "连不上本机的 Ollama"
-                payload["hint"] = (
-                    "Ollama 没在运行。装好之后它一般会随系统启动；"
-                    "也可以手动跑一下 Ollama 程序，或在管理面板的"
-                    "「运行环境」页点「启动本地服务」旁边的 Ollama 检测。")
-            elif not names:
-                payload["hint"] = ("Ollama 在跑但一个模型都没有。"
-                                   "先拉一个：ollama pull qwen3:4b-instruct")
-            return self._send(200, payload)
+            #
+            # ⚠ 响应体已提成模块级 `do_models()`（stdio 引擎的 llm.models
+            #   复用同一份，实现只有一份）；这里只是转发，响应形状没变。
+            return self._send(200, do_models())
         if path == "/metafill":
             # 元数据补全建议（插件右键「补全元数据（本地模型）」用）。
             #
@@ -2675,8 +2776,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/reindex":
             keys = body.get("keys") or []
             full = bool(body.get("full"))
-            job = start_job("重建知识库索引" + ("（全量）" if full else "（增量）"),
-                            do_reindex, keys, full)
+            job = start_reindex_job(keys, full)
             return self._send(202, {"job": job, "state": "running"})
 
         if path == "/doc-edit":
@@ -2692,11 +2792,9 @@ class Handler(BaseHTTPRequestHandler):
             key = str(body.get("key") or "").strip()
             if not key:
                 return self._send(400, {"error": "需要 key"})
-            # 先把上一批的停止标记清掉：不清的话，用户上一次点了「停止」
-            # 之后，这一次刚派出去的任务第一件事就是收工。
-            _DIGEST_CANCEL.clear()
-            job = start_job("生成分节纲要 " + key, do_digest, key,
-                            force=bool(body.get("force")), progress=True)
+            # 派活（含清上一次的停止标记）在模块级的 start_digest_job()，
+            # stdio 引擎的 kb.digest 复用同一份。
+            job = start_digest_job(key, bool(body.get("force")))
             return self._send(202, {"job": job, "state": "running", "key": key})
 
         if path == "/digest/cancel":
@@ -3368,7 +3466,7 @@ def self_test(port: int) -> int:
         panel_ok = os.path.exists(h.get("panel") or "")
         print(f"  PASS  /health 带 project_root={h['project_root']}")
         print(f"  {'PASS' if py_ok else 'FAIL'}  python 存在：{h.get('python')}")
-        print(f"  {'PASS' if panel_ok else 'FAIL'}  面板脚本存在：{h.get('panel')}")
+        print(f"  {'PASS' if panel_ok else 'FAIL'}  引擎脚本存在（项目根标记，W4 起替代 gui.py）：{h.get('panel')}")
         passed += 1 + (1 if py_ok else 0) + (1 if panel_ok else 0)
         failed += (0 if py_ok else 1) + (0 if panel_ok else 1)
     else:
@@ -3387,7 +3485,7 @@ def self_test(port: int) -> int:
         ok_root = bool(r.get("has_panel"))
         print(f"  {'PASS' if ok_py else 'FAIL'}  python 可用：{p.get('version')}"
               f"  ({p.get('path')})")
-        print(f"  {'PASS' if ok_root else 'FAIL'}  项目根里有 tools\\gui.py："
+        print(f"  {'PASS' if ok_root else 'FAIL'}  项目根里有 online\\engine.py："
               f"{r.get('path')}")
         # 反推 bug 的回归断言
         wrong = os.path.normcase(os.path.dirname(os.path.abspath(S.KB_DIR))) \

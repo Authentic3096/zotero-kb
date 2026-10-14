@@ -20,6 +20,7 @@ import sqlite3
 import sys
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 try:
@@ -1448,7 +1449,7 @@ def add_figure_columns(conn) -> None:
     ⚠ SQLite 没有 `ADD COLUMN IF NOT EXISTS`，所以先查 PRAGMA 再决定。
       直接 ALTER 会在第二次启动时报 "duplicate column name"。
     """
-    have = {r[1] for r in conn.execute("PRAGMA table_info(items)")}
+    have = table_columns(conn, "items")
     for col, typ in (("n_figures", "INTEGER"), ("n_tables", "INTEGER")):
         if col not in have:
             try:
@@ -1463,21 +1464,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
 
     `CREATE TABLE IF NOT EXISTS` 对已存在的表**不会**加列，所以新字段
     必须在建表之后显式补（SQLite 支持 ADD COLUMN，成本极低）。
-    """
-    def columns(table: str) -> set[str]:
-        try:
-            return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-        except sqlite3.Error:
-            return set()
 
-    cols = columns("items")
+    本文件末尾的 `table_columns()` 就是问列名的唯一实现（trash.py 也调它）。
+    """
+    cols = table_columns(conn, "items")
     if cols and "collections_sig" not in cols:
         conn.execute("ALTER TABLE items ADD COLUMN collections_sig TEXT")
 
     # 经验层：用户显式编辑时要能追溯（旧值留 history）。
     # ⚠ `只追加，永不覆盖` 这条原则对**自动流程**（learn.py / MCP 抽取）依然成立，
     #   只对"用户在面板里手改"开口子 —— 而且改之前先把旧值 push 进 history。
-    exp_cols = columns("experience")
+    exp_cols = table_columns(conn, "experience")
     if exp_cols:
         if "updated_at" not in exp_cols:
             conn.execute("ALTER TABLE experience ADD COLUMN updated_at TEXT")
@@ -1499,9 +1496,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 墓碑留名（T0-13）：老库的 item_tombstone 是五列建的，而
     # `CREATE TABLE IF NOT EXISTS` 对**已存在的表不加列** —— 只能显式 ALTER。
     # 上面那段建表刚跑过，所以这里只有两种情形：表是新建的（三列齐 → 什么都不做）
-    # 或表是老的五列（补三列）。全是空表时 `columns()` 也可能是空集，
+    # 或表是老的五列（补三列）。全是空表时 `table_columns()` 也可能是空集，
     # 所以判据用 "表在、但列不在"（表不在就不 ALTER，交给下次建表）。
-    tomb_cols = columns("item_tombstone")
+    tomb_cols = table_columns(conn, "item_tombstone")
     for col in TOMBSTONE_NAME_COLS:
         if tomb_cols and col not in tomb_cols:
             try:
@@ -1513,7 +1510,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # 对已存在的表**不加列** —— 只能显式 ALTER。老库补完列后 level 全为默认 1
     # （= 子块），所以在跑过一次全量重建之前，检索侧看到的仍是「没有父块、
     # section_path 为空」的老结构（向后兼容）。
-    chunk_cols = columns("chunks")
+    chunk_cols = table_columns(conn, "chunks")
     for col, typ in (("level", "INTEGER DEFAULT 1"), ("parent_id", "INTEGER"),
                      ("section_path", "TEXT"), ("section_kind", "TEXT"),
                      ("page_from", "INTEGER"), ("page_to", "INTEGER"),
@@ -2036,4 +2033,66 @@ def resolve_zotero() -> str:
         except OSError:
             continue
     return ""
+
+
+# ---------------------------------------------------------------- 公用小工具
+#
+# 为什么共用（2026-10-15 清理时抽出，不是因为"少写几行"，而是因为"同一件事
+# 曾经有多个口径、改一处就漏一处"）：
+#   · `now_iso`   —— converter / edits / experience / trash / server 各写一遍
+#                    （5 份），而它们写进库的 `built_at` / `at` 是**同一列口径**，
+#                    分开写迟早出现"一个是本地时区、一个是 UTC"的错配。
+#   · `dir_size`  —— trash / maintain / engine 各写一遍（3 份），都是"这个目录占多少"。
+#   · `human_size`—— maintain / engine / make_index 各写一遍（3 份），都是给人看的大小。
+#   · `table_columns` —— schemas 自己的 _migrate 里一份、trash 里又一份（2 份）。
+# 放 schemas 的原因：它本来就是所有模块的公共底座、被无条件 import（不会引入
+# 循环 import，也不用再加一处 sys.path 手脚）。
+
+
+def now_iso() -> str:
+    """本地时区的 ISO 时间（秒级）。
+
+    唯一口径：写进 `items.built_at` / `item_tombstone.deleted_at` / `edits` 的
+    `at` / 经验时间戳的都是它。实现取"UTC 再转本地"，与"本地时间直接 astimezone"
+    等价，但由 UTC 出发不会有 naive datetime 的歧义。
+    """
+    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+
+def dir_size(path: str) -> int:
+    """目录占用的字节数；路径不存在 / 权限不够 / 文件在读时没了，都算 0，绝不抛。
+
+    显示与巡检会拿它算"能释放多少空间"，所以"读不到"与"是空的"在这里结果一样
+    —— 调用方若需要区分，先自己 os.path.isdir()。
+    """
+    total = 0
+    for dirpath, _dirs, files in os.walk(path or ""):
+        for fn in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, fn))
+            except OSError:
+                pass
+    return total
+
+
+def human_size(n: int) -> str:
+    """字节数 → 人读的大小（GB / MB / KB / B）。"""
+    if n >= 1024 ** 3:
+        return "%.2f GB" % (n / 1024 ** 3)
+    if n >= 1024 ** 2:
+        return "%.1f MB" % (n / 1024 ** 2)
+    if n >= 1024:
+        return "%.0f KB" % (n / 1024)
+    return "%d B" % n
+
+
+def table_columns(conn, table: str) -> set[str]:
+    """表的列名集合；表不存在或读不了时返回空集（不抛）。
+
+    ⚠ 迁移代码必须先问"列在不在"再 ALTER（SQLite 没有 ADD COLUMN IF NOT EXISTS）。
+    """
+    try:
+        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    except sqlite3.Error:
+        return set()
 

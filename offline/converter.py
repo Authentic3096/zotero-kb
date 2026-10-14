@@ -30,7 +30,6 @@ import math
 import os
 import re
 import time
-from datetime import datetime, timezone
 
 import schemas as S
 from zreader import ZoteroReader, clean_text, html_to_markdown, split_pages  # noqa: F401
@@ -66,8 +65,11 @@ def _pfts() -> bool:
         in ("1", "true", "yes", "on")
 
 
-def now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+# ⚠ 时间戳**只有一份实现**：`schemas.now_iso()`。
+#   本模块原来自己写了一份（2026-10-15 清理），而它写进 `items.built_at` 的值
+#   与 experience / edits / trash 的时间戳是同一列口径 —— 分开写迟早错配。
+#   （保留这个名字是因为 convert.py 在调 `C.now_iso()`。）
+now_iso = S.now_iso
 
 
 # ---------------------------------------------------------------- 切片

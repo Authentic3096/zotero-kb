@@ -495,24 +495,13 @@ _KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
 
 
 def _human(n: int) -> str:
-    if n >= 1024 ** 3:
-        return "%.2f GB" % (n / 1024 ** 3)
-    if n >= 1024 ** 2:
-        return "%.1f MB" % (n / 1024 ** 2)
-    if n >= 1024:
-        return "%.0f KB" % (n / 1024)
-    return "%d B" % n
+    """实现只有一份：`schemas.human_size()`（原先这里有 3 份，2026-10-15 合并）。"""
+    return S.human_size(n)
 
 
 def _walk_size(path: str) -> int:
-    total = 0
-    for dirpath, _dirs, files in os.walk(path):
-        for f in files:
-            try:
-                total += os.path.getsize(os.path.join(dirpath, f))
-            except OSError:
-                pass
-    return total
+    """实现只有一份：`schemas.dir_size()`（原先 trash / engine 各有一份）。"""
+    return S.dir_size(path)
 
 
 def _preview(seq, n: int = 8) -> str:

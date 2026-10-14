@@ -622,9 +622,15 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 
 13 个工具与 4 个资源见本文档第八节。
 
-#### B6. 本地 HTTP 服务（插件 ↔ Python 的通道）
+#### B6. 本地 HTTP 服务（插件 ↔ Python 的旧通道）
 
 `online/localserver.py`，`ThreadingHTTPServer` 只 bind **127.0.0.1**，默认端口 **8765**。
+
+> **⛔ 2026-10-14 起这个常驻服务已停**（用户拍板，执行记录 `docs/ADMIN-PORT-PLAN.md` §10.5）：
+> 管理面板改走 `online/engine.py`（stdio JSON-RPC）、任务通道改走 `<知识库>\mailbox\` 文件信箱。
+> 但是**代码一个字没删** —— `localserver.py` 里的业务实现仍是引擎与 MCP 的复用来源，
+> 而 `localserver.py --test`（115 项）自带**进程内**测试服务、不需要 8765 在监听。
+> 要复现旧通道就跑 `scripts\4-service.vbs`（回退件，必须保留）。
 
 **token 机制**：优先环境变量 `KB_SERVICE_TOKEN`，否则读 `kb\service-token.txt`，
 文件不存在就生成并落盘；按文件 mtime 缓存，**换了 token 不必重启服务**
@@ -659,7 +665,7 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 #### B7. Zotero 插件的几个关键机制
 
 插件是 **bootstrapped extension**（Zotero 7~10）。
-**源码在 `zotero-plugin/src/*.js`，按功能分 24 个文件**；`zotero-plugin/bootstrap.js`
+**源码在 `zotero-plugin/src/*.js`，按功能分 26 个文件**；`zotero-plugin/bootstrap.js`
 是它们拼出来的**生成物**（`tools/build_bootstrap.py`，xpi 里装的就是它）——
 原因见「五、目录与归属」里那一段。
 
@@ -740,7 +746,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 
 - **面板**：第一屏的「打开知识库」→ 先弹文献列表（复用已有的
   `PaperPicker`：作者/年份/标题、可搜索可排序）→ 选中一篇再列六个级别
-  （`tools/panels/browser.py` 的 `LevelPicker`）→ 双击用系统默认程序打开那个 md。
+  （`tools/panels/browser.py（已退役 2026-10-14）` 的 `LevelPicker`）→ 双击用系统默认程序打开那个 md。
 - **Zotero 右键**：第 ⑥ 组「打开知识库」二级菜单列同样的六个级别
   （`src/13-kbopen.js` 的 `KB_LEVELS` 是 Python 那份的**镜像**，
   由 `tools/check_kb_levels.py` 盯着 id/标签/路径模板三者一致）；
@@ -757,20 +763,35 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
    之后**统一生成；单独补齐用 `offline/maintain.py views`（面板「高级」页的
    「补齐知识库分级文件」就是它）。
 2. **打开文件走四级降级链**（`src/13-kbopen.js` 的 `openKbPath`）：
-   `Zotero.launchURL` → `外部协议服务` → `面板的 pythonw gui.py --open <路径>`
-   （`os.startfile`，本机一直在用、确定可用）→ `Zotero.File...reveal()`
-   （保底：在文件管理器里选中它）。为什么写成链式而不是挑一个：沙箱里这些
-   入口的可用性随版本变，而链式能保证最坏情况也有确定可用的兜底。
+   `Zotero.launchURL` → `外部协议服务` → ~~`面板的 pythonw gui.py --open <路径>`~~
+   （**2026-10-14 随 Tk 面板退役删除** —— 那一级现在只会失败，代码里也已摘掉）
+   → `Zotero.File...reveal()`（保底：在文件管理器里选中它）。
+   为什么写成链式而不是挑一个：沙箱里这些入口的可用性随版本变，而链式能保证最坏情况
+   也有确定可用的兜底。
 
 `views/` 与 `papers/`、`fulltext/` 同待遇：**可重建的派生物**，删了跑一次
 构建就回来；条目被删除时 `_purge_key` 会连它一起清掉。
 
 #### B9. 管理面板
 
-`tools/gui.py` 只是**入口**（组装 App + 命令行自检 + mainloop）；
+> **✅ 2026-10-14 已换代（W4）**：旧 Tk 面板已**整体退役** —— `tools/gui.py`、
+> `tools/panels/*`、`scripts\0-panel.vbs` 已删（备份 `kb\backup-20261015-0059-tk-panel\`）。
+> **现在的管理面板**是 Zotero 内的一个窗口（工具菜单 →「知识库管理…」）：
+> 页面在 `zotero-plugin/content/admin.html` + `admin.js` + `admin.css` +
+> `content/admin-pages/*.js`（一页一个文件、按 `order` 排成 10 页），宿主半在
+> `zotero-plugin/src/23-admin.js`，业务全在 `online/engine.py`（stdio JSON-RPC，无端口）。
+> ⚠ 页面实现约定、10 页清单、协议见 `docs/ADMIN-PANEL.md` 与
+> `docs/ADMIN-PORT-PLAN.md`（那里是权威）。
+>
+> 下面 B9 的其余内容**是旧 Tk 面板的结构记录**（保留作历史参考，别照着改代码）；
+> 其中"`tools/panels/common.py` 那份清单必须继续存在"这条**已迁移**：
+> `KB_FILE_SPEC` 现在住在 `offline/kb_manifest.py`（`kb.structure` 读它）；
+> "项目根在哪"的判据也从 `tools/gui.py` 换成了 `online/engine.py` +
+> `offline/schemas.py`（见 `zotero-plugin/src/02-paths.js::_looksLikeProjectRoot`）。
+
+`tools/gui.py` 曾经只是**入口**（组装 App + 命令行自检 + mainloop）；
 界面代码按"一个页签一个模块"在 `tools/panels/` 下，公共的路径与字体在
-`tools/panels/common.py`（`bootstrap.js` 与 `schemas.resolve_project_root()`
-都拿 `tools/gui.py` 当"项目根在哪"的判据，所以它必须继续存在）。
+`tools/panels/common.py`。
 
 **tkinter/ttk**，底部常驻日志区。八个页签（`tools/panels/base.py` 的
 `_build_tabs`）：
@@ -837,7 +858,7 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   默认仍是 `zotero`，所以**没装 MinerU 的用户行为逐字节不变**。
 - 安装：`scripts/install-mineru.ps1`（可选组件，装在项目内的 `.mineru\`，
   不写 PATH/注册表，删目录即卸载）+ 图形化引导
-  `tools/panels/mineru_guide.py`（说明 → 档位 → 预检 → 后台装 → 复检并写回配置）。
+  `tools/panels/mineru_guide.py（已退役 2026-10-14）`（说明 → 档位 → 预检 → 后台装 → 复检并写回配置）。
 
   ⚠ 三条实测出来的坑（脚本与文档里都写了）：Windows 上 `mineru[full]` 装的是
   **LMDeploy**（vLLM 只有 Linux），而它在本机起不来
@@ -1105,7 +1126,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 | 回写 | `POST /formula-apply` → `replace_nth_formula()` 换掉该页第 n 条 `$$…$$`（新 LaTeX 没写 `\\tag` 时沿用旧编号）→ 交给**既有唯一写路径** `POST /doc-edit`（修订层 + 重切重向量） |
 
 **为什么不做本地公式识别（OCR）模型**：做过一轮选型（393 条矩阵公式做基准，脚本与结果
-留在工作文件夹 `公式识别选型-bench/`）：
+留在工作文件夹 `formula-bench/`（原中文目录名，2026-10-15 改 ASCII））：
 
 | 候选 | 结论 |
 |---|---|
@@ -1140,24 +1161,27 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 │   ├── online\                      在线服务
 │   │   ├── searcher.py              混合检索 + 经验查询（唯一读库入口）
 │   │   ├── server.py                MCP 服务器（13 工具 + 4 资源）
+│   │   ├── engine.py                ★ 无端口引擎（管理面板用；stdio JSON-RPC，业务复用 localserver）
+│   │   ├── taskbox.py               文件信箱任务通道（<知识库>\mailbox\）
 │   │   ├── query.py                 中文分词 / 查询改写 / 覆盖率
-│   │   └── localserver.py           给 Zotero 插件的 HTTP 服务（:8765）
+│   │   └── localserver.py           旧 HTTP 服务（:8765，**已停**；回退件 scripts\4-service.vbs）
 │   ├── kb\                          数据（可迁移）
-│   │   ├── index.sqlite             ★ 单一事实来源
+│   │   ├── index.db                 ★ 单一事实来源
 │   │   ├── papers\*.md              每篇文献的 Markdown
 │   │   ├── fulltext\                按页正文
 │   │   ├── views\*.md               ★ 分级视图（摘要与要点 / 图注与表格 / 权重与经验）
 │   │   ├── MANIFEST.json            构建清单
 │   │   └── taxonomy-plan.json       分类重整方案
-│   ├── tools\                       管理工具（面板、升级、同步、打包、诊断…）
-│   │   ├── gui.py                   面板**入口**（组装 App + 命令行自检 + mainloop）
-│   │   ├── panels\                  ★ 面板各页签（base / tab_* / browser / common）
+│   ├── tools\                       管理工具（自检、升级、同步、打包、诊断…）
+│   │   ├── test_engine_rpc.py       ★ 无端口引擎的 RPC 自检（176 项）
 │   │   ├── paper_picker.py          选文献的弹窗（可拖宽、可排序；multi=True 多选）
 │   │   ├── build_bootstrap.py       ★ 把 src\*.js 拼成 bootstrap.js
 │   │   ├── check_kb_levels.py       ★ 盯分级清单在 Python 与 JS 两侧一致
+│   │   └── ~~gui.py + panels\~~     旧 Tk 面板（**2026-10-14 全删**，备份 kb\backup-20261015-0059-tk-panel\）
 │   ├── zotero-plugin\               ★ Zotero 插件源码 + 诊断脚本
-│   │   ├── src\*.js                 ★ 按功能拆的源码（24 个文件）
+│   │   ├── src\*.js                 ★ 按功能拆的源码（26 个文件）
 │   │   ├── content\kbview.{html,css,js}  ★ 侧栏页面（条目窗格列 + 阅读器对照列共用）
+│   │   ├── content\admin.{html,js,css} + admin-pages\*.js  ★ 管理面板页面（一页一个文件，共 10 页）
 │   │   ├── content\vendor\           ★ 原样引入的第三方库（markdown-it / KaTeX，含 LICENSE 与字体）
 │   │   └── bootstrap.js             ★ 生成物（xpi 里装的是它，别直接改）
 │   ├── tests\                       本机跑的测试（要真实知识库）
@@ -1177,7 +1201,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 ### 插件为什么要"源码多文件 + 生成单文件"
 
 Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js` 一个
-文件**（`manifest.json` 也必须在根目录）。所以源码分成 24 个文件之后，运行时
+文件**（`manifest.json` 也必须在根目录）。所以源码分成 26 个文件之后，运行时
 仍然必须是一个文件：
 
 ```
@@ -1207,12 +1231,12 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 
 | 步 | 做什么 | 验证方式 |
 |---|---|---|
-| 1 | 装 Python 3.14 + 建 venv，装 `mcp pymupdf numpy fastembed zstandard` | `python tools\gui.py --check` |
+| 1 | 装 Python 3.14 + 建 venv，装 `mcp pymupdf numpy fastembed zstandard` | `python tools\test_engine_rpc.py`（176 项；旧 Tk 面板的 `tools\gui.py --check` 已随面板退役删除） |
 | 2 | 装 Zotero（建议 10+），设置数据目录；装 Ollama 并拉 `qwen3:4b-instruct` | `tools\zotero_upgrade.py check` |
 | 3 | 跑 `1-convert.cmd` 建库 | `3-maintain.cmd` 显示条目/切片/向量 |
 | 4 | 用 bundle 接入 DSH：`dsh plugin --profile <p> add "link:<...>/bundle"` | DSH 里出现 `mcp__zotero-kb__*` 工具 |
 | 5 | 装 Zotero 插件（**必须完全重启 Zotero**） | 文献列表出现「知识库权重」列 |
-| 6 | 跑 `4-service.vbs` 起本地服务 | `http://127.0.0.1:8765/health` |
+| 6 | **（可选，默认不需要）** 跑 `4-service.vbs` 起旧本地服务 —— 只有要复现"HTTP 8765 通道"时才做 | `http://127.0.0.1:8765/health` |
 | 7 | 跑 `tools\test_task_bridge.py` 等测试 | 各测试退出码 0 |
 | 8 | （可选）装 DSH 侧收件箱 bundle | 往信箱丢个 json，看 results 出结果 |
 
@@ -1263,7 +1287,7 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 | 本地服务 | ✅ 115 项自检 | `online/localserver.py --test` |
 | 测试 | ✅ 40 个测试文件全过（0 失败） | `tools/run_tests.py`（工作文件夹） |
 | DSH 侧接入 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
-| 提示词注册表 | ✅ 话术可看可改可还原 | `tools/panels/tab_prompts.py` |
+| 提示词注册表 | ✅ 话术可看可改可还原 | `tools/panels/tab_prompts.py（已退役 2026-10-14）` |
 | ~~内容窗格「本地模型」~~ | **已删除**：没用而且 bug 多；`check_plugin.py` 有反向检查盯着它别回来 | — |
 | ~~逐段检查（可中断可续跑）~~ | **已删除**（连三张表一起） | — |
 

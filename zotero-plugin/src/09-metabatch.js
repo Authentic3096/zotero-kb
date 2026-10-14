@@ -215,8 +215,14 @@ Object.assign(ZoteroKB, {
       const it = list[i];
       let res = null;
       try {
-        res = await self.request("POST", "/metafill",
-                                 { key: it.key, use_model: false });
+        // W3 线2.5（2026-10-14）：桥优先（`meta.fillOne`），失败退回老 HTTP。
+        try {
+          res = await self.kbAdminHostRoute("POST", "/metafill",
+                                           { key: it.key, use_model: false });
+        } catch (e0) {
+          res = await self.request("POST", "/metafill",
+                                   { key: it.key, use_model: false });
+        }
       } catch (e) {
         res = { ok: false, error: String((e && e.message) || e) };
       }
@@ -225,8 +231,15 @@ Object.assign(ZoteroKB, {
       // 只在最后的回报里提醒用户单独去处理（见函数头第 3 条）。
       if (self.itemIsWebSaved(it)) {
         try {
-          const tf = await self.request("POST", "/typefix",
-                                        { key: it.key, use_network: false });
+          // W3 线2.5：桥优先（`meta.typefixOne`），失败退回老 HTTP。
+          let tf = null;
+          try {
+            tf = await self.kbAdminHostRoute("POST", "/typefix",
+                                            { key: it.key, use_network: false });
+          } catch (e0) {
+            tf = await self.request("POST", "/typefix",
+                                    { key: it.key, use_network: false });
+          }
           if (tf && tf.ok !== false && (tf.fixes || []).length) {
             suspects.push({ item: it, tf: tf });
           }

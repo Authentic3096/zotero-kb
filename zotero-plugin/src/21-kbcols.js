@@ -26,11 +26,27 @@ Object.assign(ZoteroKB, {
    * 拿不到服务时**静默降级**：不弹窗、不抛错（文献列表是高频 UI），
    * 只 Zotero.debug 一句，并且**保留上一次的数据** —— 服务重启几秒钟，
    * 不该让两列一起变空。
+   *
+   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**
+   * （`kbAdminHostRoute("GET","/col-status")` → 引擎 `kb.colStatus`），拿不到再退回
+   * 老 HTTP —— 过渡期两条都必须能用。桥不需要常驻 8765（引擎随 Zotero 起停）。
+   * ⚠ 引擎那边 `outline_sections` 必须走 `meta.ai_outline:`（读端口径），
+   *   不是数 `views/*.outline.md` 文件个数：本机 94 篇有 meta、只有 50 个文件，
+   *   按文件数会把 44 篇有纲要的显示成 ✗。
    */
   refreshKbCols: async function () {
     var self = ZoteroKB;
     try {
-      const res = await this.request("GET", "/col-status");
+      let res = null;
+      try {
+        res = await self.kbAdminHostRoute("GET", "/col-status");
+      } catch (e) {
+        Zotero.debug("[zotero-kb] 引擎桥取列状态失败（退回 HTTP）：" + e);
+      }
+      if (!res || !res.ok || !res.items) {
+        // 桥不可用 / 桥没给数据 → 走老 HTTP 兜一次（过渡期两条都活着）。
+        res = await self.request("GET", "/col-status");
+      }
       if (!res || !res.ok || !res.items) {
         Zotero.debug("[zotero-kb] 拉列状态失败（保持原样）："
                      + ((res && (res.error || res.hint)) || "响应里没有 items"));

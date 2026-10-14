@@ -73,19 +73,24 @@ Object.assign(ZoteroKB, {
     try {
       if (!(await this.healthCheck())) {
         this.notify("知识库服务没启动",
-          "请先启动本地服务（scripts\\0-panel.vbs 里能开，或跑 python online\\localserver.py）",
+          "请先启动本地服务（`scripts\\4-service.vbs` 能手动开，或跑 "
+          + "`python online\\localserver.py`）。\n"
+          + "（W4 起 Tk 面板已退役：管理面板都在 Zotero 里开 ——"
+          + "工具菜单 →「知识库管理…」）",
           null, true);
         return;
       }
       const key = item.key;
-      const info = await this.request("POST", "/item-info", { keys: [key] });
-      const entry = (info.items || [])[0] || {};
-      const needsIndex = !entry.in_kb || !entry.n_chunks;
+      // W3 线2.5：走共用的 kbItemInfo（桥优先、退回 HTTP，见 05-server.js）。
+      // ⚠ 它可能回 null（两条通道都失败）—— 那时按"拿不到信息"处理：**当成需要
+      //   建索引**（宁可多派一次增量建库，也不要漏掉新文献）。
+      const info = await this.kbItemInfo([key]);
+      const entry = ((info && info.items) || [])[0] || {};
+      const needsIndex = !info || !entry.in_kb || !entry.n_chunks;
 
       if (needsIndex) {
         this.notify("正在把新文献送进知识库…", item.getField("title"), null, true);
-        const res = await this.request("POST", "/reindex", { keys: [key] });
-        const jobId = res && res.job;
+        const jobId = await this.reindexOne(key);
         if (jobId) {
           await this.waitJob(jobId, 30);
         }
@@ -99,7 +104,41 @@ Object.assign(ZoteroKB, {
   },
 
 
+  /**
+   * 给一篇/几篇**派一次建索引**，返回 job id（拿不到就返回空串）。
+   *
+   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kb.reindex`），拿不到再退回
+   * 老 HTTP —— 过渡期两条都必须能用，桥不需要那个常驻 8765。
+   *
+   * ⚠ **两条通道的"派发回执"形状不一样，这里必须归一化**（踩点）：
+   *   · 桥 `kb.reindex` → `{job:{id:"job-…"}, id:"job-…"}`（契约形状，job 是对象）
+   *   · HTTP `POST /reindex` → `{job:"job-…", state:"running"}`（job 是**字符串**）
+   *   直接照抄老写法 `res.job` 走桥会拿到一个对象，再拿去拼
+   *   `GET /jobs/<object>` 就是一条注定失败的请求（而且报错看不出是这个原因）。
+   */
+  reindexOne: async function (keys) {
+    var self = ZoteroKB;
+    let res = null;
+    try {
+      res = await self.kbAdminHostRoute("POST", "/reindex", { keys: keys });
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 引擎桥派建索引失败（退回 HTTP）：" + e);
+    }
+    const flat = (r) => (r && ((r.job && r.job.id) || r.job || r.id)) || "";
+    if (!flat(res)) {
+      try {
+        res = await self.request("POST", "/reindex", { keys: keys });
+      } catch (e) {
+        Zotero.debug("[zotero-kb] 派建索引失败：" + e);
+        return "";
+      }
+    }
+    return String(flat(res) || "");
+  },
+
+
   waitJob: async function (jobId, maxSeconds) {
+    var self = ZoteroKB;
     const deadline = Date.now() + (maxSeconds || 30) * 1000;
     while (Date.now() < deadline) {
       // 自己用 setTimeout 包一个延时：
@@ -107,7 +146,14 @@ Object.assign(ZoteroKB, {
       // （这里已经踩过一次 Zotero.setInterval / Zotero.setTimeout 不存在的坑）。
       await new Promise((r) => setTimeout(r, 1000));
       try {
-        const job = await this.request("GET", "/jobs/" + jobId);
+        let job = null;
+        // W3 线2.5：桥优先（`jobs.get` 与 HTTP `GET /jobs/<id>` **同形**：
+        // 都走 LS.do_jobs_get），拿不到再退回 HTTP。
+        try {
+          job = await self.kbAdminHostRoute("GET", "/jobs/" + jobId);
+        } catch (e) {
+          job = await self.request("GET", "/jobs/" + jobId);
+        }
         if (job && (job.state === "done" || job.state === "failed")) return job;
       } catch (e) {
         return null;

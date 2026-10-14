@@ -3,6 +3,8 @@
     python tools/sideload_plugin.py install    # 装（会先备份关键文件）
     python tools/sideload_plugin.py remove     # 卸（清掉侧载痕迹）
     python tools/sideload_plugin.py status     # 看当前状态
+    python tools/sideload_plugin.py install --cycle   # 把整个循环交给脚本：
+                                                      # 正常退出 Zotero → 侧载 → 启动
 
 原理来自官方文档（Zotero Plugin Development → Setting Up a Plugin
 Development Environment）：
@@ -66,6 +68,26 @@ def zotero_running() -> bool:
         return "zotero.exe" in (out.stdout or "").lower()
     except Exception:  # noqa: BLE001
         return False
+
+
+def find_session_tool() -> str:
+    """找外层的 Zotero 会话工具 `tools/zotero/zotero_session.py`（`--cycle` 用）。
+
+    它负责「正常退出 Zotero」（三级降级，绝不强杀）与「启动后等插件写活」。
+    它在外层「不随仓库发布」的 tools 层（仓库根是 plugins\\zotero-kb 时，
+    即 ../../tools/zotero/zotero_session.py），所以这里按目录布局推路径；
+    布局不同可用环境变量 ZOTERO_SESSION_TOOL 覆盖。找不到就如实报告。
+    """
+    cands = []
+    env = os.environ.get("ZOTERO_SESSION_TOOL", "").strip()
+    if env:
+        cands.append(env)
+    outer = os.path.dirname(os.path.dirname(ROOT))   # ROOT = plugins\zotero-kb
+    cands.append(os.path.join(outer, "tools", "zotero", "zotero_session.py"))
+    for c in cands:
+        if c and os.path.isfile(c):
+            return c
+    return ""
 
 
 def current_xpi() -> str:
@@ -272,14 +294,58 @@ def cmd_remove() -> int:
     return 0
 
 
+def cmd_cycle(use_proxy: bool, start_timeout: float | None = None) -> int:
+    """`--cycle`：正常退出 Zotero → 侧载 → 启动，一次跑完。
+
+    退出走外层的 tools/zotero/zotero_session.py（三级降级，全是"请求关闭"，
+    绝不用 taskkill /F）；它找不到就停下并提示手动退出，**不硬闯**。
+    """
+    print("=" * 66)
+    print("侧载循环：正常退出 → 侧载 → 启动")
+    print("=" * 66)
+    tool = find_session_tool()
+    if not tool:
+        print(f"{BAD}找不到 tools/zotero/zotero_session.py —— --cycle 需要它来正常退出")
+        print("      请先手动完全退出 Zotero，再跑 tools\\sideload_plugin.py install")
+        return 1
+    print(f"      会话工具：{tool}")
+    cmd = [sys.executable, tool]
+
+    print("\n[1/3] 正常退出 Zotero")
+    rc = subprocess.call(cmd + ["quit"])
+    if rc != 0:
+        print(f"{BAD}退出失败（rc={rc}）—— 为了不把预置状态搅乱，这里停下。")
+        return rc
+
+    print("\n[2/3] 侧载")
+    print("      （下面那段「下一步」提示可忽略：本轮第 3 步会自动启动）")
+    rc = cmd_install(use_proxy=use_proxy)
+    if rc != 0:
+        return rc
+
+    print("\n[3/3] 启动 Zotero")
+    argv = cmd + ["start"]
+    if start_timeout:
+        argv += ["--timeout", str(start_timeout)]
+    return subprocess.call(argv)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="侧载 Zotero 插件")
     ap.add_argument("action", choices=["install", "remove", "status"],
                     nargs="?", default="status")
     ap.add_argument("--copy-xpi", action="store_true",
                     help="用拷贝 xpi 的方式（默认用代理文件指向源码目录）")
+    ap.add_argument("--cycle", action="store_true",
+                    help="install：先正常退出 Zotero → 侧载 → 再启动"
+                         "（默认关，必须显式传；退出绝不用 taskkill /F）")
+    ap.add_argument("--timeout", type=float, default=None,
+                    help="--cycle 启动后等插件写活的秒数（默认由会话工具定）")
     args = ap.parse_args()
     if args.action == "install":
+        if args.cycle:
+            return cmd_cycle(use_proxy=not args.copy_xpi,
+                             start_timeout=args.timeout)
         return cmd_install(use_proxy=not args.copy_xpi)
     if args.action == "remove":
         return cmd_remove()

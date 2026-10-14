@@ -21,8 +21,9 @@ DSH（我）        web_search 找候选 → 核 DOI（标题对不上就扔）
    │             → 勾选框让用户点选
    │  kb_acquire（只传勾中的 DOI）
    ▼
-本地服务 8765    任务队列
-   │
+本地服务 8765    任务队列（⚠ 2026-10-14 起服务已停；任务通道改走文件信箱
+   │             `<知识库>\mailbox\`，见 docs\ADMIN-PORT-PLAN.md §10.5。
+   │             8765 只在复现旧通道时才用 `scripts\4-service.vbs` 起回来）
    ▼
 Zotero 插件      Translate.Search 抓元数据 → 建条目 → 找可用的 PDF
                  → **走本地模型给分类建议 + 打标签**
@@ -450,7 +451,7 @@ Zotero 设置面板（唯一配置源）
 
 | 项 | 含义 | 留空时的默认 |
 |---|---|---|
-| 项目目录 | 代码和 `.venv` 在哪（含 `offline\`、`online\`） | 自动探测（找到 `tools\gui.py` 的那个目录） |
+| 项目目录 | 代码和 `.venv` 在哪（含 `offline\`、`online\`） | 自动探测（找到 `offline\` 的那个目录） |
 | Python 解释器 | 跑脚本用 | `<项目目录>\.venv\Scripts\pythonw.exe` |
 | Ollama 程序 | 本地模型（可选） | `%LOCALAPPDATA%\Programs\Ollama\ollama.exe` |
 

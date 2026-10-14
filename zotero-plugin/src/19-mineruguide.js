@@ -27,12 +27,12 @@
  * Ollama 走 `/health`（里面带 `ollama` 字段，同样是 `resolve_ollama()`）。
  * 服务没起来就按"本地看到什么算什么"处理。
  *
- * ## 为什么不在这里直接弹 Tkinter 向导
+ * ## 为什么引导在 Zotero 里做（W4 2026-10-14 改写）
  *
- * 插件沙箱里起不了窗口，而且安装要实时日志、要能取消 —— 那些都在面板里
- * （`tools/panels/mineru_guide.py`、`tools/panels/ollama_guide.py`）。
- * 这里只负责"拉面板并把对应窗口打开"，用与「打开知识库」同一条
- * `Subprocess` + `nsIProcess` 兜底链（`panelProcess`）。
+ * 原来这一步是"拉起 Tk 面板的安装向导"（向导逻辑原本在 `tools/panels/*_guide.py`，
+ * 那套代码已随 Tk 面板一起退役 2026-10-14）。
+ * Tk 面板退役后那套代码已删，MinerU 的入口统一到**新面板的「PDF 解析」页**
+ * （Ollama 在「运行环境」页）；本文件保留的是"首页首次引导对话框"。
  */
 Object.assign(ZoteroKB, {
 
@@ -89,11 +89,18 @@ Object.assign(ZoteroKB, {
     const kit = self.mineruKitPath();
     if (!(kit && self._exists && self._exists(kit))) {
       let seen = false;
+      // W3 线2.5（2026-10-14）：桥优先（`mineru.checkRaw` = `mineru.probe()` **原文**，
+      // 与 HTTP `/mineru-check` 同一份），拿不到再退回老 HTTP。
       try {
-        const info = await self.request("GET", "/mineru-check");
+        let info = null;
+        try { info = await self.kbAdminHostRoute("GET", "/mineru-check"); }
+        catch (e0) {
+          Zotero.debug("[zotero-kb] 引擎桥查 MinerU 失败（退回 HTTP）：" + e0);
+          info = await self.request("GET", "/mineru-check");
+        }
         seen = !!(info && info.ok);
       } catch (e) {
-        Zotero.debug("[zotero-kb] /mineru-check 不可用（服务没起来？）：" + e);
+        Zotero.debug("[zotero-kb] 查 MinerU 不可用（引擎与老服务都没起来？）：" + e);
       }
       if (!seen) missing.push("mineru");
     }
@@ -102,7 +109,10 @@ Object.assign(ZoteroKB, {
     if (!(ol && self._exists && self._exists(ol))) {
       let seen = false;
       try {
-        const info = await self.request("GET", "/health");
+        // W3 线2.5：桥优先（`kb.health` 里带 ollama 路径），退回老 HTTP。
+        let info = null;
+        try { info = await self.kbAdminHostRoute("GET", "/health"); }
+        catch (e0) { info = await self.request("GET", "/health"); }
         seen = !!(info && info.ollama);
       } catch (e) {
         Zotero.debug("[zotero-kb] /health 不可用（服务没起来？）：" + e);
@@ -156,20 +166,25 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /** 拉面板并打开对应组件的安装引导窗口。`which` = "mineru" | "ollama"。 */
+  /**
+   * 打开对应组件的安装引导。`which` = "mineru" | "ollama"。
+   *
+   * W4（2026-10-14）：原来这里是"拉起 Tk 面板的引导窗口"（起面板进程 + 传 --mineru-guide）。Tk 面板退役后那条路没了，改成**引导用户去新面板的对应页**
+   * （新面板第 5 页「PDF 解析」就是 MinerU 的入口；Ollama 在「运行环境」页）。
+   * 返回 false 让调用方知道"没自动打开"，但**给的是能照做的指引**，不是死路。
+   */
   openOptionalGuide: function (which) {
     var self = ZoteroKB;
-    const flag = which === "ollama" ? "--ollama-guide" : "--mineru-guide";
-    const ok = self.panelProcess
-      ? self.panelProcess(["--tab", "struct", flag])
-      : false;
-    if (!ok) {
-      self.notify("打不开安装引导",
-        "没能拉起管理面板。可以自己打开面板 →「知识库结构」页 →"
-        + "「MinerU 安装引导」/「Ollama 安装引导」，"
-        + "或者双击项目里的 scripts\\install-mineru.cmd。",
-        null, true);
-    }
-    return ok;
+    const where = which === "ollama"
+      ? "「运行环境」页（本地模型那一栏）"
+      : "「PDF 解析」页（MinerU 那一栏）";
+    try {
+      self.notify("安装引导在管理面板里",
+        "打开：工具菜单 →「知识库管理…」→ " + where + "。\n"
+        + "（也可以直接双击项目里的 "
+        + (which === "ollama" ? "（Ollama 用系统安装包）" : "scripts\\install-mineru.cmd")
+        + "）", null, false);
+    } catch (e) { /* 提示失败不影响调用方 */ }
+    return false;
   },
 });

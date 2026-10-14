@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!-- ===========================================================================
+     admin.html —— 知识库管理页面（2026-10-13 从 Tk 面板搬进 Zotero）
+
+     两份文档别搞混：
+       · content/kbview.html —— **侧栏那一列**（读文献的分级视图），不是这个；
+       · content/admin.html —— **管理面板**（本文件，替代 tools/gui.py 那套 Tk 面板）。
+
+     页面从 resource://zotero-kb/content/admin.html 加载（宿主半在 src/23-admin.js
+     里开这个窗口/页签），数据一律经宿主半中转（见 admin.js 顶部三条约定）。
+     页面脚本按"一页一文件"拆在 admin-pages/ 下，各自调 KBAdmin.page(...) 注册。
+     =========================================================================== -->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>知识库</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <div id="shell">
+    <nav id="nav"><!-- 导航项由 admin.js 按注册顺序生成 --></nav>
+    <div id="main">
+      <div id="topbar">
+        <h1>知识库</h1>
+        <span class="spacer"></span>
+        <span class="hint subtle">正在连接本机服务…</span>
+      </div>
+      <div id="view"><!-- 当前页内容 --></div>
+      <div id="logbar">
+        <span>运行日志</span>
+        <span class="spacer grow"></span>
+        <button class="btn btn-subtle" id="log-clear">清空</button>
+      </div>
+      <div id="log"></div>
+    </div>
+  </div>
+
+  <!-- 壳：导航 / 桥接（页面 ↔ 宿主半）/ 长任务轮询 / 表格与弹窗小工具 -->
+  <script src="admin.js"></script>
+
+  <!-- 一页一文件。加载顺序无关紧要（都只是注册），菜单顺序由各页的 order 决定。 -->
+  <script src="admin-pages/structure.js"></script>
+  <script src="admin-pages/experience.js"></script>
+  <script src="admin-pages/suggest.js"></script>
+  <script src="admin-pages/env.js"></script>
+  <script src="admin-pages/parse.js"></script>
+  <script src="admin-pages/quality.js"></script>
+  <script src="admin-pages/meta.js"></script>
+  <script src="admin-pages/outline.js"></script>
+  <script src="admin-pages/advanced.js"></script>
+  <script src="admin-pages/prompts.js"></script>
+
+  <script>
+    // 日志区清空（壳里的一条小功能，不值得单开文件）
+    document.getElementById("log-clear").addEventListener("click", function () {
+      document.getElementById("log").textContent = "";
+    });
+  </script>
+</body>
+</html>

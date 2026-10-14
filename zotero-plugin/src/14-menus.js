@@ -15,7 +15,8 @@ Object.assign(ZoteroKB, {
    *   document.getElementById("zotero-tb-note-add").after(btn)
    * 即插在「新建笔记」按钮后面，是 Zotero 主工具栏里的位置。
    *
-   * 面板本身是 Python/Tkinter 程序（tools\gui.py）—— 插件不重写界面，
+   * W4（2026-10-14）之后面板是 **Zotero 内的新面板**（`content/admin.html` + `23-admin.js`）。
+ * 下面说的是退役前的样子：面板曾是 Python/Tkinter 程序（tools\gui.py，已删）—— 插件不重写界面，
    * 直接把它拉起来即可（PyMuPDF、向量、模型都在 Python 侧，界面重写不划算）。
    */
   registerToolbarButton: function (win) {
@@ -56,6 +57,75 @@ Object.assign(ZoteroKB, {
         else Zotero.debug("[zotero-kb] 找不到工具栏锚点，按钮未添加");
       }
       Zotero.debug("[zotero-kb] 工具栏按钮已添加");
+      // 工具菜单里的「知识库管理…」也在这里顺手注册一次。
+      //
+      // 为什么挂在 registerToolbarButton 里、而不是新开一个 startup step：
+      //   · 窗口相关的 UI 必须在"启动时已存在的那个窗口"和"之后每个新窗口"
+      //     各注册一次，而 registerToolbarButton 恰好就是**唯一**一个两条路都会
+      //     走到的调用点（`00-core.js::scheduleWindowUI` + `17-windowhook.js`
+      //     ::onMainWindowLoad）；
+      //   · 本波只许动 23-admin / 14-menus / admin-pages/structure 三个文件，
+      //     去 00-core 里加一步会越界。
+      self.registerAdminMenu(win, doc);
+    } catch (e) {
+      Zotero.logError(e);
+    }
+  },
+
+
+  /**
+   * 工具菜单里的「知识库管理…」——在 Zotero 里打开管理页面（W1 的新入口）。
+   *
+   * 为什么是**工具菜单**而不是再放一个工具栏按钮：工具栏那个按钮是"把旧 Tk 面板
+   * 拉起来"（W3 之前必须还能用，见 ADMIN-PORT-PLAN 的不变量 1）；新面板更适合放在
+   * 「工具」里与 JSON API 之类并列，不占工具栏那一排的位置。
+   *
+   * 幂等：重复注册先删旧的（窗口重建时 registerToolbarButton 会被再调一次），
+   * 点开时由 `23-admin.js::kbAdminOpen` 保证"已经开着就聚焦"。
+   */
+  registerAdminMenu: function (win, docArg) {
+    var self = ZoteroKB;
+    try {
+      const doc = docArg || (win && win.document)
+        || (Zotero.getMainWindow && Zotero.getMainWindow().document);
+      if (!doc) return;
+      const popup = doc.getElementById("menu_ToolsPopup");
+      if (!popup) {
+        Zotero.debug("[zotero-kb] 找不到 menu_ToolsPopup，工具菜单项未加");
+        return;
+      }
+      const ITEM_ID = "zotero-kb-admin-menu";
+      const SEP_ID = "zotero-kb-admin-sep";
+      for (const id of [ITEM_ID, SEP_ID]) {
+        const old = doc.getElementById(id);
+        if (old && old.remove) old.remove();
+      }
+      const mk = function (tag) {
+        try {
+          return doc.createXULElement ? doc.createXULElement(tag)
+            : doc.createElement(tag);
+        } catch (e) { return doc.createElement(tag); }
+      };
+      const mi = mk("menuitem");
+      mi.id = ITEM_ID;
+      // 与条目右键菜单里的项同一套外观（menu-iconic + image），不然一眼就看出
+      // 是"外来的"（本文件上面记过同样的教训）。
+      mi.setAttribute("class", "menuitem-iconic");
+      if (self.rootURI) mi.setAttribute("image", self.rootURI + "toolbar-icon.svg");
+      mi.setAttribute("label", "知识库管理…");
+      mi.setAttribute("tooltiptext",
+        "在 Zotero 里打开知识库管理页面（状态、知识库结构）。\n"
+        + "无端口：引擎是本插件拉起的子进程，Zotero 退出时一起收掉。");
+      mi.addEventListener("command", function () {
+        try { self.kbAdminOpen(); } catch (e) { Zotero.logError(e); }
+      });
+      const sep = mk("menuseparator");
+      sep.id = SEP_ID;
+      // 放到最上面，并用分隔符与 Zotero 自带项隔开。
+      popup.insertBefore(mi, popup.firstChild);
+      if (mi.after) mi.after(sep);
+      else popup.insertBefore(sep, mi.nextSibling);
+      Zotero.debug("[zotero-kb] 工具菜单项「知识库管理…」已添加");
     } catch (e) {
       Zotero.logError(e);
     }
@@ -317,7 +387,7 @@ Object.assign(ZoteroKB, {
       if (!(await self.healthCheck())) {
         self.notify("知识库服务没启动",
           "纲要要由本地服务调模型生成。\n"
-          + "先把它起起来：管理面板的「运行环境」页，或跑 scripts\\0-panel.vbs。",
+          + "先把它起起来：工具菜单 →「知识库管理…」→「运行环境」页。",
           null, true);
         return;
       }
@@ -376,10 +446,17 @@ Object.assign(ZoteroKB, {
             // 用户点了停止：**每一轮都发一次**取消请求。服务端是"到下一节
             // 边界才收工"，而这一篇可能正卡在一节几分钟的模型调用里，
             // 只发一次不够稳（服务端可能刚好还没进循环）。
-            self.request("POST", "/digest/cancel", {}).catch(() => {});
+            // W3 线2.5（2026-10-14）：桥优先（`kb.digestCancel` 与 HTTP
+            // `POST /digest/cancel` **置的是同一个取消标记**），失败退回老 HTTP。
+            try {
+              await self.kbAdminHostRoute("POST", "/digest/cancel", {});
+            } catch (e0) {
+              self.request("POST", "/digest/cancel", {}).catch(() => {});
+            }
           }
           await new Promise((r) => setTimeout(r, 2000));
-          job = await self.request("GET", "/jobs/" + jobId);
+          // W3 线2.5：轮询也走桥（`jobs.get` 与 HTTP 同形），失败退回老 HTTP。
+          job = await self.kbJobGet(jobId);
           if (!job) break;
           const log = job.log || [];
           const tail = log.length ? String(log[log.length - 1]).trim() : "";
@@ -512,8 +589,12 @@ Object.assign(ZoteroKB, {
     }
     st.stopped = true;
     // 主循环里还会反复发（一篇可能正卡在一节长调用里），这里先发一次求快。
-    self.request("POST", "/digest/cancel", {}).catch((e) => {
-      Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e);
+    // W3 线2.5：桥优先，失败退回老 HTTP（两处都得改，只改一处会留下隐形 HTTP 依赖）。
+    self.kbAdminHostRoute("POST", "/digest/cancel", {}).catch((e0) => {
+      Zotero.debug("[zotero-kb] 引擎桥停止纲要失败（退回 HTTP）：" + e0);
+      self.request("POST", "/digest/cancel", {}).catch((e) => {
+        Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e);
+      });
     });
     self.notify("正在停止生成纲要…",
       "当前这一篇会在这一节的模型调用跑完后停下；\n"
@@ -521,60 +602,25 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /** 启动管理面板（Python/Tkinter）。已开着就不重复启动。 */
+  /**
+   * 打开管理面板。
+   *
+   * W4（2026-10-14）：**Tk 面板已退役**（`tools\gui.py（已退役 2026-10-14）` 与 `tools\panels\*` 已删），
+   * 这里改成打开 **Zotero 内的新面板**（`23-admin.js::kbAdminOpen`；工具菜单里那个
+   * 「知识库管理…」走的是同一个入口）。
+   *
+   * 为什么保留这个函数名：工具栏按钮、条目右键「打开知识库管理面板」、设置页
+   * **三处都调它** —— 一处改，三处都不再有死按钮（点了没反应比没有更糟）。
+   * 之所以不连这三处入口一起删：它们对用户是有用的（"打开管理面板"这件事没变，
+   * 只是面板换了实现），删了反而少一个正经入口。
+   */
   openPanel: function () {
     var self = ZoteroKB;
-    try {
-      const root = self.projectRoot();
-      const py = self.pythonExe();
-      const gui = root ? root + "\\tools\\gui.py" : "";
-      // 报错时把"我找的是哪、为什么、该改什么"一次说清，
-      // 而不是只说"找不到 Python 环境"（那样用户不知道该动哪一个框）。
-      if (!root || !self._exists(gui)) {
-        self.notify("找不到项目目录",
-          "我找的是：" + (root || "（没找到）")
-          + "\n它下面应该有 tools\\gui.py，但没找到。"
-          + "\n\n请在 设置 → 文献知识库 → 运行环境 里，"
-          + "把「项目目录」指到有 offline、online、.venv 的那个文件夹。",
-          null, true);
-        return;
-      }
-      if (!self._exists(py)) {
-        self.notify("找不到 Python 环境",
-          "我找的是：" + (py || "（没找到）")
-          + "\n项目目录：" + root
-          + "\n\n请在 设置 → 文献知识库 → 运行环境 里点「浏览…」，"
-          + "选到 .venv\\Scripts\\pythonw.exe；"
-          + "\n如果还没建过环境，先按 README 的「安装」一节建一次。",
-          null, true);
-        return;
-      }
-      // 已在运行就不重复开（GUI 自己也有单实例判断，这里再挡一层）
-      try {
-        const { Subprocess } = ChromeUtils.importESModule(
-          "resource://gre/modules/Subprocess.sys.mjs");
-        Subprocess.call({
-          command: py, arguments: ["-X", "utf8", gui],
-          workdir: self.projectRoot(),
-          stderr: "ignore", stdout: "ignore",
-        }).catch((e) => Zotero.debug("[zotero-kb] 面板进程：" + e));
-        self.notify("正在打开管理面板", "如果没出现，看任务栏（面板可能已在运行）",
-                    null, false);
-      } catch (e) {
-        // Subprocess 不可用时退回 nsIProcess
-        const nsLocalFile = Components.Constructor(
-          "@mozilla.org/file/local;1", "nsIFile", "initWithPath");
-        const proc = Components.classes["@mozilla.org/process/util;1"]
-          .createInstance(Components.interfaces.nsIProcess);
-        proc.init(nsLocalFile(py));
-        const args = ["-X", "utf8", gui];
-        proc.runw(false, args, args.length);
-        self.notify("正在打开管理面板", "", null, false);
-      }
-    } catch (e) {
-      Zotero.logError(e);
-      self.notify("打开面板失败", String(e), null, true);
+    if (typeof self.kbAdminOpen === "function") {
+      try { return self.kbAdminOpen(); }
+      catch (e) { Zotero.debug("[zotero-kb] 打开管理面板失败：" + e); }
     }
+    Zotero.debug("[zotero-kb] kbAdminOpen 不可用（23-admin.js 没加载？）");
   },
 
 

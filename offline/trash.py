@@ -59,9 +59,9 @@ SNAPSHOT_VERSION = 1
 LOG_NAME = "trash.log"
 
 
-def now_iso() -> str:
-    """本地时区的 ISO 时间（与 items.built_at 同一口径，人读得懂）。"""
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+# ⚠ 时间戳只有一份实现：`schemas.now_iso()`（原先本模块也写了一份，2026-10-15 合并）。
+#   保留这个名字是因为 keys.py 在调 `TR.now_iso()`；口径见 schemas 里的说明。
+now_iso = S.now_iso
 
 
 # ---------------------------------------------------------------- 落点
@@ -142,21 +142,13 @@ def _write_json(path: str, data: dict) -> None:
 
 
 def _dir_size(path: str) -> int:
-    total = 0
-    for dirpath, _dirs, files in os.walk(path):
-        for f in files:
-            try:
-                total += os.path.getsize(os.path.join(dirpath, f))
-            except OSError:
-                pass
-    return total
+    """实现只有一份：`schemas.dir_size()`（原先这里也写了一份，2026-10-15 合并）。"""
+    return S.dir_size(path)
 
 
 def _table_columns(conn, table: str) -> set[str]:
-    try:
-        return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
-    except sqlite3.Error:
-        return set()
+    """实现只有一份：`schemas.table_columns()`（原先这里也写了一份，2026-10-15 合并）。"""
+    return S.table_columns(conn, table)
 
 
 def _move_path(src: str, dst: str) -> bool:

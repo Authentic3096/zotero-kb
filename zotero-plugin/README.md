@@ -61,33 +61,36 @@ Zotero 的兜底链是 精确 → 同语种 → en-US → 第一个可用的）�
 现在：在 Zotero 里保存文献 → 插件自动切片 → 本地模型给出分类建议 → 点「应用」。
 全程不用离开 Zotero。
 
-## 安装（三步）
+## 安装（两步）
 
-### 1. 启动本地服务
+> ⚠ **2026-10-14 起不需要先启动任何服务**：常驻的 `127.0.0.1:8765` 已停用，
+> 管理面板走"插件按需拉起的引擎子进程（stdio JSON-RPC）"、跨程序任务走
+> `<知识库>\mailbox\` 文件信箱。下面第 1 步只在你要**复现旧 HTTP 通道**时才做。
+
+### 0.（可选，旧通道）启动本地 HTTP 服务
 
 双击 **`scripts\4-service.vbs`**（后台运行、无窗口）。
-也可以用管理面板（`scripts\0-panel.vbs`）的「分类 / 标签」页 → 「启动服务」。
-
 服务地址固定 `http://127.0.0.1:8765`，健康检查：
 <http://127.0.0.1:8765/health>（这个不需要 token）。
 
-### 2. 装插件
+### 1. 装插件
 
 Zotero → **工具 → 插件** → 右上角**齿轮 → Install Plugin From File…**
-→ 选 `zotero-plugin\zotero-kb-0.1.0.xpi`
+→ 选 `zotero-plugin\zotero-kb-<版本>.xpi`（当前 **2.0.0**；跑
+`python tools\check_plugin.py` 会现打一个，文件名跟 `manifest.json` 的版本走）
 
 > ⚠ 本机实测：**往 profile 的 `extensions\` 目录丢 xpi 是无效的**
 > （Zotero 9/10 都不再扫描那里），必须走上面这个入口。
 > 装完不用重启。
 
-### 3. 填设置
+### 2. 填设置
 
 Zotero → **编辑 → 设置 → 文献知识库**：
 
 | 项 | 填什么 |
 |---|---|
-| 本地服务地址 | `http://127.0.0.1:8765`（默认已填） |
-| 访问 token | 通常**不用填** —— 插件探活时会自动从服务端取回并保存 |
+| 本地服务地址 | `http://127.0.0.1:8765`（默认已填）—— **旧 HTTP 通道的留档**：2026-10-14 起常驻服务已停，这一项只在你要复现旧通道（先跑 `scripts\4-service.vbs`）时才有用 |
+| 访问 token | 通常**不用填** —— 插件探活时会自动从服务端取回并保存（同上，仅旧通道） |
 | **模型来源** | `Ollama（本机）` 或 `OpenAI 兼容 API`，见下一节 |
 | 分类列表 | 留空 = 用知识库里现有的分类 |
 | 新文献自动处理 | 勾上（默认开） |
@@ -195,7 +198,7 @@ SiliconFlow，以及自建的 vLLM、LM Studio、Ollama 的 `/v1` 层。
 | GET | `/health` | 探活（**不需要 token**） |
 | GET | `/status` | 知识库规模 |
 | POST | `/classify` | 给一篇文献推荐分类 + 标签（插件主要用这个） |
-| POST | `/item-info` | 查这些文献切片过没有 |
+| POST | `/item-info` | 查这些文献切片过没有；返回里带 `title` / `first_author` / `year` / `collections` / `fulltext_chars` / `weight`，够外部工具（如 DSH 的按条目挑文献插件）直接列一张可排序的表 |
 | POST | `/reindex` | 触发增量构建（异步，返回 job id） |
 | POST | `/tag-suggest` | 批量标签建议 |
 | GET / POST | `/metafill` | 单篇的元数据补全建议（从 PDF 首页找 date / DOI / 卷 / 期 / 页码；**只读**，写回在插件侧由用户勾选后做） |

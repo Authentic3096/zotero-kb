@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
 
 # outcome 白名单（与 MCP 工具、learn.py 的 pending 一致）
 OUTCOMES = ("effective", "ineffective", "partial", "unknown")
@@ -52,7 +51,9 @@ EDITABLE = ("asked", "outcome", "method", "context", "reason", "evidence",
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    """实现只有一份：`schemas.now_iso()`（2026-10-15 合并；本模块按既有约定懒加载 schemas）。"""
+    import schemas as S
+    return S.now_iso()
 
 
 def split_list(value) -> list[str]:

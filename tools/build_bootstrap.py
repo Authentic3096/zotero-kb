@@ -76,6 +76,11 @@ SRC_ORDER = [
     "21-kbcols",
     # 公式就地纠错（阅读器右键 → 定位 → 编辑区 → 回写）。不做 OCR，见文件头。
     "22-formula",
+    # 管理面板搬进 Zotero 的**宿主半**（范围 B 第一波，W1）：拉起无端口的
+    # stdio 引擎（online/engine.py）、把页面的 postMessage 转成引擎 RPC、
+    # 工具菜单里的「知识库管理…」开一个带 <browser> 的窗口。
+    # 见 docs/ADMIN-PORT-PLAN.md；探明结论（Subprocess 能不能拿 stdout 管道）写在文件头。
+    "23-admin",
     "99-bootstrap",
 ]
 

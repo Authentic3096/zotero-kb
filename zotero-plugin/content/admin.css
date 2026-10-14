@@ -1,0 +1,493 @@
+/* ============================================================================
+ * admin.css —— 知识库管理页面的**设计系统**（2026-10-13 从 Tk 面板整体搬迁）
+ *
+ * 与 Tk 侧的 `tools/panels/theme.py` **同一套语义令牌**：颜色/字号/间距在这两个
+ * 世界里是同一批名字，改配色要两边一起改（写在这里的注释会互相指路）。
+ *
+ * 设计口径（用户原话：「简约干净利索」「字号太大」）：
+ *   · 不画框线分层 —— 靠留白 + 字号 + 一条 1px 分隔线；
+ *   · 基准字号 12px（Tk 侧对应 9pt），说明文字 11px，数字块 22px；
+ *   · 间距只用 4 的倍数；表格行高 24、单元格左内边距 8；
+ *   · 强调色只给"主操作"和"当前项"，危险色只给破坏性操作。
+ * ==========================================================================*/
+
+:root {
+  /* 颜色（对应 theme.C） */
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --border: #e3e5e9;
+  --text: #1f2328;
+  --subtle: #6b7280;
+  --faint: #9aa1ab;
+  --accent: #1f6feb;
+  --accent-fg: #ffffff;
+  --accent-soft: #e8f0fe;
+  --danger: #c0392b;
+  --danger-soft: #fdecea;
+  --warn-bg: #fff8e1;
+  --warn-fg: #8a6a1f;
+  --ok: #0e8a7d;
+  --row-alt: #fafbfc;
+  --sel: #dbe7fb;
+  --log-bg: #fbfbfd;
+
+  /* 字号（对应 theme.FONTS） */
+  --fs-title: 14px;
+  --fs-num: 17px;
+  --fs-body: 11.5px;
+  --fs-small: 10.5px;
+  --fs-mono: 10.5px;
+
+  /* 间距（对应 theme.SP） */
+  --sp-xs: 2px;
+  --sp-s: 4px;
+  --sp-m: 8px;
+  --sp-l: 12px;
+  --sp-xl: 16px;
+  --radius: 6px;
+}
+
+/* ⚠ 深色配色暂**不挂在 prefers-color-scheme 上**（2026-10-13）。
+ *   原因：Zotero 的 <browser> 与无头预览都会跟系统外观走，于是"我按浅色调的、用户看到深色"，
+ *   排查成本全落在观感上。先只做**一套浅色**（也就是用户要的"简约干净"）；
+ *   以后要做深色，改成显式开关（body.theme-dark）再由 Zotero 传进来。
+ *   （原深色令牌留档：bg #1c1d21 / card #26282d / border #34373d / text #e6e7ea /
+ *     subtle #a2a8b3 / accent-soft #1e2a41 / row-alt #232529 / sel #2b3b57 / log #202226） */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font: var(--fs-body)/1.5 "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+/* ---- 骨架：左导航 + 右内容 ---------------------------------------------- */
+#shell { display: flex; height: 100%; }
+
+#nav {
+  width: 168px; flex: 0 0 168px;
+  padding: var(--sp-m) var(--sp-m) var(--sp-m) var(--sp-m);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: var(--sp-xs);
+  overflow: auto;
+}
+#nav .brand {
+  font-size: var(--fs-small); color: var(--subtle);
+  padding: var(--sp-m) var(--sp-m) var(--sp-l);
+}
+#nav button {
+  all: unset; cursor: pointer;
+  padding: 5px var(--sp-m); border-radius: var(--radius);
+  color: var(--text); font-size: var(--fs-body);
+}
+#nav button:hover { background: var(--accent-soft); }
+#nav button[aria-current="page"] {
+  background: var(--accent-soft); color: var(--accent); font-weight: 600;
+}
+
+#main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+
+#topbar {
+  display: flex; align-items: center; gap: var(--sp-m);
+  padding: var(--sp-m) var(--sp-l);
+  border-bottom: 1px solid var(--border);
+}
+#topbar h1 { font-size: var(--fs-title); margin: 0; font-weight: 600; }
+#topbar .spacer { flex: 1 1 auto; }
+#topbar .hint { color: var(--subtle); font-size: var(--fs-small); }
+
+#view { flex: 1 1 auto; overflow: auto; padding: var(--sp-l); }
+
+/* ---- 通用零件 ---------------------------------------------------------- */
+.card {
+  background: var(--card); border-radius: var(--radius);
+  padding: var(--sp-l) var(--sp-l) var(--sp-m); margin-bottom: var(--sp-m);
+}
+.row { display: flex; align-items: center; gap: var(--sp-m); flex-wrap: wrap; }
+.row + .row { margin-top: var(--sp-m); }
+.grow { flex: 1 1 auto; }
+.subtle { color: var(--subtle); }
+.faint { color: var(--faint); font-size: var(--fs-small); }
+.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: var(--fs-mono); }
+.num { font-size: var(--fs-num); font-weight: 600; line-height: 1.1; }
+.num-label { font-size: var(--fs-small); color: var(--subtle); }
+.stat { min-width: 78px; }
+.stat + .stat { margin-left: var(--sp-xl); }
+.sep { height: 1px; background: var(--border); margin: var(--sp-l) 0; }
+.hidden { display: none !important; }
+/* ⚠ 加了这条才敢用 `node.hidden = true` 收 `.row` / `.sel-pop` 这类**有 display 规则**
+   的元素：HTML 的 `[hidden]` 来自 UA 样式表，优先级比作者样式里的 `display:flex`
+   低，光设 hidden 属性它们照样显示（2026-10-13 环境页的「API 地址」一行就是这么
+   漏出来的）。`!important` 是为了跟 UA/作者两边的 display 都能掰过手腕。 */
+[hidden] { display: none !important; }
+
+/* 按钮：三档严重度（对应 theme 的 Primary/Danger/Subtle.TButton） */
+.btn {
+  padding: 4px 10px; border-radius: var(--radius); cursor: pointer;
+  border: 1px solid var(--border); background: var(--card); color: var(--text);
+  font-size: var(--fs-body); font-family: inherit;
+}
+.btn:hover { background: var(--accent-soft); border-color: var(--accent); }
+/* ⚠ 禁用态要连**边框**一起变灰（2026-10-13 加）：原来只改了文字色，于是被禁用的
+   btn-danger 还留着红框、看着像能点（分节纲要没选中那三颗按钮就是这个毛病）。
+   禁用=灰字+灰框+灰底，与"亮着"一眼可分。 */
+.btn:disabled { color: var(--faint); background: var(--bg); cursor: default; border-color: var(--border); }
+.btn:disabled:hover { border-color: var(--border); }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
+.btn-primary:hover { background: #2b7cf0; border-color: #2b7cf0; }
+.btn-danger { color: var(--danger); border-color: var(--danger); background: var(--card); }
+.btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+/* 次级按钮：**默认就要看得出是按钮** —— 浅边框 + 极浅底色，悬停时再加深/换底色。
+   用户 2026-10-13：「"解析这一篇"鼠标不放上去就没有蓝框，看不出这是按钮」
+   （同一个毛病在分节纲要的「生成」上也有）。
+   用到它的地方（各页的行内/次级操作）：
+     parse「刷新状态 / 解析这一篇」、outline「刷新 / 生成」、
+     experience「查询 / 列出全部 / 经验体检 / 待确认清单 / 修改经验 / 选择会话」、
+     meta「取消」、advanced「刷新 / 各动作」、env「重新检测 / 重启服务」、
+     suggest「刷新列表 / 只看分类分布」、prompts「试跑」、structure「刷新」、
+     admin.html 底部日志栏「清空」。
+   三档层次保持：主=蓝实底、破坏=红框、次=浅边框。
+   禁用态回到"扁平"（浅色文字、无框无底，不邀请点击）。 */
+.btn-subtle { color: var(--subtle); border-color: var(--border); background: var(--bg); }
+.btn-subtle:hover { color: var(--text); background: var(--accent-soft); border-color: var(--accent); }
+.btn-subtle:disabled,
+.btn-subtle:disabled:hover {
+  color: var(--faint); background: transparent; border-color: transparent;
+}
+
+input[type="text"], input[type="search"], select, textarea {
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--card); color: var(--text); font: inherit;
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+label.inline { color: var(--subtle); font-size: var(--fs-small); }
+
+/* 表格：隔行底 + 细表头 + 单元格内边距（对应 theme.stripe / Treeview） */
+table.grid { width: 100%; border-collapse: collapse; font-size: var(--fs-body); }
+table.grid th {
+  /* 悬浮表头压住滚动的行，底色必须**不透明**（--card），否则后面的内容会透出来。
+     ⚠ 但 `top: 0` 在这里是错的：sticky 的偏移是**从滚动容器的内容盒顶边**量起的，
+        `#view` 有 `padding: var(--sp-l)`，于是表头会停在内容盒顶边、**上方漏出 12px 的缝** ——
+        滚动时能从缝里看见上一行被切掉一半的字（用户 2026-10-13 报的正是这条，
+        截图里「解析状态」表头上方那半行字就是这么来的）。
+        把 top 反向抵消掉这段 padding，表头就贴住**可见顶边**（滚动口上沿）、零缝隙；
+        不滚动时 sticky 不生效，所以不会多出空白。
+        ⚠ `#view` 的 padding-top 若改了，这里必须跟着改（现在两边都是 var(--sp-l)）。
+        （同一个坑见 content/kbview.css 的页工具条，那边用 --kbv-view-pad 抵消。） */
+  position: sticky; top: calc(-1 * var(--sp-l)); z-index: 1;
+  text-align: left; font-weight: 600; color: var(--subtle);
+  background: var(--card); border-bottom: 1px solid var(--border);
+  padding: var(--sp-s) var(--sp-m);
+}
+table.grid td {
+  padding: 3px var(--sp-m); border-bottom: 1px solid var(--border);
+  vertical-align: top; height: 22px;
+}
+
+/* 「存放内容」那一列原来是整句长文 —— 用户说"密密麻麻"。
+   第一屏只留开头、鼠标悬停看全文（页面里给单元格设了 title）。
+   用 nth-child(2) 而不是给页面加类：结构表/经验表/纲要表都是"名字 + 说明"
+   两列开头，规则统一，页面不用各写一遍。 */
+table.grid td:nth-child(2) {
+  max-width: 420px; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+table.grid tbody tr:nth-child(odd) { background: var(--row-alt); }
+table.grid tbody tr:hover { background: var(--accent-soft); }
+table.grid tbody tr.selected { background: var(--sel); }
+table.grid td.mono, table.grid td.num-cell {
+  font-family: Consolas, monospace; white-space: nowrap;
+}
+
+/* 「数字 + 单位」两列（内容量 / 占用）：数字在定宽盒里右对齐、单位紧跟左对齐。
+   这样数字右边缘齐、单位左边缘齐，而整块左边缘又与表头左边缘对齐 ——
+   用户 2026-10-13 的要求"把单位和数字分开，表头也要对齐"。 */
+table.grid td .n {
+  display: inline-block; min-width: 5.2em; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+table.grid td .u { color: var(--subtle); margin-left: 5px; }
+
+/* ---- 数值列整列右对齐（结构页的「内容量 / 占用」，2026-10-13 第三版）---------
+   为什么不用上面的 .n / .u：那套是"数字定宽盒 + 单位左对齐"的**整块左对齐**，
+   定宽盒会在数字左边留 60px 空白（数字看着离表头很远），而列宽又被 auto 布局
+   随窗口分（1240px 下 193px、1600px 下 262px）—— 列一宽右半截也空，整块浮在
+   列中间，"窗口拉宽后更难看"的根因就是**块没有锚在列的边上**。
+   现在把整列（含表头）锚在列的右内边距上：值右边缘 = 表头右边缘，列再宽只往
+   左边空。tabular-nums 让数字等宽，行与行之间也不会糊。
+   ⚠ 只挂在结构页自己那个 `.numtab` 包裹上（nth-child 的第 3/4 列就是
+     内容量 / 占用），别的页面的表格一格都不动。 */
+.numtab table.grid th:nth-child(3), .numtab table.grid td:nth-child(3),
+.numtab table.grid th:nth-child(4), .numtab table.grid td:nth-child(4) {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+td .tag-ok { color: var(--ok); }
+td .tag-bad { color: var(--danger); }
+td .tag-warn { color: var(--warn-fg); }
+
+/* ---- 原生 <select> 的替身（2026-10-13）------------------------------------
+   为什么：管理页面跑在 Zotero 的 <browser> 里，**原生 <select> 的弹层出不来**
+   （真机实测见交接报告）。于是全项目改用这里的两件自绘控件：
+     · .btn-group  —— 选项 ≤ 4 个时的并排按钮组（互斥单选）；
+     · .sel        —— 选项多时的自绘下拉（admin.js::select()）。
+   选中态用 `aria-pressed="true"`（读屏）+ `.is-on`（样式）双写。 */
+.btn-group { display: inline-flex; }
+.btn-group .btn { border-radius: 0; margin-left: -1px; }
+.btn-group .btn:first-child { border-radius: var(--radius) 0 0 var(--radius); margin-left: 0; }
+.btn-group .btn:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.btn-group .btn.is-on {
+  background: var(--accent-soft); border-color: var(--accent);
+  color: var(--accent); font-weight: 600;
+  /* 选中那块的边框要压住邻居（负 margin 叠了 1px） */
+  position: relative; z-index: 1;
+}
+
+.sel { position: relative; display: inline-block; }
+.sel-btn {
+  display: inline-flex; align-items: center; gap: var(--sp-s);
+  max-width: 22em; padding: 4px 8px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--card); color: var(--text); font: inherit;
+}
+.sel-btn:hover { border-color: var(--accent); }
+.sel-btn:disabled { color: var(--faint); background: var(--bg); cursor: default; }
+.sel-btn:disabled:hover { border-color: var(--border); }
+.sel-cap { color: var(--subtle); font-size: var(--fs-small); }
+.sel-val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sel-caret { color: var(--subtle); }
+.sel-pop {
+  position: absolute; left: 0; top: calc(100% + 2px); z-index: 20;
+  min-width: 100%; max-height: 280px; overflow: auto;
+  padding: var(--sp-xs);
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: 0 4px 12px var(--border);
+}
+.sel-opt {
+  display: block; width: 100%; text-align: left; white-space: nowrap;
+  padding: 4px var(--sp-m); cursor: pointer; font: inherit;
+  border: 0; border-radius: var(--radius);
+  background: transparent; color: var(--text);
+}
+.sel-opt:hover { background: var(--accent-soft); }
+.sel-opt.is-on { color: var(--accent); font-weight: 600; }
+
+/* 可输入下拉（combobox，`ctx.select(..., {editable:true})`）：
+   输入框 + 只剩箭头的按钮，两者拼成一条（左圆右方 / 右圆左方）。 */
+.sel-input {
+  min-width: 14em;
+  border-top-right-radius: 0; border-bottom-right-radius: 0;
+}
+.sel-input:focus { outline: none; border-color: var(--accent); }
+.sel-input + .sel-btn {
+  margin-left: -1px;
+  border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+
+/* ---- 可排序的表头（admin.js::table 的 `sortable: true` 列）-----------------
+   统一口径写在 `admin.js::table` 的注释里（哪些列可排 / 哪些不可排 / 默认排序），
+   这里只管**指示符长什么样**：可排的列给 pointer + 悬停高亮，当前排序列的
+   ▲ / ▼ 用强调色。`sortable` 没给的列连 cursor 都不给 —— 表头看不出能不能点
+   正是用户 2026-10-14 报的「有的能有的不能」；现在同一张表里两类列一眼可分。 */
+table.grid th.th-sort { cursor: pointer; }
+table.grid th.th-sort:hover { color: var(--accent); background: var(--accent-soft); }
+table.grid th.th-sort .arrow { color: var(--accent); }
+
+/* ---- 行高相关：不许折行的单元格 / 一行内的操作区 -------------------------
+   「纲要文件」原来写"已渲染/未渲染"会被挤成"已渲/染"两行（用户 2026-10-13 报的），
+   现在文案缩到"有/无" + 这两条规则一起保证**每行都是一行高**。 */
+table.grid td.nowrap { white-space: nowrap; }
+.ops { display: inline-flex; align-items: center; gap: var(--sp-s); }
+.clip {
+  display: inline-block; max-width: 320px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+}
+
+/* 提示条 / 状态 */
+.note {
+  padding: var(--sp-s) var(--sp-m); border-radius: var(--radius);
+  font-size: var(--fs-small);
+}
+.note-warn { background: var(--warn-bg); color: var(--warn-fg); }
+.note-err { background: var(--danger-soft); color: var(--danger); }
+.note-ok { background: var(--accent-soft); color: var(--accent); }
+
+/* 进度条（长任务：/jobs/<id> 轮询的结果就画在这里） */
+.bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); width: 0; }
+.bar.done > i { background: var(--ok); }
+.bar.fail > i { background: var(--danger); }
+
+/* 日志尾（跟随主题的浅底，不是黑块） */
+#log.collapsed { display: none; }
+#log {
+  border-top: 1px solid var(--border); background: var(--log-bg);
+  font-family: Consolas, monospace; font-size: var(--fs-mono);
+  max-height: 30vh; overflow: auto; padding: var(--sp-m) var(--sp-l);
+}
+#log div { white-space: pre-wrap; word-break: break-all; }
+#log .err { color: var(--danger); }
+#log .warn { color: var(--warn-fg); }
+#log .ok { color: var(--ok); }
+#logbar {
+  display: flex; align-items: center; gap: var(--sp-m);
+  padding: var(--sp-xs) var(--sp-l); color: var(--subtle);
+  font-size: var(--fs-small); border-top: 1px solid var(--border);
+}
+
+/* 悬停提示（Tk 侧是 _tip；页面里用原生 title 即可，这里留给自定义提示） */
+[data-tip] { cursor: help; border-bottom: 1px dotted var(--faint); }
+
+/* 弹窗（经验编辑这类表单用） */
+dialog {
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--card); color: var(--text); padding: var(--sp-l);
+  min-width: 420px; max-width: 80vw;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .25); }
+dialog h2 { margin: 0 0 var(--sp-m); font-size: var(--fs-body); }
+dialog .actions { display: flex; justify-content: flex-end; gap: var(--sp-m); margin-top: var(--sp-l); }
+
+/* 三段式弹窗：标题 / 滚动正文 / 固定动作行（2026-10-13）。
+   为什么：原来是"整块可以滚"，内容一长（经验关联文献弹窗 94 行）底部的
+   「取消 / 确定」就被顶出可视区 —— 用户真机上的"没有确认按钮"就是它。
+   改成竖排 flex + 限高：**标题与动作行常驻**，中间那段自己滚
+   （flex:1 配 min-height:0 才真滚得起来）。
+   ⚠ 选择器必须写 `dialog[open]`：直接写 `dialog` 会盖掉浏览器给的
+     `dialog:not([open]) { display:none }`，所有**关着**的弹窗都会冒出来。 */
+dialog[open] {
+  display: flex; flex-direction: column;
+  max-height: 78vh; overflow: hidden;
+}
+dialog[open] > h2 { flex: 0 0 auto; }
+dialog[open] > .actions { flex: 0 0 auto; }
+/* 正文段 = 除标题与动作行以外的那一个子元素（ctx.dialog 与自建弹窗都是这样）。
+   多个兄弟时页面自己把正文包成一个容器（见 experience.js 的 `.dlg-body`）。 */
+dialog[open] > :not(h2):not(.actions) {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+}
+
+/* 「能删吗」那列表头/单元格不许折成两行。
+   ⚠ 用户报"窗口再宽点，别让这列折两行" —— 但窗口默认已经是**屏幕可视区的 90%**，
+   再宽没意义；真因是这列的**最小宽度**被旁边的长文本列挤到 2 行。
+   所以固定成 nowrap：先保这个短列（表头 3 字、内容 2~3 字）不折，让长文本列去让位。
+   只作用于结构页（.numtab 是那一页自己的包裹 div），别的页表格不受影响。 */
+.numtab th:last-child,
+.numtab td:last-child { white-space: nowrap; }
+
+/* 「文件 / 文件夹」这列同理（用户 2026-10-13 第二遍：「第一列也要」）。
+   内容是 index.db / service-token.txt 这种短目录名，折行没有意义（`-` 处会断成
+   两行）；抢回来的宽度让给「存放内容」那条长说明。作用域同上，只在本页的 .numtab 下。 */
+.numtab th:first-child,
+.numtab td:first-child { white-space: nowrap; }
+
+/* ---- PDF 解析页：短表头不折行 + 数值列整列右对齐（2026-10-13）-------------
+   两件事一起做，因为它们都挂在同一张表的列上：
+   · **短表头不许折行**：真机 7 列分下来「解析档位」「解析时间」各只拿到 62px，
+     4 个字正好卡在边界上，于是折成「解析档 / 位」（用户 2026-10-13 报的，
+     真机实测表头行高 43px = 两行）。这些表头都只有 1~4 个字，折行没有意义 ——
+     固定 nowrap，让**文献**那一列（长标题、可换行）去让位。
+   · **数值列整列右对齐**：页数 / 图 / 产物占用 / 解析时间这四列的值原来靠
+     「定宽盒里右对齐」（.n 那一套）摆，于是表头贴列的左边、数字贴盒子的右边，
+     两者差着大半列宽（用户报的「表头和内容不对齐」）。改成整列（含表头）锚在
+     **列的右内边距**上，与结构页 .numtab 同一套口径：值右边缘 = 表头右边缘。
+   只作用于 PDF 解析页（.parsetab 是本页私有的包裹类），别的页面一格不动。 */
+.parsetab table.grid th { white-space: nowrap; }
+.parsetab table.grid th:nth-child(4), .parsetab table.grid td:nth-child(4),
+.parsetab table.grid th:nth-child(5), .parsetab table.grid td:nth-child(5),
+.parsetab table.grid th:nth-child(6), .parsetab table.grid td:nth-child(6),
+.parsetab table.grid th:nth-child(7), .parsetab table.grid td:nth-child(7) {
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+
+/* ---- 操作行跟着表头一起钉在滚动口顶端（2026-10-13 用户要求）---------------
+   `#view` 是唯一的滚动容器，**表格滚走时卡片的前半截也跟着走** —— 用户在
+   PDF 解析 / 经验库两页滚到中段想动某一行，得先滚回顶上（这两页都这么报）。
+   做法：操作行自己 sticky；表头 th 再让出**操作行的固定高度**，两层严丝合缝。
+   ⚠ 高度写成令牌、不量：量出来就得让页面写内联 style，而令牌两层共用，改一个值
+     两层同时跟着动。
+   ⚠ 两层各写 top 时必须差一个操作行的高度，否则表头与操作行抢同一个位置、叠在
+     一起（这是这一条最容易踩的坑：第二个 top = 第一个的高度）。
+   ⚠ 只挂在 .sticktab 作用域里（这两页各自的列表卡），别的页面的表头维持原样。 */
+.sticktab { --stick-h: 30px; }
+.stickrow {
+  position: sticky; top: calc(-1 * var(--sp-l)); z-index: 2;
+  height: var(--stick-h); flex-wrap: nowrap; background: var(--card);
+}
+.sticktab table.grid th { top: calc(-1 * var(--sp-l) + var(--stick-h)); }
+
+/* ---- 提示词页的左右分栏：两栏必须**并排**，不能被左栏的固有宽度挤成上下 ----
+   左边那个原生 listbox（select size）**没有宽度属性**，固有宽度由**最长的选项
+   文本**决定（真机上 7 条提示词的标题都很长，把它撑到 310px）；而 .card 的
+   min-width 是 auto（=不许小于自己的 min-content）。两者之和超过 #view 的宽度，
+   `.row` 的 flex-wrap 就把**右边的编辑卡整块折到视口外** —— 用户看到的是
+   「左边一条列表、右边空的」（2026-10-13 报的正是这条）。
+   这里把分栏钉成并排：左栏固定窄列、两栏都允许收缩、两个控件都跟着栏宽走。
+   ⚠ 预览假数据的标题比真机短，所以这条在预览里看不出来 —— 别只信预览图。 */
+.split { flex-wrap: nowrap; align-items: flex-start; }
+.split > .card { min-width: 0; }
+.split > .pane-list { flex: 0 0 220px; }
+.split select, .split textarea { width: 100%; }
+
+/* ---- 分节纲要页：「节数」那一列收紧 + 整列（含表头）右对齐（2026-10-13）----
+   用户报「节数那一列太宽了也没和数字对齐」。真机 784px 下的两个数：
+     · 表头文字右边缘 605 / 数字右边缘 652 —— **差 47px**，因为原来只有 td 挂了
+       `align:"right"`（admin.js 只在 td 上写内联 text-align），表头仍靠左；
+     · 列宽 86px，其中 60px 是 `.n` 那个定宽盒的 `min-width:5.2em` 撑出来的
+       （页面 render 用的是 `.n`）—— 一个两位数字白占一整列，就是"太宽"。
+   做法：整列右对齐 + tabular-nums，并把列宽**钉在 5em**（≈57px：放得下三位数，
+   也放得下按这一列排序时表头多出来的「 ▲」箭头）；页面那边**不再用 .n 盒子**，
+   否则它的 min-width 会把钉好的宽度顶开。
+   ⚠ 5em 而不是更窄的 4.5em：`.outlinetab` 这一列可排序，选中排序时表头是
+     「节数 ▲」，内容要 37px 才不折行；4.5em 只剩 35.75px 就顶出去了。
+   作用域只挂本页（.outlinetab 是本页私有的包裹类），别的页面的表格一格不动。 */
+.outlinetab table.grid th:nth-child(2),
+.outlinetab table.grid td:nth-child(2) {
+  width: 5em; max-width: 5em;
+  text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* ---- 经验库页：短列不折行 + 收窄，两个长文本列让位（2026-10-14）-------------
+   用户报「经验页列表还会出现折行」：真机截图上「效果」被折成「部/分」「无/效」
+   两行、来源列窄得只剩一个词、体检**表头**也折成「体/检」两行。
+
+   根因不是列宽不够，而是**短列没有 nowrap**：auto 表格布局在总宽不够时会把每列
+   往各自的 min-content 挤，而「效果」这种两字格子的 min-content 只有 **1 个汉字**
+   （汉字处处可断），于是它被挤到 1 字宽、只能折成两行；表头「体检」同理。
+   所以这里的做法与结构页 / 解析页同一套：**短列 nowrap（表头与单元格一起）+
+   钉一个收窄的列宽**，抢回来的宽度让给两个长文本列。
+
+   列序（experience.js 的 cols）：1 id · 2 日期 · 3 效果 · 4 来源 ·
+                                   5 文献 · 6 问题·摘要 · 7 体检
+   另外两条配套（都在下面）：
+     · 两个长文本列的内容挂 `.clip`（单行 + 省略号，全文在 title 悬停）——
+       不这么做它们会各折成两三行，整张表就没有一行是一行高了；
+     · 体检那列值可能很长（体检原因整句），给它 `max-width` + overflow 截断，
+       让它老老实实只占 9em，别把表撑开。
+   ⚠ 只挂在 `.exptab`（本页列表卡自己的作用域类）下，别的页面的表格一格不动；
+   ⚠ `.stickrow` / `.sticktab` 的两层 top 一点也不动 —— 短列的规则里没有 top。 */
+.exptab table.grid th:nth-child(1), .exptab table.grid td:nth-child(1),
+.exptab table.grid th:nth-child(2), .exptab table.grid td:nth-child(2),
+.exptab table.grid th:nth-child(3), .exptab table.grid td:nth-child(3),
+.exptab table.grid th:nth-child(4), .exptab table.grid td:nth-child(4),
+.exptab table.grid th:nth-child(7), .exptab table.grid td:nth-child(7) {
+  white-space: nowrap;
+}
+.exptab table.grid th:nth-child(1), .exptab table.grid td:nth-child(1) { width: 4em; }
+.exptab table.grid th:nth-child(2), .exptab table.grid td:nth-child(2) { width: 7em; }
+.exptab table.grid th:nth-child(3), .exptab table.grid td:nth-child(3) { width: 3.4em; }
+.exptab table.grid th:nth-child(4), .exptab table.grid td:nth-child(4) { width: 5.5em; }
+.exptab table.grid th:nth-child(7), .exptab table.grid td:nth-child(7) {
+  width: 9em; overflow: hidden;
+}
+/* 长文本列：单行 + 省略号（`outline.js` / `parse.js` 早就是这么做的）。
+   宽度给到 18em 而不是让它无限撑 —— 两个长列加起来 ~36em，配上左边 5 个短列
+   正好铺满 1002px 窗口下的表宽；窗口更宽时多出来的宽度落在列上（值右侧留白），
+   不会把短列顶开。 */
+.exptab table.grid td .clip { max-width: 18em; }
+/* 「体检」那列的 `.clip` 必须**比单元格的内容盒更窄**：单元格 9em 里扣掉左右
+   8px 内边距只剩 ~7.6em，`.clip` 只要是 9em 就会被 td 再切一刀，省略号正好被切掉
+   （2026-10-15 第一版就是这样：图上只看见"关联文献只有 1 篇"后面一点点笔画）。
+   掐断发生在 `.clip` 自己身上，省略号才画得出来。 */
+.exptab table.grid td:nth-child(7) .clip { max-width: 7.2em; }

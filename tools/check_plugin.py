@@ -367,8 +367,11 @@ def main() -> int:
                 "askApplyMeta", "askOneMeta", "applyMeta",
                 # 打开知识库（分级）—— 右键二级菜单那条链。少任何一个都是
                 # "菜单里少一项"或"点了没反应"，所以一起盯着。
-                "kbLevels", "kbLevelsMissing", "openKbPath", "openKbViaPanel",
-                "openKbLevel", "openKbFolder", "panelProcess",
+                "kbLevels", "kbLevelsMissing", "openKbPath",
+                "openKbLevel", "openKbFolder",
+                # ⚠ W4（2026-10-14）：openKbViaPanel / panelProcess 随 Tk 面板一起删了
+                #   （它们唯一的用途就是起 tools\gui.py（已退役 2026-10-14））。这份清单要跟着删，
+                #   否则会报"缺 XXX"（其实是"删对了"）。
                 # MinerU（可选组件）的首次安装引导（19-mineruguide.js）：
                 # 少任何一个就是"该弹的不弹"或"点了没反应"，所以名字一起盯着。
                 "mineruKitPath", "ollamaExePath", "scheduleOptionalGuides",

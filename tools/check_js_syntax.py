@@ -49,8 +49,22 @@ try {
 //   本机就这么写错过一次（kbInitPane 里加了 await 但没加 async，
 //   上面的检查报"语法正确"）。
 //
-//   判定必须**只剪掉嵌套的 async 函数体**再找 await —— 第一版没剪干净，
-//   把 `async (quiet) => { ... await ... }` 里的 await 误报成外层的。
+//   ⚠ 2026-10-13 重写（修一次误报）：旧版是"删掉注释后在清理过的文本里按
+//     原始下标找 await"，两个错：
+//       ① 注释是 **replace 掉**的，长度变短 → 原始下标切到别处去。本机实测
+//          content/admin-pages/structure.js：`async render()` 里的 await
+//          被算到了上面的 `safeShort` 头上（那个函数里根本没有 await）；
+//       ② 它只处理 `async function` 与 `async (...) =>`，漏了
+//          `async 名字() {}` 这种**方法简写**。
+//   新做法：**交给解析器判**，不再自己搜 await ——
+//       ① 用"长度不变"的方式把注释/字符串/正则挖成空格（大括号配平必须落在
+//          真实的结构字符上，`"}"` 这种字符串会让范围算错）；
+//       ② 每个 `function 名字(...) {`（非 async）按大括号配平求出**它自己的**
+//          body 范围；
+//       ③ 把这段**原始源码**丢给 `new Function(...)` —— 非 async 函数体里出现
+//          裸 await 时 V8 当场抛 SyntaxError，而嵌套在 async 方法/箭头里的
+//          await 合法、不会抛。这是"是不是 await 的错"由解析器说了算，
+//          不靠任何正则猜名字或猜归属。
 function bodyRange(code, openBraceIdx) {
   // 从 '{' 开始按括号配平，返回 [start, end)（end 指向收尾 '}' 之后）
   let depth = 0;
@@ -65,49 +79,91 @@ function bodyRange(code, openBraceIdx) {
   return [openBraceIdx, code.length];
 }
 
-function stripAsyncFunctions(code) {
-  // 把 async function / async (...) => {...} 的函数体挖成等长空格，
-  // 这样外层再搜 await 就不会命中内层的。
-  const chars = code.split('');
-  const blank = (a, b) => { for (let i = a; i < b; i++) {
-    if (chars[i] !== '\n') chars[i] = ' '; } };
-
-  // 1) async function name(...) { ... }
-  let re1 = /\basync\s+function\s*\w*\s*\([^)]*\)\s*\{/g, m1;
-  while ((m1 = re1.exec(code)) !== null) {
-    const open = m1.index + m1[0].length - 1;      // 指向 '{'
-    const [a, b] = bodyRange(code, open);
-    blank(a, b);
+/** 前一个非空白字符（判断 `/` 是除号还是正则字面量用）。 */
+function prevSignificant(code, i) {
+  for (let k = i - 1; k >= 0; k--) {
+    if (!/\s/.test(code[k])) return code[k];
   }
-  // 2) async (...) => { ... }   以及 async x => { ... }
-  let re2 = /\basync\s*(\([^)]*\)|\w+)\s*=>\s*\{/g, m2;
-  while ((m2 = re2.exec(code)) !== null) {
-    const open = m2.index + m2[0].length - 1;
-    const [a, b] = bodyRange(code, open);
-    blank(a, b);
+  return '';
+}
+
+/**
+ * 把注释 / 字符串 / 模板串 / 正则字面量**原地**挖成空格。
+ * 长度与换行位置都不变 —— 这样"按括号配平求函数体范围"才拿得到真实下标。
+ */
+function blankNonCode(code) {
+  const chars = code.split('');
+  const n = code.length;
+  const blank = function (a, b) {
+    for (let i = a; i < b; i++) { if (chars[i] !== '\n') chars[i] = ' '; }
+  };
+  let i = 0;
+  while (i < n) {
+    const c = code[i];
+    const c2 = code[i + 1];
+    if (c === '/' && c2 === '/') {                    // 行注释
+      let j = i;
+      while (j < n && code[j] !== '\n') j++;
+      blank(i, j); i = j; continue;
+    }
+    if (c === '/' && c2 === '*') {                    // 块注释
+      let j = i + 2;
+      while (j < n && !(code[j] === '*' && code[j + 1] === '/')) j++;
+      j = Math.min(n, j + 2);
+      blank(i, j); i = j; continue;
+    }
+    if (c === '"' || c === "'" || c === '`') {        // 字符串 / 模板串
+      let j = i + 1;
+      while (j < n) {
+        if (code[j] === '\\') { j += 2; continue; }
+        if (code[j] === c) { j++; break; }
+        j++;
+      }
+      j = Math.min(n, j);
+      blank(i, j); i = j; continue;
+    }
+    if (c === '/') {                                  // 可能是正则字面量
+      const p = prevSignificant(code, i);
+      if (p === '' || '([{,;:=!&|?+-*%^~<>'.indexOf(p) >= 0) {
+        let j = i + 1, inClass = false, done = false;
+        while (j < n) {
+          const d = code[j];
+          if (d === '\\') { j += 2; continue; }
+          if (d === '[') inClass = true;
+          else if (d === ']') inClass = false;
+          else if (d === '/' && !inClass) { j++; done = true; break; }
+          else if (d === '\n') break;                 // 保守：正则不跨行
+          j++;
+        }
+        if (done) { blank(i, Math.min(n, j)); i = Math.min(n, j); continue; }
+      }
+    }
+    i++;
   }
   return chars.join('');
 }
 
 try {
-  const cleaned = stripAsyncFunctions(code);
-  // 把注释也去掉，免得注释里提到 await 就误报
-  const noComment = cleaned
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\/\*[\s\S]*?\*\//g, '');
-  const re = /(^|\n)\s*(async\s+)?function\s+(\w+)\s*\([^)]*\)\s*\{/g;
+  // ⚠ masked 与 code **等长**（挖空 = 换空格），所以下标两边通用。
+  const masked = blankNonCode(code);
+  const re = /(^|\n)[ \t]*(async\s+)?function\s+(\w+)\s*\([^)]*\)\s*\{/g;
   let m;
-  while ((m = re.exec(code)) !== null) {
+  while ((m = re.exec(masked)) !== null) {
     if (m[2]) continue;                       // 已经是 async，跳过
     const name = m[3];
-    const open = m.index + m[0].length - 1;
-    const [a, b] = bodyRange(code, open);
-    // 在这个函数的**原始**范围里，用清理过的文本判断本层有没有 await
-    const raw = code.slice(a, b);
-    const clean = noComment.slice(a, b);
-    if (/\bawait\b/.test(clean)) {
-      problems.push('非 async 函数 `' + name + '` 里用了 await'
-        + '（运行时会 SyntaxError，但上面的整体校验查不出来）');
+    const open = m.index + m[0].length - 1;   // 指向 '{'
+    const [a, b] = bodyRange(masked, open);
+    // 取**原始源码**里这一段（从 `function` 起到配平的 `}`），让解析器判它
+    const src = code.slice(m.index + m[1].length, b);
+    try {
+      new Function('Zotero', 'Services', 'ChromeUtils', src);
+    } catch (e) {
+      // 只有"await 用错位置"这一类才报；别的语法错由上面的整体校验负责，
+      // 这里重复报会给同一个问题两条互相矛盾的说明。
+      if (/await/.test(e.message)) {
+        problems.push('非 async 函数 `' + name + '` 里用了 await'
+          + '（运行时会 SyntaxError，但上面的整体校验查不出来）');
+      }
     }
   }
 } catch (e) {
@@ -159,6 +215,10 @@ def main() -> int:
         #   它**不是** AsyncFunction 的源码，但用同一套 AsyncFunction 方式解析
         #   一样能过（只是包一层 async 函数体），语法错照样抓得到。
         files += sorted(glob.glob(os.path.join(PLUGIN, "content", "*.js")))
+        # ⚠ admin-pages/ 也要扫：2026-10-13 那里 10 个脚本因为块注释里
+        #   写了 `*/` 连写而全部语法错误，却一路打进了 xpi（本检查器当时
+        #   只扫 content/*.js）。页面脚本不进 bootstrap，但进包。
+        files += sorted(glob.glob(os.path.join(PLUGIN, "content", "admin-pages", "*.js")))
         files = [f for f in files if not f.endswith(".bak-iife")]
 
     print("=" * 64)

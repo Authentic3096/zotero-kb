@@ -42,9 +42,11 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "offline"))
 
 import schemas as S  # noqa: E402
+import taskbox  # noqa: E402        # 任务通道：文件信箱（W3 线2）
 
 BASE = "http://127.0.0.1:8765"
-TOKEN_PATH = os.path.join(S.KB_DIR, "service-token.txt")
+# ⚠ BASE / service_alive 现在**只用于"服务在不在"的诊断**：派活已经改走文件信箱
+#   （见 taskbox / mailbox_ready），不需要 token 也不需要那个常驻进程。
 UA_STR = "ZoteroAcquire/1.2 (DSH skill; plugin probe)"
 
 # 一篇大概要多久：DOI 解析 ~2s + 找 PDF 视来源 3~20s。
@@ -104,35 +106,65 @@ def normalize_items(items) -> tuple[list[dict], list[str]]:
     return good, bad
 
 
-# ---------------------------------------------------------------- 与本地服务通信
-
-
-def _token() -> str:
-    try:
-        with open(TOKEN_PATH, encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
-
-
-def _api(method: str, path: str, body=None, timeout: float = 30.0):
-    data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(BASE + path, data=data, method=method)
-    req.add_header("Content-Type", "application/json")
-    tok = _token()
-    if tok:
-        req.add_header("X-KB-Token", tok)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read().decode("utf-8", errors="replace")
-        return json.loads(raw) if raw else {}
+# ---------------------------------------------------------------- 任务通道
 
 
 def service_alive() -> bool:
+    """常驻 HTTP 服务在不在（W3 之后多数时候是 False，**不再是派活的必要条件**）。"""
     try:
         with urllib.request.urlopen(BASE + "/health", timeout=5) as resp:
             return resp.status == 200
     except Exception:  # noqa: BLE001
         return False
+
+
+def mailbox_ready() -> str:
+    """任务信箱能不能用；返回信箱根目录，不能写就抛 AcquireError。
+
+    **真写一个探针文件再删掉** —— 只有写一次才知道权限/磁盘/目录对不对，
+    只 `os.path.exists` 判断不出"只读目录"这种失败。老实现这里问的是
+    `service_alive()`（常驻服务在不在）；改成信箱后那个条件就不再是必要条件了。
+    """
+    try:
+        root = taskbox.box_dir()
+    except Exception as exc:  # noqa: BLE001
+        raise AcquireError(f"任务信箱目录建不出来：{exc}",
+                           ["检查知识库目录（KB_DIR）在不在、能不能写。"]) from exc
+    probe = os.path.join(root, "requests", ".probe")
+    try:
+        with open(probe, "w", encoding="utf-8") as fh:
+            fh.write("ok")
+        os.remove(probe)
+    except Exception as exc:  # noqa: BLE001
+        raise AcquireError(
+            f"任务信箱写不进去：{os.path.join(root, 'requests')}（{exc}）",
+            [f"检查这个目录的权限；它应该在知识库目录下：{root}",
+             "知识库目录可由 KB_DIR 环境变量指定（要有 index.db 的那一个）。"]) from exc
+    return root
+
+
+def _taskbox_send(kind: str, code: str, timeout: float) -> str:
+    """把一条任务写进信箱，返回任务 id。"""
+    try:
+        return str(taskbox.send(kind, code, timeout=timeout)["id"])
+    except Exception as exc:  # noqa: BLE001
+        raise AcquireError(f"派任务失败（写信箱）：{exc}",
+                           ["确认知识库目录可写；插件侧会轮询领取。"]) from exc
+
+
+def _cancel_task(tid: str) -> dict:
+    """把信箱里那条还没被领取的任务撤掉。
+
+    为什么必须撤（真机踩到的）：派发方等超时后只是"自己不等了"，那条任务
+    仍然躺在队列里 —— 用户几小时后打开 Zotero，插件把它领走并**真的建了条目**。
+    派发方早就报过失败，用户却莫名多出一篇文献。实测复现：22:36 派出、22:39
+    Zotero 一开就被执行。
+    撤不掉也不隐瞒：已经在跑的确实停不下来，返回里会说清。
+    """
+    try:
+        return taskbox.cancel(tid) or {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 PLUGIN_STATUS_PATH = os.path.join(S.KB_DIR, "plugin-status.json")
@@ -351,11 +383,7 @@ def _preflight(items) -> tuple[list[dict], list[str]]:
             [f"请分成 {((len(good) - 1) // MAX_ITEMS) + 1} 批，"
              "或先请用户缩小范围。"])
 
-    if not service_alive():
-        raise AcquireError(
-            "本机知识库服务没在跑（127.0.0.1:8765），任务派不出去。",
-            ["双击 scripts\\4-service.vbs，或在管理面板里点「启动服务」。",
-             "服务通常随 Zotero 自动启停；如果 Zotero 也没开，先开 Zotero。"])
+    mailbox_ready()
     # ⚠ 先问"Zotero 开没开"，再问"插件轮询活没活" —— 这两个的**修法完全不同**，
     #   而插件状态文件有 30 秒的滞后，单看它会得出错误的结论（真机踩过）。
     if not _zotero_alive():
@@ -402,22 +430,7 @@ def _dispatch_batch(good: list[dict], collection_id: int, find_pdf: bool,
     if progress:
         progress(f"派发 {len(good)} 篇给 Zotero 抓取（预算 {budget:.0f}s）…")
 
-    try:
-        resp = _api("POST", "/task",
-                    {"kind": "acquire",
-                     "code": json.dumps(payload, ensure_ascii=False),
-                     "timeout": budget},
-                    timeout=30)
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")[:300]
-        raise AcquireError(f"派任务失败：HTTP {exc.code} {body}") from exc
-    except Exception as exc:  # noqa: BLE001
-        raise AcquireError(f"派任务失败：{exc}") from exc
-
-    task = (resp or {}).get("task") or {}
-    tid = task.get("id")
-    if not tid:
-        raise AcquireError(f"服务没返回任务 id：{resp}")
+    tid = _taskbox_send("acquire", json.dumps(payload, ensure_ascii=False), budget)
     if on_task:
         on_task(tid)
 
@@ -426,7 +439,7 @@ def _dispatch_batch(good: list[dict], collection_id: int, find_pdf: bool,
     while time.time() - started < budget:
         time.sleep(1.5)
         try:
-            t = _api("GET", f"/task/{tid}", timeout=15)
+            t = taskbox.state(tid) or {}
         except Exception:  # noqa: BLE001
             continue
         st = t.get("state") or ""
@@ -443,35 +456,19 @@ def _dispatch_batch(good: list[dict], collection_id: int, find_pdf: bool,
             raise AcquireError(
                 ("Zotero 在中途被关掉了" if gone
                  else "任务派出去 30 秒了还没被领取 —— Zotero 插件大概没在轮询")
-                + "。（已经顺手把这条任务从队列里撤掉了，不会事后偷偷执行。）",
+                + "。（已经顺手把这条任务从信箱里撤掉了，不会事后偷偷执行。）",
                 (["重新打开 Zotero，再让我抓一次。"] if gone else
                  ["确认 Zotero 开着、插件启用、且没把 `autoTaskPoll` 关掉。",
                   "在 Zotero 里跑一次 工具 → 开发者 → 运行 JavaScript："
-                  "`return Zotero.ZoteroKB.tickCount` —— 数字在涨就说明轮询活着。"]))
+                  "`return Zotero.ZoteroKB.tickCount` —— 数字在涨就说明轮询活着；"
+                  "`return Zotero.ZoteroKB.mailboxDir()` 能看到信箱目录。"]))
 
     _cancel_task(tid)
     raise AcquireError(
         f"等插件完成超时（{budget:.0f}s）。"
-        "⚠ 如果它还没被领取，我已经把队列里那条撤掉了；"
+        "⚠ 如果它还没被领取，我已经把信箱里那条撤掉了；"
         "**但如果它已经在跑，撤不掉** —— 过几秒去 Zotero 里看看条目是不是"
         "已经进去了，不要直接重试，否则可能重复入库。")
-
-
-def _cancel_task(tid: str) -> dict:
-    """把队列里那条还没被领取的任务撤掉。
-
-    为什么必须撤（真机踩到的）：派发方等超时后只是"自己不等了"，那条任务
-    仍然 pending 躺在本地服务的队列里 —— 用户几小时后打开 Zotero，插件把
-    它领走并**真的建了条目**。派发方早就报过失败，用户却莫名多出一篇文献。
-    实测复现：22:36 派出、22:39 Zotero 一开就被执行。
-
-    撤不掉也不隐瞒：在跑的确实停不下来，返回里会说清。
-    """
-    try:
-        r = _api("POST", "/task/cancel", {"id": tid}, timeout=10)
-        return r if isinstance(r, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
 
 
 def acquire(items, collection_id: int = 0, find_pdf: bool = True,
@@ -812,9 +809,7 @@ def attach_files(files, timeout: float = 240.0, progress=None) -> dict:
     if not clean:
         raise AcquireError("没有可挂的文件（每条都要 itemKey 和 path）。")
 
-    if not service_alive():
-        raise AcquireError("本机知识库服务没在跑（127.0.0.1:8765）。",
-                           ["双击 scripts\\4-service.vbs。"])
+    mailbox_ready()
     alive, why = _plugin_online()
     if not alive:
         raise AcquireError(f"Zotero 插件没法挂接文件（{why}）。",
@@ -822,22 +817,13 @@ def attach_files(files, timeout: float = 240.0, progress=None) -> dict:
 
     if progress:
         progress(f"把 {len(clean)} 个文件交给 Zotero 挂接…")
-    try:
-        resp = _api("POST", "/task",
-                    {"kind": "attach",
-                     "code": json.dumps({"files": clean}, ensure_ascii=False),
-                     "timeout": timeout}, timeout=30)
-    except Exception as exc:  # noqa: BLE001
-        raise AcquireError(f"派任务失败：{exc}") from exc
-    tid = ((resp or {}).get("task") or {}).get("id")
-    if not tid:
-        raise AcquireError(f"服务没返回任务 id：{resp}")
+    tid = _taskbox_send("attach", json.dumps({"files": clean}, ensure_ascii=False), timeout)
 
     started = time.time()
     while time.time() - started < timeout:
         time.sleep(1.2)
         try:
-            t = _api("GET", f"/task/{tid}", timeout=15)
+            t = taskbox.state(tid) or {}
         except Exception:  # noqa: BLE001
             continue
         if t.get("state") in ("done", "failed"):
@@ -852,6 +838,7 @@ def attach_files(files, timeout: float = 240.0, progress=None) -> dict:
                 raise AcquireError(f"挂接失败：{t.get('error') or '插件没回结果'}")
             inner["elapsed_s"] = round(time.time() - started, 1)
             return inner
+    _cancel_task(tid)
     raise AcquireError(f"等插件挂接超时（{timeout:.0f}s）。")
 
 

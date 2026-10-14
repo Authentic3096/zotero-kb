@@ -182,16 +182,38 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /** 拉取全量权重映射填进内存缓存（供同步的 dataProvider 查表）。 */
+  /**
+   * 拉取全量权重映射填进内存缓存（供同步的 dataProvider 查表）。
+   *
+   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kbAdminHostRoute("GET","/weights")`
+   * → 引擎 `kb.weightsMap`），拿不到就**退回老 HTTP** —— 过渡期两条都必须能用。
+   * 为什么先桥后 HTTP：桥不需要那个常驻 8765 服务（引擎按需拉起、随 Zotero 退出），
+   * 这正是"去掉常驻服务"要的效果；而 HTTP 兜底保证在引擎起不来时列表还有数。
+   * ⚠ 引擎那边**必须**是全量映射（每篇都有基础权重）。用 `advanced.weightList`
+   *   （只列有经验的几篇）会让其余全空白 —— 老实现就踩过这个坑。
+   */
   refreshWeights: async function () {
+    var self = ZoteroKB;
+    let res = null;
     try {
-      let res = await this.request("GET", "/weights");
-      if (!res || !res.weights) {
-        // 拿不到（服务刚重启、token 变了、服务刚被拉起还没就绪）→
-        // 补问一次 /health，它会顺手把新 token 同步进 pref，再试一次。
-        await this.healthCheck();
+      res = await self.kbAdminHostRoute("GET", "/weights");
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 引擎桥取权重失败（退回 HTTP）：" + e);
+    }
+    if (!res || !res.weights) {
+      try {
         res = await this.request("GET", "/weights");
+        if (!res || !res.weights) {
+          // 拿不到（服务刚重启、token 变了、服务刚被拉起还没就绪）→
+          // 补问一次 /health，它会顺手把新 token 同步进 pref，再试一次。
+          await this.healthCheck();
+          res = await this.request("GET", "/weights");
+        }
+      } catch (e) {
+        Zotero.debug("[zotero-kb] 拉权重失败：" + e);
       }
+    }
+    try {
       if (res && res.weights) {
         // ⚠ **内容没变就不重画**。权重现在是每几秒拉一次，若无条件
         //   `redrawItemTree()`，列表会周期性重画 —— 用户正在滚动或
@@ -206,7 +228,7 @@ Object.assign(ZoteroKB, {
         return true;
       }
     } catch (e) {
-      Zotero.debug("[zotero-kb] 拉权重失败：" + e);
+      Zotero.debug("[zotero-kb] 权重缓存更新失败：" + e);
     }
     return false;
   },

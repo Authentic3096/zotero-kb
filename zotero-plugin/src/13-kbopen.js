@@ -114,15 +114,9 @@ Object.assign(ZoteroKB, {
       tried.push("externalProtocolService：" + e);
     }
 
-    // ③ 交给面板的 Python 打开（os.startfile —— 面板「文献管理器中查看」就是
-    //    这么干的，本机确定可用）。代价是要起一个短命的 pythonw 进程。
-    try {
-      if (self.openKbViaPanel(path)) return "panel";
-      tried.push("面板：找不到 Python 或 tools\\gui.py");
-    } catch (e) {
-      tried.push("面板：" + e);
-    }
-
+    // ③（W4 2026-10-14 已删）原来还有一级"交给 Tk 面板的 Python 用 os.startfile 打开"——
+    //    Tk 面板退役、`tools\gui.py（已退役 2026-10-14）` 已删，那一级必然失败；留着只会多一次无用的
+    //    pythonw 往返、并把真实原因盖住。所以直接进第 ③ 级（原第 ④ 级）：
     // ④ 保底：在文件管理器里**选中**它（这条一定存在）。用户双击一下就能看，
     //    比"点了没反应"好得多。
     try {
@@ -143,58 +137,10 @@ Object.assign(ZoteroKB, {
     return "";
   },
 
-  /**
-   * 起一个管理面板进程（`tools\gui.py` + 任意参数）。返回 true/false。
-   *
-   * 为什么抽出来：面板不止一个"带参数启动"的用途 —— 打开某个 md
-   * （`--open <path>`）与打开 MinerU 安装引导（`--tab struct --mineru-guide`）
-   * 走的是同一条链。分开写两份的话，Subprocess / nsIProcess 那套兜底
-   * 迟早只有一处被修。
-   */
-  panelProcess: function (extraArgs) {
-    var self = ZoteroKB;
-    const root = self.projectRoot();
-    const py = self.pythonExe();
-    const gui = root ? root + "\\tools\\gui.py" : "";
-    if (!py || !root || !self._exists(gui)) return false;
-    const args = ["-X", "utf8", gui].concat(extraArgs || []);
-    try {
-      const { Subprocess } = ChromeUtils.importESModule(
-        "resource://gre/modules/Subprocess.sys.mjs");
-      Subprocess.call({
-        command: py, arguments: args, workdir: root,
-        stderr: "ignore", stdout: "ignore",
-      }).catch(function (e) {
-        Zotero.debug("[zotero-kb] 面板进程：" + e);
-      });
-      return true;
-    } catch (e) {
-      // Subprocess 不可用时退回 nsIProcess（与 openPanel 同一套兜底）
-      try {
-        const nsLocalFile = Components.Constructor(
-          "@mozilla.org/file/local;1", "nsIFile", "initWithPath");
-        const proc = Components.classes["@mozilla.org/process/util;1"]
-          .createInstance(Components.interfaces.nsIProcess);
-        proc.init(nsLocalFile(py));
-        proc.runw(false, args, args.length);
-        return true;
-      } catch (e2) {
-        Zotero.debug("[zotero-kb] 面板进程也起不来：" + e2);
-        return false;
-      }
-    }
-  },
-
-
-  /**
-   * 用面板的 Python 打开一个文件（`tools/gui.py --open <path>`）。
-   *
-   * 为什么不直接在这里调 shell：插件沙箱里没有可靠的"用默认程序打开"接口，
-   * 而面板那边 `os.startfile` 一直在用、确定可用。让它代劳最省事。
-   */
-  openKbViaPanel: function (path) {
-    return this.panelProcess(["--open", path]);
-  },
+  // ⚠ W4（2026-10-14）：原来这里有两个函数（起一个 Tk 面板进程 / 用它代劳开文件），
+  //   它们是"起一个 Tk 面板（tools\gui.py（已退役 2026-10-14））进程并让它代劳"的兜底链。Tk 面板退役后
+  //   `tools\gui.py（已退役 2026-10-14）` 已删，这两个函数**只会返回 false**（还会掩盖真实原因），
+  //   所以整段删掉（连带 19-mineruguide.js 里那个调用点）。
 
   /**
    * 打开某一篇的某个级别。文件不在时**不静默失败** —— 明确告诉用户

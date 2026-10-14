@@ -287,17 +287,22 @@ JSON_PROMPTS = ("tag", "summary", "extract", "metafill", "draft",
                  "digest", "chunks")
 
 
-def probe(pid: str, model: str = "") -> dict:
+def probe(pid: str, model: str = "", user_text: str | None = None) -> dict:
     """拿样例跑一次，返回提示词全文 + 模型输出 + JSON 解析结果。
 
     面板的「试跑」用这个。**不改任何文件**。
+
+    `user_text` 给了就用它当 user 那段（**试跑未保存的草稿**：管理页面可以
+    "先看效果再决定要不要保存"）；不给就照旧用 `render(pid, **样例)`。
+    这是纯增量参数 —— 既有调用方（`tools/panels/tab_prompts.py（已退役 2026-10-14）`）不传，
+    行为一个字不变。
     """
     import judge
 
     if pid not in SPECS:
         return {"ok": False, "error": f"没有这一条提示词：{pid}"}
     sample = SAMPLES.get(pid, {})
-    prompt = render(pid, **sample)
+    prompt = user_text if user_text is not None else render(pid, **sample)
     want_json = pid in JSON_PROMPTS
     res = judge.generate(prompt, system=get(pid, "system"), model=model,
                          json_mode=want_json, temperature=0.0, timeout=240.0)

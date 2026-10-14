@@ -495,10 +495,30 @@ if (KB) {
     JSON.stringify(fake.pane.children.map((c) => c.getAttribute("id"))));
   check("列默认是藏起来的（display:none）",
     !!host && host.lib.container.style.display === "none");
-  check("列里装的是 <browser>，src 指向插件的 content/kbview.html",
+  // 2026-10-13 契约变了：装列时**不立刻加载**那份页面（实测 863ms，用户报的
+  // "启动慢"就是它）——url 先记在 data-kbview-src 上，等窗口空闲或用户点开时
+  // 才由 kbviewEnsurePage() 挂到 src。所以下面分三步验：
+  //   ① 装列时 src 为空、data-kbview-src 指向我们的 content/kbview.html；
+  //   ② kbviewEnsurePage 一调，src 真的变成它；
+  //   ③ 再调一次是幂等的（不会重复挂）。
+  check("列里装的是 <browser>，页面地址指向插件的 content/kbview.html（先不加载）",
     !!host && host.lib.browser.tagName === "browser"
-    && String(host.lib.browser.getAttribute("src")).indexOf("content/kbview.html") >= 0,
+    && !host.lib.browser.getAttribute("src")
+    && String(host.lib.browser.getAttribute("data-kbview-src"))
+         .indexOf("content/kbview.html") >= 0,
+    host && JSON.stringify({
+      src: host.lib.browser.getAttribute("src"),
+      pending: host.lib.browser.getAttribute("data-kbview-src"),
+    }));
+  check("kbviewEnsurePage() 会把 src 挂上（就是上面那个地址）",
+    KB.kbviewEnsurePage(fake.win, "library")
+    && String(host.lib.browser.getAttribute("src"))
+         .indexOf("content/kbview.html") >= 0,
     host && host.lib.browser.getAttribute("src"));
+  check("kbviewEnsurePage() 幂等（第二次调不重复挂、仍返回 true）",
+    KB.kbviewEnsurePage(fake.win, "library") === true
+    && String(host.lib.browser.getAttribute("src"))
+         .indexOf("content/kbview.html") >= 0);
 
   // 打开：原生分区列让开 + 按钮按下 + 轮询起来
   KB.kbviewOpen(fake.win, "library");
@@ -978,8 +998,7 @@ if (KB) {
     && typeof KB.scheduleOptionalGuides === "function"
     && typeof KB.maybeAskOptionalGuides === "function"
     && typeof KB.askOptionalGuide === "function"
-    && typeof KB.openOptionalGuide === "function"
-    && typeof KB.panelProcess === "function");
+    && typeof KB.openOptionalGuide === "function");
   check("startup 里有 scheduleOptionalGuides 这一步（失败也能在状态文件里看到）",
     steps.indexOf("scheduleOptionalGuides=ok") >= 0, steps);
   // ⚠ 桩里 `projectRoot()` 是空的（pref 没填、也没有真文件系统），
@@ -1000,7 +1019,9 @@ if (KB) {
     String(KB.askOptionalGuide(["mineru"])));
 
   const guideCase = async (opts) => {
-    const seen = { pref: [], panel: [], asked: 0, missing: null };
+    // W4（2026-10-14）：`panel` 留着当"有没有起过面板进程"的哨兵（现在应当**永远是空**）；
+    //   新增 `notices` 收集通知文案 —— 退役后的正确行为是"指路新面板"，要能断言到。
+    const seen = { pref: [], panel: [], notices: [], asked: 0, missing: null };
     // ⚠ 这里原来还存了 `setPref: KB.setPref` 并在下面**伪造**了它 ——
     //   而真机上 `self.setPref` 根本不存在（写 pref 用 Zotero.Prefs.set）。
     //   桩凭想象提供了一个函数，于是 19-mineruguide.js 里那处
@@ -1009,7 +1030,7 @@ if (KB) {
     const saved = {
       _exists: KB._exists, request: KB.request,
       getPref: KB.getPref, askOptionalGuide: KB.askOptionalGuide,
-      panelProcess: KB.panelProcess, prefsSet: Zotero.Prefs.set,
+      notify: KB.notify, prefsSet: Zotero.Prefs.set,
     };
     KB.getPref = (k, d) => {
       if (k === KB.PREFS.optionalGuideDone) return !!opts.done;
@@ -1023,7 +1044,8 @@ if (KB) {
     KB.askOptionalGuide = (missing) => {
       seen.asked++; seen.missing = missing; return opts.choice;
     };
-    KB.panelProcess = (args) => { seen.panel.push(args); return true; };
+    // 哨兵：现在**没有任何代码**会去起面板进程；如果哪天又有人加回来，seen.panel 会非空。
+    KB.notify = (title, body) => { seen.notices.push(String(title) + "|" + String(body)); };
     try {
       await KB.maybeAskOptionalGuides();
     } finally {
@@ -1032,7 +1054,7 @@ if (KB) {
       Zotero.Prefs.set = saved.prefsSet;
       KB.getPref = saved.getPref;
       KB.askOptionalGuide = saved.askOptionalGuide;
-      KB.panelProcess = saved.panelProcess;
+      KB.notify = saved.notify;
     }
     return seen;
   };
@@ -1062,19 +1084,24 @@ if (KB) {
       JSON.stringify(s));
 
     s = await guideCase({ choice: 0 });
-    check("两个都没装 + 选「打开安装引导」→ 拉面板开 MinerU 那个窗口（先缺谁开谁）",
+    // W4（2026-10-14）：Tk 面板退役后「打开安装引导」**不再拉任何面板进程**，
+    // 改成指路新面板（通知里带「知识库管理…」+ 对应页名）。原断言"开的是
+    // --mineru-guide"已失效 —— 这里**改成断言新意图**（改断言，不是删断言）：
+    // ① 仍然弹一次并记 pref（用户不会被反复问）② 先缺谁就先说谁 ③ 有能照做的指引。
+    check("两个都没装 + 选「打开安装引导」→ 指路新面板（不再起进程），先缺谁开谁",
       s.asked === 1 && s.pref.length === 1 && s.pref[0][1] === true
-      && s.panel.length === 1
-      && s.panel[0].indexOf("--mineru-guide") >= 0
-      && s.panel[0].indexOf("--tab") >= 0
-      && JSON.stringify(s.missing) === JSON.stringify(["mineru", "ollama"]),
+      && s.panel.length === 0
+      && JSON.stringify(s.missing) === JSON.stringify(["mineru", "ollama"])
+      && s.notices.some((n) => n.indexOf("知识库管理…") >= 0
+                               && n.indexOf("PDF 解析") >= 0),
       JSON.stringify(s));
 
     s = await guideCase({ mineruOk: true, choice: 0 });
-    check("只有 Ollama 缺 → 只列 Ollama，并且开的是 --ollama-guide",
+    check("只有 Ollama 缺 → 只列 Ollama，指路的是「运行环境」页",
       JSON.stringify(s.missing) === JSON.stringify(["ollama"])
-      && s.panel.length === 1
-      && s.panel[0].indexOf("--ollama-guide") >= 0,
+      && s.panel.length === 0
+      && s.notices.some((n) => n.indexOf("知识库管理…") >= 0
+                              && n.indexOf("运行环境") >= 0),
       JSON.stringify(s));
 
     // ---- ⑥c 的两条 async 断言（放在这里结算，print 前）
@@ -1093,7 +1120,52 @@ if (KB) {
       JSON.stringify(p1 && p1.levels));
 
     KB.projectRoot = savedRootFn;
-    console.log("\n通过 " + pass + "，失败 " + fail);
-    process.exit(fail ? 1 : 0);
+  // ============ W4（2026-10-14）：Tk 面板退役的回归闸门 ============
+// 原意图是"面板入口必须在"；现在面板换成 Zotero 内的新面板，所以把断言改成
+// **"入口仍指向管理面板" + "不再有任何指向 Tk 的路径"**（改断言，不是删断言）。
+{
+  console.log("\n[W4] Tk 面板退役");
+  const src = fs.readFileSync(path.join(PLUGIN, "src", "14-menus.js"), "utf8");
+  const openSrc = fs.readFileSync(path.join(PLUGIN, "src", "13-kbopen.js"), "utf8");
+  const minersrc = fs.readFileSync(path.join(PLUGIN, "src", "19-mineruguide.js"), "utf8");
+  check("openPanel() 改成打开**新面板**（kbAdminOpen），不再拉 Tk",
+    /openPanel:\s*function[\s\S]{0,600}?kbAdminOpen/.test(src) && !/tools\\\\gui\.py/.test(src),
+    "openPanel 里应调 kbAdminOpen、且不再出现 tools\\gui.py");
+  check("13-kbopen.js 不再有 panelProcess / openKbViaPanel（Tk 兜底链已删）",
+    !/panelProcess|openKbViaPanel/.test(openSrc), "");
+  check("19-mineruguide.js 不再调 panelProcess（改成指路新面板）",
+    !/panelProcess/.test(minersrc) && /知识库管理…/.test(minersrc), "");
+  check("工具栏按钮与条目右键仍指向 openPanel()（入口没删，只是换实现）",
+    /registerToolbarButton/.test(src) && /self\.openPanel\(\)/.test(src), "");
+  // 磁盘断言：退役件必须没了；保留件必须还在（4-service.vbs 是线3 的回退路径）
+  const root = path.join(PLUGIN, "..");
+  check("tools/gui.py 已删除（W4）", !fs.existsSync(path.join(root, "tools", "gui.py")));
+  check("tools/panels 目录已删除（W4）", !fs.existsSync(path.join(root, "tools", "panels")));
+  check("scripts/0-panel.vbs 已删除（W4）",
+    !fs.existsSync(path.join(root, "scripts", "0-panel.vbs")));
+  // ⚠ W4 真机踩到的回归：projectRoot() 原来靠"tools\gui.py 在不在"探测项目根，
+  //   删掉 gui.py 后四个探测档全落空 → 引擎起不来（真机现象：`找不到引擎或 Python`）。
+  //   这条把它钉住：判据必须是**仍然存在**的标记文件。
+  const p2 = fs.readFileSync(path.join(PLUGIN, "src", "02-paths.js"), "utf8");
+  check("projectRoot() 不再用 tools\\gui.py 当判据（W4 回归闸门）",
+    // ① 有新的"项目根标记"函数；② 里面用 online/engine.py；
+    // ③ **代码里不再有** `_exists(… + "…gui.py")` 这种判据（注释里提历史没关系）。
+    /_looksLikeProjectRoot/.test(p2)
+    && /online[\\\/]engine\.py/.test(p2)
+    && !/_exists\([^)]*gui\.py/.test(p2));
+  check("localserver 的项目根标记也换成 online\\engine.py（键名 panel/has_panel 保留）",
+    (function () {
+      const ls = fs.readFileSync(path.join(root, "online", "localserver.py"), "utf8");
+      return /os\.path\.join\(root, "online", "engine\.py"\)/.test(ls)
+             && !/os\.path\.join\(root, "tools", "gui\.py"\)/.test(ls);
+    })(), "");
+  check("scripts/4-service.vbs **仍在**（线3 的回退路径，不许删）",
+    fs.existsSync(path.join(root, "scripts", "4-service.vbs")));
+}
+
+
+  console.log("\n通过 " + pass + "，失败 " + fail);
+    
+process.exit(fail ? 1 : 0);
   })();
 }

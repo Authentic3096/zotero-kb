@@ -401,6 +401,12 @@ Object.assign(ZoteroKB, {
     //   事件 —— 所以注册完再"补注入"一次（见 kbviewInjectToolbarButton）。
     try { self.kbviewLateDispatch(function () { self.kbviewEnsureReaderToolbar(); }, 1500); }
     catch (e5) { /* ignore */ }
+    // 那份页面**不在启动期加载**（实测 863ms，见 kbviewEnsurePage 的说明）：
+    // 等窗口起来、空闲下来再挂。用户要是此刻就点开，kbviewOpen 里会立刻挂上。
+    try {
+      self.kbviewLateDispatch(function () { self.kbviewEnsurePage(win, "library"); }, 2500);
+      self.kbviewLateDispatch(function () { self.kbviewEnsurePage(win, "reader"); }, 3500);
+    } catch (e6) { /* ignore */ }
     return true;
   },
 
@@ -519,7 +525,12 @@ Object.assign(ZoteroKB, {
     //   详见 KB_RES_KEY 那段说明。
     el.setAttribute("type", "content");
     el.setAttribute("flex", "1");
-    el.setAttribute("src", url);
+    // ⚠ 2026-10-13：**这里不设 src**，只把它记下来 —— 那份页面实测要 863ms
+    //   （kbview.html + markdown-it + katex + 21 个 woff2 字体），而用户报的
+    //   "启动时插件加载有点慢"就是这个：建 <browser> 时立刻设 src = 把这 863ms
+    //   摊进了 Zotero 的启动期。改由 kbviewEnsurePage() 在**窗口空闲后**再挂，
+    //   或者用户真点开时立刻挂（见 kbviewOpen / kbviewMount 里的调度）。
+    el.setAttribute("data-kbview-src", url);
     try {
       el.style.setProperty("width", "100%");
       el.style.setProperty("height", "100%");
@@ -530,6 +541,29 @@ Object.assign(ZoteroKB, {
       el.style.setProperty("border", "0");
     } catch (e3) { /* ignore */ }
     el.addEventListener("load", function () {
+      // 计时：从**挂 src 那一刻**到页面 load（含 vendor 与字体）。
+      // 分段写，任何一段读不到都不影响其它信息落盘（第一版把整段包一个 try，
+      // contentWindow 还没就绪时于是一条都不写，白装了仪表）。
+      const t0 = el.__kbvSrcAt || Date.now();
+      try {
+        self.writeStatusFile({ kbviewPageLoadMs: Date.now() - t0 });
+      } catch (eTiming) { /* ignore */ }
+      try {
+        const cw = el.contentWindow;
+        const perf = cw && cw.performance;
+        if (perf) {
+          const nav = perf.getEntriesByType("navigation")[0];
+          const rs = perf.getEntriesByType("resource");
+          let bytes = 0, resMs = 0;
+          for (const r of rs) { bytes += (r.transferSize || 0); resMs += r.duration; }
+          self.writeStatusFile({
+            kbviewPageDomComplete: nav ? Math.round(nav.domComplete) : null,
+            kbviewPageResources: rs.length,
+            kbviewPageResourcesMs: Math.round(resMs),
+            kbviewPageBytes: bytes,
+          });
+        }
+      } catch (ePerf) { /* 拿不到 performance 就算了，上面那行耗时已经够用 */ }
       try { self.kbviewAttachBridge(win, kind); }
       catch (e4) { Zotero.debug("[zotero-kb] 侧栏页面桥接失败：" + e4); }
     });
@@ -624,6 +658,45 @@ Object.assign(ZoteroKB, {
     return !!(dock && dock.open);
   },
 
+  /** 读一列里那个 <browser>（没有就 null）。 */
+  kbviewBrowserOf: function (win, kind) {
+    var self = ZoteroKB;
+    const host = self.kbviewHost(win, false);
+    const slot = kind === "reader" ? "read" : "lib";
+    const dock = host && host[slot];
+    return (dock && dock.browser) || null;
+  },
+
+  /**
+   * 把那一列的页面**挂上（首次调用时才真加载）**。幂等。
+   *
+   * 为什么要有这一步（2026-10-13，用户报"启动时插件加载有点慢"）：
+   * 实测插件自己的同步启动只占 **21ms**，而那份页面（kbview.html +
+   * markdown-it 121KB + katex 269KB + 21 个 woff2 字体）要 **863ms** ——
+   * 原来在建 <browser> 时就 `setAttribute("src", url)`，于是这 863ms 被摊进了
+   * Zotero 的启动期（新建 docshell + 解析 40 万字符 vendor JS 都在抢 CPU/IO）。
+   * 现在只把 url 记在 `data-kbview-src` 上，由这里按需挂：
+   *   · 窗口起来后空闲 ~2.5s（kbviewMount 里调度）—— 用户还没看的时候后台补上；
+   *   · 用户真去点「知识库」时立刻挂（kbviewOpen 里调）—— 不让人干等。
+   * 打开流程本来就有 400ms 轮询兜底（kbviewStartTimer），晚挂不影响推送。
+   */
+  kbviewEnsurePage: function (win, kind) {
+    var self = ZoteroKB;
+    const br = self.kbviewBrowserOf(win, kind);
+    if (!br) return false;
+    try {
+      if (br.getAttribute("src")) return true;          // 已经挂过
+      const url = br.getAttribute("data-kbview-src");
+      if (!url) return false;
+      br.__kbvSrcAt = Date.now();                       // 给 load 里的计时用
+      br.setAttribute("src", url);
+      return true;
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 挂侧栏页面失败：" + e);
+      return false;
+    }
+  },
+
   kbviewOpen: function (win, kind) {
     var self = ZoteroKB;
     const host = self.kbviewHost(win, true);
@@ -659,6 +732,8 @@ Object.assign(ZoteroKB, {
     } catch (e4) { /* ignore */ }
     dock.open = true;
     host.lastKey = "?!reset";          // 强制下一拍重推内容
+    // 用户真点开了：**立刻**把页面挂上（还没挂的话），别让人对着空白干等
+    self.kbviewEnsurePage(win, kind);
     self.kbviewStartTimer(win);
     // 立刻试一次挂桥（页面可能已经就绪），失败就交给上面的轮询
     try { self.kbviewAttachBridge(win, kind); } catch (e5) { /* 轮询会再试 */ }
@@ -983,8 +1058,16 @@ Object.assign(ZoteroKB, {
       out.order = order;
       out.md = "";                      // 逐页时整份 md 不必再传（省一半体积）
       let meta = {};
-      try { meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(out.key)); }
-      catch (e9) { meta = {}; }
+      // W3 线2.5（2026-10-14）：桥优先（`doc.get` = 与 HTTP `GET /doc-edit` **同一份**
+      // 只读状态），拿不到再退回老 HTTP —— 失败了都一样当空（页面照样渲染）。
+      try {
+        try {
+          meta = await self.kbAdminHostRoute("GET",
+            "/doc-edit?key=" + encodeURIComponent(out.key));
+        } catch (e0) {
+          meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(out.key));
+        }
+      } catch (e9) { meta = {}; }
       out.edited = (meta && meta.edited) || [];
       out.stale = (meta && meta.stale) || [];
     }
@@ -1120,7 +1203,15 @@ Object.assign(ZoteroKB, {
     if (!item) return false;
     self.kbviewHint(win, kind, "正在导出草稿…");
     try {
-      const r = await self.request("POST", "/doc-edit", { key: item.key, action: "draft" });
+      // W3 线2.5：桥优先（`doc.save` = HTTP `POST /doc-edit` 同一份实现），失败退回老 HTTP。
+      let r = null;
+      try {
+        r = await self.kbAdminHostRoute("POST", "/doc-edit",
+                                        { key: item.key, action: "draft" });
+      } catch (e0) {
+        Zotero.debug("[zotero-kb] 引擎桥导草稿失败（退回 HTTP）：" + e0);
+        r = await self.request("POST", "/doc-edit", { key: item.key, action: "draft" });
+      }
       if (r && r.path) {
         self.kbviewHint(win, kind, "草稿已写出：" + r.path);
         try { self.openKbPath(r.path, "正文草稿"); } catch (e) { /* 打不开不影响导出 */ }
@@ -1725,8 +1816,15 @@ Object.assign(ZoteroKB, {
     var note = onStatus || function () {};
     note("正在重建切片…");
     var res = null;
-    try { res = await self.request("POST", "/doc-edit", body); }
-    catch (e) {
+    // W3 线2.5（2026-10-14）：桥优先（`doc.save`，**写路径**：保存某一页的修订并派一次
+    // 单篇重建 —— 与 HTTP `POST /doc-edit` 同一份实现），失败退回老 HTTP。
+    try {
+      try { res = await self.kbAdminHostRoute("POST", "/doc-edit", body); }
+      catch (e0) {
+        Zotero.debug("[zotero-kb] 引擎桥保存正文失败（退回 HTTP）：" + e0);
+        res = await self.request("POST", "/doc-edit", body);
+      }
+    } catch (e) {
       note("请求失败：" + ((e && e.message) ? e.message : e));
       return false;
     }

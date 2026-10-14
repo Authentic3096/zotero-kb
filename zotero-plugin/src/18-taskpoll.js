@@ -6,16 +6,163 @@
  */
 Object.assign(ZoteroKB, {
 
+  // ================================================================ 任务信箱（W3 线2）
+
+  /**
+   * 文件信箱根目录（`<知识库>\mailbox`）。
+   *
+   * 为什么要有这条通道：派活原来走常驻 HTTP 服务 `127.0.0.1:8765` 的 `POST /task`，
+   * W3 要把那个常驻进程送走 —— 改成"文件即消息"：派发方往 `requests\` 写一个 JSON，
+   * 这边轮询领取（**移动**到 `claimed\`，rename 原子 → 只可能被执行一次），
+   * 跑完把结果写进 `results\<id>.json`。与 `zotero-bridge` 的 FLAG_DIR 同一套路。
+   *
+   * 好处：没有端口、没有 token、**服务没跑也能干活**（Zotero 关着时任务静静躺在
+   * requests\ 里，与老 HTTP 队列的行为一样）。
+   *
+   * 覆盖顺序：pref `zotero-kb.mailboxDir` > `<知识库>\mailbox`。
+   * 知识库目录拿不到（kbDir() 为空，且没人填过 pref）时返回空串 —— 上层就跳过这条
+   * 通道，不去凭空造目录。
+   */
+  mailboxDir: function () {
+    var self = ZoteroKB;
+    try {
+      const explicit = Zotero.Prefs.get("zotero-kb.mailboxDir");
+      if (explicit && String(explicit).trim()) {
+        return String(explicit).trim().replace(/[\\/]+$/, "");
+      }
+    } catch (e) { /* pref 拿不到就当没填 */ }
+    const kb = String((self.kbDir && self.kbDir()) || "").replace(/[\\/]+$/, "");
+    return kb ? (kb + "\\mailbox") : "";
+  },
+
+
+  /** 保证 mailbox\ 下三个子目录都在。IOUtils 不可用时抛（上层会记下原因）。 */
+  mailboxEnsure: async function (root) {
+    for (const sub of ["requests", "claimed", "results"]) {
+      await IOUtils.makeDirectory(root + "\\" + sub,
+                                  { ignoreExisting: true, createAncestors: true });
+    }
+    return true;
+  },
+
+
+  /**
+   * 领取一个任务（没有就返回 null）。
+   *
+   * 三条刻意的行为：
+   *   · **先 move 再执行** —— move 失败（被派发方撤回了、或已经被别的循环领走）
+   *     就跳过这条文件，绝不执行；
+   *   · **坏 JSON 直接跳过**（半截文件下次再说，不要因为它崩掉整个轮询）；
+   *   · 领取时顺手每小时清一次过期结果（`results\` 是慢性垃圾）。
+   */
+  pollTaskMailbox: async function () {
+    var self = ZoteroKB;
+    const root = self.mailboxDir();
+    if (!root) return null;
+    if (typeof IOUtils === "undefined" || !IOUtils.getChildren) return null;
+    await self.mailboxEnsure(root);
+    self.mailboxDirPath = root;
+    let paths = [];
+    try {
+      paths = await IOUtils.getChildren(root + "\\requests");
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 读任务信箱失败：" + e);
+      return null;
+    }
+    // 排序保证先来先做（文件名里带毫秒时间戳）；同一次只领一个，
+    // 与老 HTTP 队列"一次领一条"一致，免得两条 acquire 同时跑。
+    paths = (paths || []).map(String).filter((p) => p.endsWith(".json")).sort();
+    for (const p of paths) {
+      let task = null;
+      try {
+        task = JSON.parse(await IOUtils.readUTF8(p));
+      } catch (e) { continue; }                     // 半截/坏文件：下轮再试
+      if (!task || !task.id) continue;
+      const claimed = root + "\\claimed\\" + task.id + ".json";
+      try {
+        await IOUtils.move(p, claimed);
+      } catch (e) {
+        continue;                                   // 被撤回了 / 已被领走
+      }
+      task.__via = "mailbox";
+      task.__mailbox = root;
+      task.__claimed = claimed;
+      task.__started = new Date().toISOString();
+      self.mailboxClaimed = (self.mailboxClaimed || 0) + 1;
+      self.mailboxLastTask = task.id + " (" + task.kind + ")";
+      self.mailboxLastClaimAt = task.__started;
+      return task;
+    }
+    return null;
+  },
+
+
+  /** 把结果写回信箱（原子写：先 .tmp 再 move，读者永远看不到半截文件）。 */
+  reportTaskMailbox: async function (task, ok, error, result) {
+    const root = String(task && task.__mailbox || "");
+    if (!root) return false;
+    const out = {
+      id: task.id,
+      kind: task.kind || "",
+      state: ok ? "done" : "failed",
+      ok: !!ok,
+      created: task.created || "",
+      started: task.__started || "",
+      finished: new Date().toISOString(),
+      error: error || "",
+      result: result == null ? null : result,
+      fetched_by: "plugin",
+      channel: "mailbox",
+    };
+    const tmp = root + "\\results\\" + task.id + ".json.tmp";
+    await IOUtils.writeUTF8(tmp, JSON.stringify(out, null, 2));
+    await IOUtils.move(tmp, root + "\\results\\" + task.id + ".json");
+    return true;
+  },
+
+
+  /** 清掉过期的 results / claimed 残留（默认 7 天）。返回删了几个。 */
+  mailboxCleanup: async function (maxAgeMs) {
+    var self = ZoteroKB;
+    const root = self.mailboxDir();
+    if (!root || typeof IOUtils === "undefined") return 0;
+    const age = Number(maxAgeMs) || (7 * 24 * 3600 * 1000);
+    const now = Date.now();
+    let removed = 0;
+    for (const sub of ["results", "claimed"]) {
+      let paths = [];
+      try { paths = await IOUtils.getChildren(root + "\\" + sub); } catch (e) { continue; }
+      for (const p of (paths || []).map(String)) {
+        try {
+          const st = await IOUtils.stat(p);
+          if (now - Number(st.lastModified || 0) > age) {
+            await IOUtils.remove(p);
+            removed += 1;
+          }
+        } catch (e) { /* 单个文件失败不影响别的 */ }
+      }
+    }
+    return removed;
+  },
+
+
   // ================================================================ 任务轮询
 
   /**
-   * 轮询本地服务领取"在 Zotero 里执行 JS"的任务。
+   * 轮询领取"在 Zotero 里执行 JS"的任务。
    *
    * 为什么做这个：调试插件时想在 Zotero 里跑一段 JS（诊断、刷新权重、验证功能），
    * 原本只能"打开 运行JavaScript 窗口 → 复制 → 粘贴 → Ctrl+R"，一次几十秒。
    * 有了轮询，Python 侧派任务、插件执行、结果回传，全自动。
    *
-   * 安全：走的还是本地服务的 token 认证通道（服务只监听 127.0.0.1）。
+   * ⚠ **两条队列都消费**（2026-10-13 W3 线2）：
+   *   ① **文件信箱**（`<知识库>\mailbox`，新的、首选）—— 不需要服务在跑；
+   *   ② **老的 HTTP 队列**（`GET /task`）—— 保留为兜底，直到确认没有调用方。
+   *   同一个任务**只会被写进其中一处**，所以不存在双执行；先看信箱、信箱空
+   *   再看 HTTP，两处都空就是没事做。想停掉 HTTP 那条就把 prefs 里的
+   *   `zotero-kb.taskPollHttp` 设为 false。
+   *
+   * 安全：老通道走服务 token；新通道只认本机文件系统里的那个目录（没有端口）。
    * 不想开这个能力就把 prefs 里的 autoTaskPoll 设为 false。
    *
    * ⚠ 定时器的坑（本机实测，花了很久）：
@@ -143,11 +290,33 @@ Object.assign(ZoteroKB, {
       if (self.taskBusy) return;
       self.taskBusy = true;
       try {
-        const res = await self.request("GET", "/task");
-        const task = res && res.task;
+        // ① 新通道：文件信箱（不需要服务在跑）。领取一个就执行一个。
+        let task = null;
+        try {
+          task = await self.pollTaskMailbox();
+        } catch (e) {
+          Zotero.debug("[zotero-kb] 任务信箱轮询失败：" + e);
+        }
+        // ② 老通道：HTTP 队列（兜底；没有调用方了就把它关掉）。
+        if (!task && self.getPref("zotero-kb.taskPollHttp", true)) {
+          try {
+            const res = await self.request("GET", "/task");
+            if (res && res.task) { task = res.task; task.__via = "http"; }
+          } catch (e) {
+            // 服务没跑是最常见的情况（W3 之后本来就会没跑），不必刷日志
+          }
+        }
         if (task) {
-          Zotero.debug("[zotero-kb] 领取任务 " + task.id + "（" + task.kind + "）");
+          Zotero.debug("[zotero-kb] 领取任务 " + task.id + "（" + task.kind
+                       + "，via=" + task.__via + "）");
           await self.runTask(task);
+        }
+        // 结果文件是慢性垃圾：每小时清一次过期的（不能跟着 2 秒的轮询做）。
+        if (tick % 1800 === 1) {
+          try {
+            const n = await self.mailboxCleanup();
+            if (n) Zotero.debug("[zotero-kb] 清掉 " + n + " 个过期任务文件");
+          } catch (e) { /* 清理失败不影响轮询 */ }
         }
         // 权重刷新：每 2 个 tick（INTERVAL=2000ms → 约 4 秒）。
         //
@@ -225,17 +394,24 @@ Object.assign(ZoteroKB, {
       Zotero.logError(e);
     }
     const ms = Date.now() - started;
+    // 回报结果：在哪领的就回哪去（信箱任务绝不能往 HTTP 回，反之亦然 ——
+    // 回错地方派发方永远等不到结果，而且看起来像"任务丢了"）。
     try {
-      await self.request("POST", "/task/result", {
-        id: task.id, ok: ok, error: error,
-        result: { value: self.safeStringify(result), ms: ms,
-                  pluginVersion: self.version },
-      });
+      if (task.__via === "mailbox") {
+        await self.reportTaskMailbox(task, ok, error,
+          { value: self.safeStringify(result), ms: ms, pluginVersion: self.version });
+      } else {
+        await self.request("POST", "/task/result", {
+          id: task.id, ok: ok, error: error,
+          result: { value: self.safeStringify(result), ms: ms,
+                    pluginVersion: self.version },
+        });
+      }
     } catch (e) {
       Zotero.debug("[zotero-kb] 回报任务结果失败：" + e);
     }
     Zotero.debug("[zotero-kb] 任务 " + task.id + (ok ? " 完成" : " 失败")
-                 + "（" + ms + "ms）");
+                 + "（" + ms + "ms，via=" + task.__via + "）");
     return ok;
   },
 

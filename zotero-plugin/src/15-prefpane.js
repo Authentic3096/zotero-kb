@@ -111,6 +111,14 @@ Object.assign(ZoteroKB, {
         taskBusy: !!self.taskBusy,
         tickCount: self.tickCount || 0,
         lastTickAt: self.lastTickAt || "",
+        // W3 线2：任务通道现况。排"派了活没人干"时先看这三个字段 ——
+        // mailboxDirPath 为空 = kbDir() 拿不到（那条通道被跳过）；
+        // mailboxClaimed 一直不涨 = 插件没在轮询或信箱里没有东西。
+        mailboxDirPath: self.mailboxDirPath || (self.mailboxDir ? self.mailboxDir() : ""),
+        mailboxClaimed: self.mailboxClaimed || 0,
+        mailboxLastTask: self.mailboxLastTask || "",
+        mailboxLastClaimAt: self.mailboxLastClaimAt || "",
+        taskPollHttp: !!self.getPref("zotero-kb.taskPollHttp", true),
         timerDiag: self.timerDiag || null,
         alive: !!self.alive,
         lastRequestError: self.lastRequestError || "",

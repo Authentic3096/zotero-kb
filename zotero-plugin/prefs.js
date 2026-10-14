@@ -9,6 +9,20 @@ pref("extensions.zotero.zotero-kb.createMissing", true);
 // 这是给自动调试/自动验证用的能力（走本地 token 认证、只监听 127.0.0.1）；
 // 不想开就设为 false，插件的核心功能（切片、分类建议）不受影响。
 pref("extensions.zotero.zotero-kb.autoTaskPoll", true);
+// ---- 任务通道（W3 线2，2026-10-13）：文件信箱 + 老 HTTP 队列
+// 信箱目录：留空 = <知识库目录>\mailbox（正路）。只有在"知识库目录偏偏拿不到"
+// 时才需要手填一个别的可写目录。
+pref("extensions.zotero.zotero-kb.mailboxDir", "");
+// 是否还去消费**老的 HTTP 队列**（GET /task + POST /task/result）。
+// 默认 true：过渡期两条队列都消费（同一个任务只会写进其中一处，不会双执行）。
+// 等确认没有任何调用方还在用老通道，把它设成 false，插件就彻底不碰 8765 了。
+pref("extensions.zotero.zotero-kb.taskPollHttp", true);
+// W3 线3（2026-10-14）：是否**自动拉起**本机服务 8765（Zotero 启动时）。
+// 默认 true = 老行为。用户拍板停服务后把它设为 false —— 否则 Zotero 一重启
+// 服务又被拉起来，"停服务"就是假的。**只影响"自动拉起"这一个动作**：
+// 插件此时已全部走引擎桥/文件信箱，不依赖该服务。手动入口仍是
+// scripts\4-service.vbs；想恢复自动拉起就把它设回 true（或手动跑那个脚本）。
+pref("extensions.zotero.zotero-kb.autoStartService", true);
 // ---- 模型来源（支持 Ollama 与 OpenAI 兼容 API 两种后端）
 // provider: ollama（默认，本机）| openai（任何 OpenAI 兼容服务）
 pref("extensions.zotero.zotero-kb.provider", "ollama");

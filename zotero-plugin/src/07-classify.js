@@ -68,7 +68,30 @@ Object.assign(ZoteroKB, {
       };
     }
     try {
-      const res = await this.request("POST", "/classify", payload);
+      // ⚠ 这一处曾经**故意留在老 HTTP**（2026-10-13）：引擎原来的 `ai.classify` 只认
+      //   **key**、由它从索引库读元数据，而这里要分类的是**还没入库的新文献**
+      //   （元数据只能在 Zotero 这边现取），且要带**用户在这个弹窗里选的**模型配置。
+      //   那是**两个能力**，不能互相顶替（硬迁会对新文献报 `索引库里没有 key=…`）。
+      //
+      // 2026-10-14：引擎侧已按同一契约补齐 `classify.item`（`POST /classify-item`，
+      //   见 online/engine.py::_m_classify_item：收**内联** item + 调用方给的模型配置，
+      //   复用 `LS.do_classify_one`），所以这里改成**桥优先 → 退回老 HTTP**。
+      //   入参就是本函数上面造好的 `payload` —— 它**本来就是扁平的**，
+      //   不用像 `/env-config` 那样再摊平一层。
+      let res = null;
+      try {
+        res = await self.kbAdminHostRoute("POST", "/classify-item", payload);
+      } catch (e) {
+        Zotero.debug("[zotero-kb] 引擎桥分类失败（退回 HTTP）：" + e);
+      }
+      if (!res || res.error) {
+        try {
+          res = await self.request("POST", "/classify", payload);
+        } catch (e) {
+          Zotero.debug("[zotero-kb] 分类请求失败：" + e);
+          return null;
+        }
+      }
       if (!res || res.error) return null;
       return res;
     } catch (e) {
@@ -183,8 +206,20 @@ Object.assign(ZoteroKB, {
     let okCount = 0, lastWeight = null, err = "";
     for (const k of keys) {
       try {
-        const r = await self.request("POST", "/weight",
-                                     { key: k, pinned: !!pinned });
+        // W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kb.weight`，复用
+        // LS.do_set_weight —— 与 HTTP /weight **同一份实现**），拿不到再退回老 HTTP。
+        // 两条通道的回包形状实测同形（`{ok, key, pinned, manual, note, weight, …}`），
+        // 所以这里不需要像 /reindex 那样归一化。
+        let r = null;
+        try {
+          r = await self.kbAdminHostRoute("POST", "/weight",
+                                          { key: k, pinned: !!pinned });
+        } catch (e) {
+          Zotero.debug("[zotero-kb] 引擎桥写权重失败（退回 HTTP）：" + e);
+        }
+        if (!r || r.ok !== true) {
+          r = await self.request("POST", "/weight", { key: k, pinned: !!pinned });
+        }
         if (r && r.ok) {
           okCount++;
           lastWeight = r.weight;

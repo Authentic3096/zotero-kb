@@ -51,8 +51,12 @@
 Python 负责解析 PDF、建索引、调模型。
 
 > 同类插件都是这个架构。例如 **PDF2zh** 的 xpi 里也不含 Python，
-> 它连的是用户自己起的 `localhost:8890` 服务。区别只是我们（`:8765`）
-> 由插件在你打开 Zotero 时自动拉起，不用手动启动。
+> 它连的是用户自己起的 `localhost:8890` 服务。
+>
+> ⚠ 本项目**曾经**也是那样（插件自动拉起常驻的 `127.0.0.1:8765`），但 **2026-10-14 起
+> 那个常驻服务已停**：管理面板改走"插件按需拉起的引擎子进程（stdio）"，任务改走
+> `<知识库>\mailbox\` 文件信箱，**你不需要先启动任何服务**。`scripts\4-service.vbs`
+> 留着只为了在需要时复现旧 HTTP 通道（见 `docs\ADMIN-PORT-PLAN.md` §10.5）。
 
 ---
 
@@ -184,7 +188,7 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 
 重新打开 Zotero，然后：
 
-1. **工具栏**应该多一个图标 → 点它打开管理面板（也可以双击 `scripts\0-panel.vbs`）
+1. **工具栏**应该多一个图标 → 点它打开管理面板（也可以双击 `工具菜单 →「知识库管理…」`）
 2. 面板第一屏应该显示你的库规模：
 
 ```
@@ -206,7 +210,7 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 
 ### 管理面板：一键体检
 
-双击 `scripts\0-panel.vbs` → 点「**环境自检**」。
+双击 `工具菜单 →「知识库管理…」` → 点「**环境自检**」。
 
 **一切正常时**：
 
@@ -232,7 +236,11 @@ Ollama 程序：  ✓ C:\Users\<你>\AppData\Local\Programs\Ollama\ollama.exe
 
 ```powershell
 cd <项目目录>
-.venv\Scripts\python.exe tools\gui.py --check
+# ⚠ 旧 Tk 面板的 `tools\gui.py --check` 已随面板退役（2026-10-14）删除。
+#   现在没有"面板自检"这一步：界面体检在 Zotero 里（工具 →「知识库管理…」→ 运行环境页），
+#   命令行侧的等价自检是下面这条（引擎 RPC 176 项 + 服务端点 115 项）：
+.venv\Scripts\python.exe tools\test_engine_rpc.py
+.venv\Scripts\python.exe online\localserver.py --test
 ```
 
 ### Zotero 设置面板
@@ -275,7 +283,7 @@ ollama pull qwen3:4b-instruct
 
 ### 管理面板有什么
 
-双击 `scripts\0-panel.vbs`：
+双击 `工具菜单 →「知识库管理…」`：
 
 | 页 | 用途 |
 |---|---|
@@ -598,7 +606,8 @@ API 地址与 Key 就行。装了 Ollama 则分类 / 摘要 / 纲要 / 标签都
    全程可停；也可以「只下载安装器（我手动装）」。
 2. 官网下载 `OllamaSetup.exe` 双击安装。
 3. 装完在面板点「**启动 Ollama**」（实测第 2 秒就绪）—— 注意：
-   **「启动本地服务」起的是知识库服务，不是 Ollama**，这两个是独立的两件事。
+   **这起的是 Ollama，不是知识库服务**，这两个是独立的两件事。
+   （知识库那边**早就不需要常驻服务了**：8765 已于 2026-10-14 停用。）
 
 > 用 MinerU 解析时会占用显存，Ollama 同时在跑会明显变慢
 > （同一篇 5 页论文：Ollama 在跑时模型阶段 104.8 秒，停掉后 8.9 秒），
@@ -807,7 +816,7 @@ AI 不会主动做这件事，知识库就只是个普通的全文检索。
 
 ### 跑不起来先看这里（.env 覆盖层）
 
-**症状**：双击 `scripts\0-panel.vbs` 没反应、或报"找不到 Python 环境"；
+**症状**：双击 `工具菜单 →「知识库管理…」` 没反应、或报"找不到 Python 环境"；
 或者你在面板里想改 Python / Ollama 路径**却根本改不动** —— 因为面板自己
 也得先找到 Python 才能起来。这时用项目根目录下的 **`.env`** 文件绕过这一层。
 
@@ -823,7 +832,7 @@ AI 不会主动做这件事，知识库就只是个普通的全文检索。
 
 **用法**：把项目根目录下的 `.env.example` 复制成 `.env`（**同一个目录**，
 跟 `kb-location.json` 同级），去掉行首的 `#`、把值改成你自己的路径，
-保存，然后**重启面板 / 本地服务**。
+保存，然后**关掉管理面板再打开一次**（面板一关，引擎子进程就退出，重开即读到新配置）。
 
 ```powershell
 cd <项目目录>
@@ -978,7 +987,8 @@ Zotero 自己的数据库**从头到尾没被改过**（本项目的读取是只
 ```
 <项目目录>\                        代码（你解压的地方）
   offline\  online\  tools\         Python 侧
-                                  （面板代码在 tools\panels\ 下，按页签分）
+                                  （旧 Tk 面板已退役 2026-10-14；界面现在在
+                                    zotero-plugin\content\admin.html + content\admin-pages\*.js）
   scripts\                          双击用的脚本
   zotero-plugin\                    Zotero 插件源码 + 打包出的 .xpi
     src\*.js                        源码（20 个文件，按功能分）

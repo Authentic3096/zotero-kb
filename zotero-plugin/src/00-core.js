@@ -84,12 +84,22 @@ var ZoteroKB = {
     self.alive = true;
 
     // 分步记录：哪一步失败一目了然（以前整段一个 try，出错完全看不出来）
+    //
+    // 2026-10-13：每一步**同时记毫秒**（用户报「启动时插件加载有点慢」）。
+    // 不记数字就只能猜 —— 这份 timing 每个阶段都会写进 plugin-status.json，
+    // 下次启动完直接读它就知道慢在哪个 step（见 tools/read_startup_timing.py）。
+    // ⚠ 只读不写进 Zotero 自己的日志：那里的东西重启就没了。
     const steps = [];
+    const tBoot = Date.now();
+    const timing = {};
     const step = (name, fn) => {
+      const a = Date.now();
       try {
         fn();
+        timing[name] = Date.now() - a;
         steps.push(name + "=ok");
       } catch (e) {
+        timing[name] = Date.now() - a;
         steps.push(name + "=FAIL(" + e + ")");
         throw new Error(name + " 失败: " + e);
       }
@@ -126,7 +136,11 @@ var ZoteroKB = {
           try {
             const win = Zotero.getMainWindow && Zotero.getMainWindow();
             if (!win || !win.document) return false;
+            const a = Date.now();
             self.kbviewMount(win);
+            // 这一条最容易慢：它要建一个 <browser> 元素、里面那份页面还要
+            // 加载 markdown-it + katex + 21 个字体（见 kbviewMountPane 里的 load 计时）
+            timing.kbviewMount = Date.now() - a;
             return true;
           } catch (e) {
             Zotero.debug("[zotero-kb] 装知识库侧栏失败：" + e);
@@ -160,8 +174,12 @@ var ZoteroKB = {
           try {
             const win = Zotero.getMainWindow && Zotero.getMainWindow();
             if (!win) return false;
+            const a = Date.now();
             self.registerToolbarButton(win);
+            timing.registerToolbarButton = Date.now() - a;
+            const b = Date.now();
             self.registerItemMenu(win);
+            timing.registerItemMenu = Date.now() - b;
             return true;
           } catch (e) {
             Zotero.debug("[zotero-kb] 注册窗口 UI 失败：" + e);
@@ -179,7 +197,9 @@ var ZoteroKB = {
         setTimeout(retry, 500);
       });
 
-      self.writeStatusFile({ startupSteps: steps.join(" "), startupOk: true });
+      timing.startupSyncMs = Date.now() - tBoot;
+      self.writeStatusFile({ startupSteps: steps.join(" "), startupOk: true,
+                             startupTiming: JSON.stringify(timing) });
       Zotero.debug("[zotero-kb] 已加载 v" + version + "  " + steps.join(" "));
 
       // 本地服务生命周期（**随用随取，随弃随关**）：
@@ -189,18 +209,32 @@ var ZoteroKB = {
       // ⚠ 必须**排在 healthCheck/refreshWeights 之前**：那两个都要服务在跑
       //   才有意义（服务没起时 refreshWeights 只会失败一次，然后要等到
       //   下一个轮询周期才重试 —— 用户看到的就是"刚开 Zotero 权重列是空的"）。
+      // 这三步都是网络/磁盘活，**不阻塞** Zotero 启动，但要计时 ——
+      // 它们决定的是"多久之后权重列/两列才第一次有内容"。
+      const timed = (name, fn) => () => {
+        const a = Date.now();
+        return Promise.resolve().then(fn).then(
+          (r) => { timing[name] = Date.now() - a; return r; },
+          (e) => { timing[name] = Date.now() - a; throw e; });
+      };
       self.serverOnStartup()
-        .then(() => self.healthCheck())
-        .then(() => self.refreshWeights())
+        .then(timed("healthCheck", () => self.healthCheck()))
+        .then(timed("refreshWeights", () => self.refreshWeights()))
         // 两列的数据同一次启动里也拉一份（不拉的话，要等轮询那 30 秒
         // 才会第一次出现内容 —— 用户看到的是"列是空的"）。
-        .then(() => self.refreshKbCols())
-        .then(() => self.writeStatusFile({ startupSteps: steps.join(" "),
-                                           startupOk: true }))
+        .then(timed("refreshKbCols", () => self.refreshKbCols()))
+        .then(() => self.writeStatusFile({
+          startupSteps: steps.join(" "),
+          startupOk: true,
+          startupTiming: JSON.stringify(timing),
+          startupAsyncMs: Date.now() - tBoot,
+        }))
         .catch((e) => {
           try {
             self.writeStatusFile({ startupSteps: steps.join(" "),
-                                   startupOk: true, asyncError: String(e) });
+                                   startupOk: true, asyncError: String(e),
+                                   startupTiming: JSON.stringify(timing),
+                                   startupAsyncMs: Date.now() - tBoot });
           } catch (e2) { /* ignore */ }
         });
 

@@ -105,7 +105,10 @@ Object.assign(ZoteroKB, {
       // 迁到别处（比如 Zotero 数据目录）这里不用改。
       let kbDir = self.kbDir();      // 缓存值兜底，下面再用 /health 校正
       try {
-        const r = await self.request("POST", "/item-info", { keys });
+        // W3 线2.5：走**共用**的 kbItemInfo（桥优先、退回 HTTP；见 05-server.js）。
+        // ⚠ 它可能回 null（两条通道都失败）——那时只有 Zotero 元数据可发，
+        //   下面的 `info[k]` 查不到就落到「这篇还没进知识库」那句，行为可接受。
+        const r = await self.kbItemInfo(keys);
         for (const x of (r && r.items) || []) info[x.key] = x;
         const st = await self.request("GET", "/health");
         if (st && st.kb_dir) kbDir = String(st.kb_dir).replace(/[\\/]+$/, "");

@@ -172,7 +172,7 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
   requirements.txt     Python 依赖（装环境就靠它）
   offline\             离线管道（手动跑，与 DSH 无关）
   online\              在线部分（DSH / 插件拉起：MCP 服务器、本地 HTTP 服务、检索）
-  tools\               命令行工具与自检链（面板在 tools\panels\）
+  tools\               命令行工具与自检链（旧 Tk 面板已退役 2026-10-14；新面板在 zotero-plugin/content/）
   zotero-plugin\       Zotero 插件：src\*.js 是源码、bootstrap.js 是拼出来的生成物
   scripts\             用户入口（装环境 / 建库 / 开面板 / 起服务 …）
   bundle\              把知识库的 MCP 接进 DSH 的接入包（生成物不进仓库）
@@ -252,7 +252,8 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
 | 新增「生成纲要」按钮 | 中间层必须显式生成（按节调模型，一篇学位论文几分钟），入口得在界面上 |
 | 知识库结构表补 `mineru\` 一行 | 新目录必须进"这是什么、占多大、能不能删"那张表，否则不敢动 |
 
-排障时先跑 `python tools\gui.py --check`（不开窗口，只报环境与索引状态）。
+排障时先跑 `python tools\check_plugin.py`（打包 / 成员引用 / 口径一次过）
+与 `python online\localserver.py --test`（服务路由自检，自带进程内测试服务）。
 
 ---
 
@@ -261,7 +262,7 @@ python tools\set_release_body.py --tag v0.25.2 --show           # 只看当前�
 - **`WinError 6/61`（句柄无效）**：面板/服务用 `pythonw` 拉起时子进程继承了坏句柄 →
   一律走 `offline/procrun.py`（它带三档降级），别自己调裸 `subprocess`。
 - **"改了没生效"**：先确认跑的是哪一版 —— 改 `online/` 要重启 MCP；改
-  `zotero-plugin/` 要重打包重装；改 `tools/panels/` 要重启面板。
+  `zotero-plugin/` 要重打包重装；改界面（`content/admin-pages/*.js`）只需重开面板窗口。
 - **本地服务关不干净**：`Get-NetTCPConnection -LocalPort 8765 -State Listen` 查 PID
   精确结束，再跑 `scripts\4-service.vbs`。
 - **发版前的三道闸门**：`build_bootstrap --check`（src 与生成物同步）、`check_plugin`

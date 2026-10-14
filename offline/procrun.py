@@ -1,7 +1,8 @@
-"""procrun.py —— 面板/服务里跑子进程的**统一入口**（安全包装）。
+"""procrun.py —— 服务/工具里跑子进程的**统一入口**（安全包装）。
 
-为什么要它：管理面板与本地服务都是用 pythonw.exe 拉起来的
-(scripts\0-panel.vbs / 4-service.vbs，或 Zotero 插件直接起)。pythonw 是
+为什么要它：本地服务与命令行工具都是用 pythonw.exe 拉起来的
+(scripts\4-service.vbs，或 Zotero 插件直接起；旧 Tk 面板的
+scripts\0-panel.vbs 已随 W4 退役 2026-10-14 删除)。pythonw 是
 GUI 子系统、**没有控制台**，它的标准句柄常常是无效的（启动器不传、或传进来的是
 一个坏值）。而 subprocess 在 stdin 没被显式指定时会**让子进程继承父进程的
 标准句柄** —— 子进程一启动就拿到坏句柄，CreateProcess 直接报:
