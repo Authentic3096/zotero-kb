@@ -818,6 +818,20 @@ def main() -> int:
         print(f"  [XX] 这项检查自己崩了：{type(exc).__name__}: {exc}")
         problems.append(f"分级清单检查跑不起来：{type(exc).__name__}: {exc}")
 
+    # ---- 单节上限 ↔ 模型窗口 的耦合 ----
+    #
+    # 为什么要在这儿查：纲要每次只喂一节正文，上限在 offline/digest.py、
+    # 窗口在 offline/judge.py，**只改一个不会报任何错**（上限加大而窗口没跟 →
+    # 长节静默被截断）。原来这条只在工作文件夹的 tests/ 里（CI 看不到），
+    # 搬到仓库侧之后提交/发版这一步就能拦住。
+    try:
+        import check_llm_window as _clw          # 与本文件同目录
+        if _clw.run() != 0:
+            problems.append("单节上限与模型窗口的耦合被破坏（见上）")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [XX] 这项检查自己崩了：{type(exc).__name__}: {exc}")
+        problems.append(f"单节上限/模型窗口检查跑不起来：{type(exc).__name__}: {exc}")
+
     print("\n" + "=" * 64)
     if problems:
         print(f"发现 {len(problems)} 个问题：")
