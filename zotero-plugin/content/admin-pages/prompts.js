@@ -5,7 +5,7 @@
  * metafill.py / check_chunks.py 里，用户看不到也改不了 —— 这一页把它摆出来，
  * 因为"经验抽得不对"这种问题多半只能靠改一句话解决。
  *
- * 取数（字段见 docs/ADMIN-API-W2.md）：
+ * 取数（字段见开发说明）：
  *   GET  /prompts         {rows:[{id,title,where,placeholders,system,user,is_custom}]}
  *   POST /prompts         {id, field:"system"|"user", text}  /  {id, action:"reset"}
  *   POST /prompts/probe   {id} → {ok, output, ms}

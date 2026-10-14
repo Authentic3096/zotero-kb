@@ -9,7 +9,7 @@
  * 只跑规则 / 重建不可信的 / 看某篇明细）。本页覆盖同样的功能，布局按"简约干净"重做：
  * 顶部一行动作 + 一行统计 + 一张表 + 底下一块只读明细，点行即看明细。
  *
- * 数据来源照 docs/ADMIN-API-W2B.md 的损坏查询那一组：
+ * 数据来源照开发说明的损坏查询那一组：
  *   GET  /quality-stats   → quality.stats  → {chunks, figures, item_health,
  *                            rows:[{key,title,n_bad,n_suspect}]}
  *   POST /quality-scan    {use_model?}     → 长任务 {job:{id}}；

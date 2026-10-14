@@ -34,7 +34,7 @@
                 style="width: 320px; padding: 4px 6px;"
                 placeholder="http://127.0.0.1:8765"/>
     <html:div style="color:#888; font-size:12px; margin-top:3px;">
-      默认 http://127.0.0.1:8765（**已停用**：W3 2026-10-14 起插件走引擎桥/文件信箱，该服务按需手动启动 scripts\4-service.vbs）
+      默认 http://127.0.0.1:8765。这个旧通道已停用，插件不再依赖它；确实需要时手动启动 scripts\4-service.vbs。
     </html:div>
   </html:div>
 
@@ -183,7 +183,7 @@
     <html:div style="color:#888; font-size:12px; margin-top:6px;">
       默认放在 Zotero 数据目录下的 <html:code>zotero-kb\</html:code>，
       这样重装/换机只要同步 Zotero 那一份。
-      迁移是**复制**（旧目录会保留），并且会先备份。
+      迁移是<html:strong>复制</html:strong>（旧目录会保留），并且会先备份。
     </html:div>
   </html:div>
 
@@ -228,7 +228,7 @@
                  style="margin-left:10px; color:#888;"></html:span>
     </html:div>
     <html:div style="color:#888; font-size:12px; margin-top:6px;">
-      <html:strong>说明</html:strong>：Zotero 自带的同步**不能**用来同步知识库 ——
+      <html:strong>说明</html:strong>：Zotero 自带的同步<html:strong>不能</html:strong>用来同步知识库 ——
       它的文件同步只覆盖"数据库里有附件条目的文件"（源码里只走
       Attachments.getStorageDirectoryByID），知识库目录不在其中。
       硬做只能把每个 .md 挂成附件，会产生数千个条目、拖慢同步。
@@ -271,8 +271,8 @@
     </html:label>
     <html:div style="color:#888; font-size:12px;">
       在 DSH 里说"帮我找几篇…的文献"时，搜索、候选表、挑哪几篇、结果
-      **全在对话里**；这里默认不再插一个弹窗。<html:br/>
-      抓取由 Zotero 自己完成，用**你这台机器当下的网络身份** ——
+      <html:strong>全在对话里</html:strong>；这里默认不再插一个弹窗。<html:br/>
+      抓取由 Zotero 自己完成，用<html:strong>你这台机器当下的网络身份</html:strong> ——
       校园网出口 IP、机构订阅都算数；元数据走 Zotero 的翻译器，
       PDF 走 Zotero 自带的"查找可用的 PDF"。<html:br/>
       <html:strong>不做</html:strong>付费墙绕过（改 URL 骗计费、影子图书馆、盗用凭证）；
@@ -300,7 +300,7 @@
     <html:div style="color:#888; font-size:12px;">
       在文献列表里选中一篇 → 右侧内容窗格出现「本地模型」：可以先注入摘要级/全文级
       再提问，也可以「全文级段落检测」逐段核对正文提取质量。
-      **对话不落盘**（退出即清），而检测进度与确认过的修正会保留。
+      <html:strong>对话不会保存到磁盘</html:strong>（退出即清），而检测进度与确认过的修正会保留。
       模型想改知识库时必须你点两次确认才会写。
     </html:div>
   </html:div>

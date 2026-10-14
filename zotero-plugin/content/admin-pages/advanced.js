@@ -5,7 +5,7 @@
  * Tk 版把二十来个按钮塞进几个 LabelFrame，网页这版按「一组一件事」拆成小卡片，
  * 每张卡片最多 5 个按钮（用户明确要「简约干净」——一行摆满等于没有重点）。
  *
- * 依赖的引擎方法（契约 docs/ADMIN-API-W2B.md，2026-10-13 冻结）：
+ * 依赖的引擎方法（契约见开发说明，2026-10-13 冻结）：
  *   POST /search       {query, limit?} → {rows:[{key,title,score,snippet}]}      60s
  *   POST /weight       {key, pinned?, manual?, note?} → {ok, weight}           默认
  *   GET  /weight-list  {limit?} → {rows:[{key,title,year,weight,pinned,note}]}   60s

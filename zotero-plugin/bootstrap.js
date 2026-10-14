@@ -618,7 +618,7 @@ Object.assign(ZoteroKB, {
    * schemas.resolve_* 就能读到，面板启动时自然用对。
    *
    * ⚠ **W3 线2.5（2026-10-13）：这一处故意没迁到引擎桥，因为入参/回包形状都对不上**
-   *   （真机取证见 docs\ADMIN-PORT-PLAN.md §10.3 第 1 行）：
+   *   （真机取证见开发说明）：
    *     · 老 HTTP `POST /env-config` 收的是**嵌套** `{env:{project_root,…}}`，
    *       回包带 **`report`**；
    *     · 引擎 `env.save` 收的是**扁平**键（`project_root/python/ollama/mineru/figures`），
@@ -9648,7 +9648,7 @@ ZoteroKB.kbFormulaWaitJob = function (win, kind, jobId, tries) {
  *   ② 把页面的 `postMessage` 转成引擎 RPC，再把结果转回页面；
  *   ③ 工具菜单里的一项「知识库管理…」→ 带 `<browser>` 的 Zotero 窗口。
  *
- * 设计契约见 `docs/ADMIN-PORT-PLAN.md`（尤其 §1/§4/§6/§7）。**不监听任何 TCP** ——
+ * 设计契约见开发说明（尤其 §1/§4/§6/§7）。**不监听任何 TCP** ——
  * 页面 ↔ 宿主 ↔ 引擎全在父子进程的管道里，没有 token、没有 `Origin` 例外。
  *
  * ## ⚠⚠ 页面层的三个硬结论（2026-10-13 在**活着的 Zotero** 里用 dispatch_js 逐条实测）
@@ -9753,8 +9753,8 @@ ZoteroKB.kbFormulaWaitJob = function (win, kind, jobId, tries) {
  *          GET /collections · POST /zotero-sync · POST /plugin ·
  *          POST /zotero-upgrade
  *
- *   契约（方法名/参数/返回形状）见 `docs/ADMIN-API-W2.md`（批次 A）与
- *   `docs/ADMIN-API-W2B.md`（批次 B）—— **两边都要改**：
+ *   契约（方法名/参数/返回形状）见开发说明（批次 A）与
+ *   开发说明（批次 B）—— **两边都要改**：
  *   引擎加 method、这里加一行。`GET /quality-detail?key=` 这类查询串由精确
  *   匹配统一抽参数，不用另写带参分支。
  *
@@ -9804,7 +9804,7 @@ Object.assign(ZoteroKB, {
 
     // ---------------------------------------------------------- W2 批次 A
     //
-    // 方法名与 docs/ADMIN-API-W2.md 那张表一一对应（契约冻结，不要自己发明）。
+    // 方法名与开发说明里的那张表一一对应（契约冻结，不要自己发明）。
     // 经验库（`GET /experience/<id>` 也是带参路径，同样在 kbAdminMapRoute 里匹配）
     "GET /experience": { method: "experience.list", from: "query" },
     "POST /experience": { method: "experience.save", from: "body" },
@@ -9847,7 +9847,7 @@ Object.assign(ZoteroKB, {
 
     // ---------------------------------------------------------- W2 批次 B
     //
-    // 方法名与 docs/ADMIN-API-W2B.md 那张表一一对应（契约冻结，不要自己发明）。
+    // 方法名与开发说明里的那张表一一对应（契约冻结，不要自己发明）。
     // `GET /quality-detail?key=`、`GET /mineru-status` 这些**查询串已被上面的
     // 精确匹配统一抽成 params**（kbAdminMapRoute 会解析 `?a=b` 再交给引擎），
     // 所以不需要另写带参匹配分支。

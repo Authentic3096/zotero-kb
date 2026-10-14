@@ -13,12 +13,12 @@
     应当**立刻**收到 ok、data 里 `job` 是 `{id}`，再用 `jobs.get` 轮询到结局；
     kb.reindex 与它共用 `_job_dispatch`（这里只测参数校验，不真派全库构建）；
   · 不存在的 method、坏 JSON 行 → 回 ok:false，**引擎不退出**（后面 ping 还能通）；
-  · **W2 批次 A 的方法**（契约 docs/ADMIN-API-W2.md）：experience.* / pending.mark /
+  · **W2 批次 A 的方法**（契约见开发说明）：experience.* / pending.mark /
     sessions.list / learn.scan / outline.* / meta.* / env.* / llm.* / service.restart /
     prompts.* —— 每个方法至少覆盖一次"坏输入被挡住"；会改真库的写动作只用
     坏输入覆盖（写经验、改配置、删纲要都不在测试里做），唯一真跑的长任务
     `learn.scan` 扫的是一个**不存在的会话 id**；
-  · **W2 批次 B 的方法**（契约 docs/ADMIN-API-W2B.md）：papers.list / ai.* /
+  · **W2 批次 B 的方法**（契约见开发说明）：papers.list / ai.* /
     maintain.run / mineru.* / quality.* / config.figures / kb.search / kb.weight /
     advanced.* —— 同上：纯查询真跑，会改数据或跑几分钟的只覆盖坏输入；
     `_job_dispatch` 的派发形状用 `quality.repair` + 一个**不存在的 key**
@@ -269,7 +269,7 @@ def main() -> int:
         check("kb.reindex 坏 keys → ok:false（派活前就挡住）",
               r.get("ok") is False, str(r.get("error"))[:48])
 
-        # ---- 9. W2 批次 A：五个页面的方法（契约 docs/ADMIN-API-W2.md）
+        # ---- 9. W2 批次 A：五个页面的方法（契约见开发说明）
         #
         # ⚠ 这一节**不做任何会改真库的事**：写经验/改配置/删纲要/真扫会话这些
         #   都用"坏输入必须被挡住"来覆盖；唯一真跑的长任务是 `learn.scan`
@@ -579,7 +579,7 @@ def main() -> int:
         check("prompts.probe 不存在的 id → data.ok=false 且带 ms（不调模型）",
               d.get("ok") is False and "ms" in d, str(d.get("error"))[:48])
 
-        # ---- 10. W2 批次 B：四组页面的方法（契约 docs/ADMIN-API-W2B.md）
+        # ---- 10. W2 批次 B：四组页面的方法（契约见开发说明）
         #
         # ⚠ 与批次 A 同一条纪律：**会改数据/跑几分钟的动作只覆盖坏输入**
         #   （mineru.parse 不真派；quality.scan 不真扫 —— 它会把 item_health

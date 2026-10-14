@@ -2,7 +2,7 @@
 
     python online/engine.py          # 由宿主（Zotero 插件）用管道拉起
 
-为什么要有它（范围 B 第一波，见 docs/ADMIN-PORT-PLAN.md）：用户的第一诉求是
+为什么要有它（范围 B 第一波，见开发说明）：用户的第一诉求是
 **不要监听端口**（不想在本机开任何 TCP 监听）。原来的常驻 HTTP 服务
 （online/localserver.py，127.0.0.1:8765）改成"宿主拉起子进程、用管道说话"：
 **无端口、无 token、不常驻、不自启** —— Zotero 在跑时引擎是它的子进程、
@@ -38,7 +38,7 @@ start_reindex_job / start_digest_job …）与 offline/*.py 里已有的实现
 localserver 那边只做了"把逻辑提成模块级函数"的搬运，**HTTP 行为一个字没改**
 —— 切换之前旧服务照常能用，那是验证新通道的手段。
 
-W2 批次 A（2026-10-13）新增的方法表（契约见 docs/ADMIN-API-W2.md）：
+W2 批次 A（2026-10-13）新增的方法表（契约见开发说明）：
     experience.list / experience.get / experience.save / experience.delete /
     pending.mark / sessions.list / learn.scan /
     outline.list / outline.render / outline.delete /
@@ -46,7 +46,7 @@ W2 批次 A（2026-10-13）新增的方法表（契约见 docs/ADMIN-API-W2.md�
     llm.config / llm.save / llm.models / llm.test / service.restart /
     prompts.list / prompts.save / prompts.probe
 
-W2 批次 B（2026-10-13）新增的方法表（契约见 docs/ADMIN-API-W2B.md）：
+W2 批次 B（2026-10-13）新增的方法表（契约见开发说明）：
     papers.list / ai.summarize / ai.classify / ai.apply / maintain.run /
     mineru.status / mineru.parse / mineru.clear /
     quality.stats / quality.scan / quality.repair / quality.detail /
@@ -472,7 +472,7 @@ def _m_digest(params: dict) -> dict:
 # ================================================================ W2 批次 A
 #
 # 管理面板剩下的 5 页（经验库 / 分节纲要 / 元数据 / 运行环境 / 提示词）要的
-# 引擎方法。契约是 docs/ADMIN-API-W2.md（**冻结**，页面与引擎都照它写）：
+# 引擎方法。契约见开发说明（**冻结**，页面与引擎都照它写）：
 #   · 列表一律 {rows:[…]}（不裸数组）；
 #   · 失败一律 ok:false + 中文原因（坏输入不许弄死引擎）；
 #   · 长任务先回 {job:{id}}，之后 GET /jobs/<id> 轮询。
@@ -1391,7 +1391,7 @@ def _m_llm_models(params: dict) -> dict:
 #
 # 用户 2026-10-13 的困惑："想把大模型的 api 接上去，怎么选具体类型？v4pro 还是
 # v4.1flash？" —— 根因是**没给目录**，让人去猜模型名。成熟软件（含 DSH）的做法都是
-# 三层兜底：**动态探测 → 内置候选 → 手填**（设计依据见 docs/MODEL-SELECTION.md）。
+# 三层兜底：**动态探测 → 内置候选 → 手填**（设计依据见开发说明）。
 #
 # 内置候选表的**出处**（可核实，2026-10-13 用 tools/from-repo/asar_read.py 从
 # 已装的 app.asar 里读出来的；不是凭记忆写的）：
@@ -1820,8 +1820,8 @@ def _m_prompts_probe(params: dict) -> dict:
 
 # ================================================================ W2 批次 B
 #
-# 「分类建议 / PDF 解析 / 损坏查询 / 高级」四组页面要的方法（契约
-# docs/ADMIN-API-W2B.md，**冻结**）。规矩与批次 A 一字不差：
+# 「分类建议 / PDF 解析 / 损坏查询 / 高级」四组页面要的方法（契约见开发说明，
+# 冻结）。规矩与批次 A 一字不差：
 #   · 列表一律 {rows:[…]}；
 #   · 失败一律 ok:false + 中文原因（坏输入不许弄死引擎）；
 #   · 长任务先回 {job:{id}}，之后 GET /jobs/<id> 轮询；
@@ -3112,7 +3112,7 @@ METHODS = {
     "formula.target": _m_formula_target,
     "formula.apply": _m_formula_apply,
     "formula.mathtype": _m_formula_mathtype,
-    # ---- W2 批次 A（方法名与 docs/ADMIN-API-W2.md 那张表一一对应）
+    # ---- W2 批次 A（方法名与开发说明里的那张表一一对应）
     "experience.list": _m_experience_list,
     "experience.get": _m_experience_get,
     "experience.save": _m_experience_save,
@@ -3140,7 +3140,7 @@ METHODS = {
     "prompts.list": _m_prompts_list,
     "prompts.save": _m_prompts_save,
     "prompts.probe": _m_prompts_probe,
-    # ---- W2 批次 B（方法名与 docs/ADMIN-API-W2B.md 那张表一一对应）
+    # ---- W2 批次 B（方法名与开发说明里的那张表一一对应）
     "papers.list": _m_papers_list,
     "ai.summarize": _m_ai_summarize,
     "ai.classify": _m_ai_classify,

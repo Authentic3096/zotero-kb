@@ -1,6 +1,6 @@
 # 架构总览：一套可复现的「文献知识库 → 大模型可用」系统
 
-> 这份文档回答一个问题：**我们到底在做什么？**
+> 这份文档说明这个项目在做什么、各块怎么分工、关键实现为什么这么做。
 > 答案：把"读过的文献 + 试过的方法效果"变成**大模型能随时调用**的能力
 > （本项目里接的是 DSH，走标准 MCP，其它支持 MCP 的客户端同理），
 > 并让这件事**可复现、可迁移、可长期用下去**。
@@ -267,7 +267,7 @@ DSH 里试了某篇文献的方法
   归一化 = 数字全换成 `#` + 压空白 + 转小写（`zreader.py:741-743`）。
   三条判据**同时**满足才删：落在边缘带内、归一化后在 ≥35% 的页上重复、长度 ≤300 字符；
   页数 <3 或单页 <4 行直接跳过（`zreader.py:746-794`）。
-  ⚠ 只出现一次的首页 DOI / 版权行抓不到 —— 这是已知取舍。
+  只出现一次的首页 DOI / 版权行抓不到 —— 这是已知取舍。
 - **HTML→Markdown**：只用于 Zotero 笔记（`html_to_markdown`）。
   `data-attachment-key` 的内嵌截图换成一行占位说明并计数，其余 `<img>` 删除；
   `a→[文本](href)`、`h1-6→#`、`strong/em/code`、`li→-`、`br/p`，
@@ -374,7 +374,7 @@ parts = re.split(r"(?<=[。！？；.!?;])\s*", para)
 #### A8. 正文修订层（人工改过的正文优先，且永不覆盖 MinerU 原版）
 
 用户在 Zotero 侧边栏「知识库预览 → 按页正文」里对着原文 PDF 发现解析错的地方，
-点「改这一页」就地改。落盘是 `<kb>/edits/<key>.md`（**只存被改过的页**，与 fulltext
+点「改这一页」就地改。写入磁盘是 `<kb>/edits/<key>.md`（**只存被改过的页**，与 fulltext
 同形的 `## p.N` 分节）+ 同名 `.json` 边车（每页记一个 `base` = 该页**机器稿**的 sha1）。
 
 ```
@@ -416,9 +416,9 @@ structured_content.json（原版，只读） ──> pages.json（机器稿）
   （`context` 字段，`kb_search` 会带给模型；开关 `ZOTERO_KB_PARENT_CONTEXT=0`）。
 - 归档/还原（`trash.py`）的快照带齐新列并按 `level` 排序：**父块先插**，否则
   `parent_id` 会悬空（还原后检索照样跑、只是上下文没了，属静默错误）。
-- **口径是复测过的**（2026-10-11，题集 v4 = 回归 9 题 + 切块专项 24 题，脚本在工作文件夹）：
-  在**纯向量路**上子块口径对旧口径（1000 字/页）全胜（hit@3 +2、MRR +0.063、平均排名 −0.49）；
-  在**关键词主导的融合路**上旧口径的覆盖率略好 —— 这是"关键词路偏长块"的真实损失。
+- **这套参数是复测过的**（题集 v4 = 回归 9 题 + 切块专项 24 题，脚本不随仓库发布）：
+  在**纯向量路**上子块参数对旧参数（1000 字/页）全胜（hit@3 +2、MRR +0.063、平均排名 −0.49）；
+  在**关键词主导的融合路**上旧参数的覆盖率略好 —— 这是"关键词路偏长块"的真实损失。
   试过的补偿档 **K500**（子块 500 字）与 **K300+PFTS**（父块也进 FTS、命中只给该篇加分）
   **都没有采用**：前者 D 组纯向量路略差，后者把回归组 hit@1 从 6/9 打到 5/9（越线）。
   实验开关（**调试面，默认行为不变**）：`ZOTERO_KB_CHILD_TARGET` / `ZOTERO_KB_PFTS`（构建期）、
@@ -427,10 +427,10 @@ structured_content.json（原版，只读） ──> pages.json（机器稿）
 - 分节的正则要认「带空格的中文标题」：`参 考 文 献` 匹配不上 `参考文献` 会让参考文献被当正文索引
   （曾实测 9 篇中招）。
 
-#### A10. 索引层 L2 清洗（2026-10-12）
+#### A10. 索引层 L2 清洗
 
 `fulltext/<key>.md` 是 **L1**（给人看、给 AI 读，**保留引文上标与图表**）；切片与向量另吃一层
-**L2 = `converter.clean_for_index(L1)`** —— 纯函数、**不落盘**（L1 是契约、L2 是推导，用户改修订层时
+**L2 = `converter.clean_for_index(L1)`** —— 纯函数、**不写入磁盘**（L1 是契约、L2 是推导，用户改修订层时
 两边自动一致）。`collect_chunks` 只对 **fulltext** 支清洗，**标注与笔记一个字都不动**。
 
 删三类：①**引文型** `<sup>`（前一个字符不是拉丁字母/数字/`>`、且内容是纯数字/数字列表/方括号含全角）；
@@ -440,7 +440,7 @@ structured_content.json（原版，只读） ──> pages.json（机器稿）
 （拉丁 308 / 数字 36 / `>` 后 71）、公式、`## p.N`。收益如实记：标签只占字符 1.23%，
 **剥上标是小收益**，真正的大头是版权块。消融（题集 v4，与 A9 同一套）：回归组 hit@1 与 MRR 不变。
 
-#### A11. 摘要深度分层（`chunks.depth`，2026-10-12）
+#### A11. 摘要深度分层（`chunks.depth`）
 
 `chunks.depth` 与 `level` **正交**（`level` 是"父/子"结构，`depth` 是"抽得多深"）：
 
@@ -450,11 +450,11 @@ structured_content.json（原版，只读） ──> pages.json（机器稿）
 | 1 | 现有父块（level=0） | 逐节 |
 | 2 | **全篇概要块**（新） | 文本复用 `meta ai_summary:<key>`（即 `views/<key>.tldr.md` 的产物），没有就退回 `abstract`；都没有就**不建** |
 
-全篇块是 level=1、可索引、进 FTS 与向量。检索侧开关 **`ZOTERO_KB_DEPTH`（2026-10-12 起默认开）**：
+全篇块是 level=1、可索引、进 FTS 与向量。检索侧开关 **`ZOTERO_KB_DEPTH`（默认开）**：
 关掉时（=0）在**候选阶段**（FTS 的 SQL `LIMIT` 之前、向量 `argsort` 之前）就把 `depth>=2` 排除，
 结果与"没有全篇层"**逐字一致**（消融复现用）；老库（没有 `depth` 列）不加任何过滤。
 
-**为什么默认开**：2026-10-12 用一套**全新留出集**（30 题，与 v4 的 9+24 题不重题）实测 ——
+**为什么默认开**：用一套**全新留出集**（30 题，与 v4 的 9+24 题不重题）实测 ——
 总体 hit@1 16/30→18/30、MRR 0.684→0.764、必命中召回 0.882→0.971；topic 组与 detail 组**两组都升**；
 配对 6 好 0 坏、符号检验 p=0.031。加上 v4 回归组 hit@1 不降、MRR 0.731→0.759，结论是"只增不减"。
 
@@ -626,14 +626,14 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 
 `online/localserver.py`，`ThreadingHTTPServer` 只 bind **127.0.0.1**，默认端口 **8765**。
 
-> **⛔ 2026-10-14 起这个常驻服务已停**（用户拍板，执行记录 `docs/ADMIN-PORT-PLAN.md` §10.5）：
-> 管理面板改走 `online/engine.py`（stdio JSON-RPC）、任务通道改走 `<知识库>\mailbox\` 文件信箱。
-> 但是**代码一个字没删** —— `localserver.py` 里的业务实现仍是引擎与 MCP 的复用来源，
+> **这个常驻服务已停用**：管理面板走 `online/engine.py`（stdio JSON-RPC）、
+> 任务通道走 `<知识库>\mailbox\` 文件信箱。但是**代码一个字没删** ——
+> `localserver.py` 里的业务实现仍是引擎与 MCP 的复用来源，
 > 而 `localserver.py --test`（115 项）自带**进程内**测试服务、不需要 8765 在监听。
-> 要复现旧通道就跑 `scripts\4-service.vbs`（回退件，必须保留）。
+> 需要时可以用 `scripts\4-service.vbs` 把它起回来。
 
 **token 机制**：优先环境变量 `KB_SERVICE_TOKEN`，否则读 `kb\service-token.txt`，
-文件不存在就生成并落盘；按文件 mtime 缓存，**换了 token 不必重启服务**
+文件不存在就生成并写入磁盘；按文件 mtime 缓存，**换了 token 不必重启服务**
 （`localserver.py:87-122`）。校验用 `secrets.compare_digest` 定时比较（`:2034-2040`）。
 
 > **一处值得抄的安全设计**：`GET /` 与 `/health` 免 token，并顺手把 token 回给调用方
@@ -642,7 +642,7 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 > 正常通过（`localserver.py:2055-2090`）。
 
 **任务队列**是"能在 Zotero 里执行一段 JS"的通道：只监听本机、必须带 token、
-任务只留最近 30 条且**不落盘**（`localserver.py:55-67`）。
+任务只留最近 30 条且**不写入磁盘**（`localserver.py:55-67`）。
 `kind` 有 `js / cmd / acquire / attach`；领取是原子的 `pending → running`
 并记 `fetched_by`（`:174-207`）。
 
@@ -652,13 +652,12 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 `POST /shutdown` 用事件位 + 看门狗退出，刻意不用 `taskkill pythonw.exe`
 —— 那会连管理面板和用户脚本一起杀掉（`:2519-2558`）。
 
-**对照页（浏览器兜底页）已于 2026-10-12 删除** —— 用户拍板不要了
-（派发包《元数据与摘要与分层》§五）。`online/docpage.py` / `online/docpage.html` 已删，
-那一组 GET 端点（`/doc`、`/doc-text`、`/doc-raw`、`/doc-page.png`、`/kb-image`）
-也一并删掉 —— 现在请求它们返回 404。对照改由阅读器右侧那一列承担
+**对照页（浏览器里那个兜底页）已经没有了** —— `online/docpage.py` / `online/docpage.html`
+与那一组 GET 端点（`/doc`、`/doc-text`、`/doc-raw`、`/doc-page.png`、`/kb-image`）
+都已删除，请求它们返回 404。对照改由阅读器右侧那一列承担
 （与条目窗格列**共用** `content/kbview.html`，见 §B7）。
 
-⚠ **`/doc-edit` 必须保留**（GET 元信息 + POST 保存/恢复）：它是**正文修订层**的端点，
+**`/doc-edit` 必须保留**（GET 元信息 + POST 保存/恢复）：它是**正文修订层**的端点，
 阅读器列 / 条目窗格列的「改这一页」全靠它（唯一写路径是 `offline/edits.py`，
 保存后轮询 `/jobs/<id>`）—— 删了就废掉整个编辑功能。
 
@@ -693,11 +692,11 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 `_sortCollation` 比较字符串（实测这一版 collation 认数字，补零是兜底：
 哪天换回普通字典序，"13" 就会排到 "4" 前面），显示时由 `renderCell` 去掉前导零。
 
-> ⚠ 新列**必须**在列定义里写 `defaultIn: ["*"]`，否则会出现"注册成功、
+> 新列**必须**在列定义里写 `defaultIn: ["*"]`，否则会出现"注册成功、
 > `_columns` 里也有、但列表上看不见"——因为只要任何一列带 `defaultIn`
 > （内置的 title / firstCreator / hasAttachment 都带），`_getColumns()`
 > 就把没声明它的新列算成 `hidden=true`，用户只能自己去右键"列"菜单里勾
-> （本机实测踩到，装完第一版两列全是隐藏的）。
+> （实测踩到，装完第一版两列全是隐藏的）。
 
 **右键菜单六组**（每次 `popupshowing` 重建，并判断 `event.target !== popup`
 以免子菜单冒泡把自己的菜单拆掉，`src/14-menus.js` 的 `registerItemMenu`）：
@@ -744,9 +743,8 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 
 定义在 `offline/kbviews.py` 的 `LEVELS`（**唯一事实来源**）：
 
-- **面板**：第一屏的「打开知识库」→ 先弹文献列表（复用已有的
-  `PaperPicker`：作者/年份/标题、可搜索可排序）→ 选中一篇再列六个级别
-  （`tools/panels/browser.py（已退役 2026-10-14）` 的 `LevelPicker`）→ 双击用系统默认程序打开那个 md。
+- **管理面板**：点「打开知识库」→ 先弹文献列表（作者/年份/标题、可搜索可排序）→
+  选中一篇再列六个级别 → 双击用系统默认程序打开那个 md（`content/admin-pages/` 里的实现）。
 - **Zotero 右键**：第 ⑥ 组「打开知识库」二级菜单列同样的六个级别
   （`src/13-kbopen.js` 的 `KB_LEVELS` 是 Python 那份的**镜像**，
   由 `tools/check_kb_levels.py` 盯着 id/标签/路径模板三者一致）；
@@ -762,50 +760,33 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
    "文件在不在"决定显示什么。所以 `offline/convert.py` 在一批条目**全部提交
    之后**统一生成；单独补齐用 `offline/maintain.py views`（面板「高级」页的
    「补齐知识库分级文件」就是它）。
-2. **打开文件走四级降级链**（`src/13-kbopen.js` 的 `openKbPath`）：
-   `Zotero.launchURL` → `外部协议服务` → ~~`面板的 pythonw gui.py --open <路径>`~~
-   （**2026-10-14 随 Tk 面板退役删除** —— 那一级现在只会失败，代码里也已摘掉）
-   → `Zotero.File...reveal()`（保底：在文件管理器里选中它）。
-   为什么写成链式而不是挑一个：沙箱里这些入口的可用性随版本变，而链式能保证最坏情况
-   也有确定可用的兜底。
+2. **打开文件走三级降级链**（`src/13-kbopen.js` 的 `openKbPath`）：
+   `Zotero.launchURL` → `外部协议服务` → `Zotero.File...reveal()`
+   （保底：在文件管理器里选中它）。为什么写成链式而不是挑一个：沙箱里这些
+   入口的可用性随版本变，而链式能保证最坏情况也有确定可用的兜底。
 
 `views/` 与 `papers/`、`fulltext/` 同待遇：**可重建的派生物**，删了跑一次
 构建就回来；条目被删除时 `_purge_key` 会连它一起清掉。
 
 #### B9. 管理面板
 
-> **✅ 2026-10-14 已换代（W4）**：旧 Tk 面板已**整体退役** —— `tools/gui.py`、
-> `tools/panels/*`、`scripts\0-panel.vbs` 已删（备份 `kb\backup-20261015-0059-tk-panel\`）。
-> **现在的管理面板**是 Zotero 内的一个窗口（工具菜单 →「知识库管理…」）：
-> 页面在 `zotero-plugin/content/admin.html` + `admin.js` + `admin.css` +
-> `content/admin-pages/*.js`（一页一个文件、按 `order` 排成 10 页），宿主半在
-> `zotero-plugin/src/23-admin.js`，业务全在 `online/engine.py`（stdio JSON-RPC，无端口）。
-> ⚠ 页面实现约定、10 页清单、协议见 `docs/ADMIN-PANEL.md` 与
-> `docs/ADMIN-PORT-PLAN.md`（那里是权威）。
->
-> 下面 B9 的其余内容**是旧 Tk 面板的结构记录**（保留作历史参考，别照着改代码）；
-> 其中"`tools/panels/common.py` 那份清单必须继续存在"这条**已迁移**：
-> `KB_FILE_SPEC` 现在住在 `offline/kb_manifest.py`（`kb.structure` 读它）；
-> "项目根在哪"的判据也从 `tools/gui.py` 换成了 `online/engine.py` +
-> `offline/schemas.py`（见 `zotero-plugin/src/02-paths.js::_looksLikeProjectRoot`）。
+**管理面板**是 Zotero 内的一个窗口（工具菜单 →「知识库管理…」；主工具栏按钮与条目右键
+也指向同一个面板）。三层分工：
 
-`tools/gui.py` 曾经只是**入口**（组装 App + 命令行自检 + mainloop）；
-界面代码按"一个页签一个模块"在 `tools/panels/` 下，公共的路径与字体在
-`tools/panels/common.py`。
+- **页面**：`zotero-plugin/content/admin.html` + `admin.js` + `admin.css` +
+  `content/admin-pages/*.js`（一页一个文件、按 `order` 排成 10 页）；
+- **宿主半**：`zotero-plugin/src/23-admin.js`（开窗 / 桥 / 路由表 / 超时 / 引擎生命周期）；
+- **引擎**：`online/engine.py`（stdio JSON-RPC，**无端口、无 token、不常驻**）。
 
-**tkinter/ttk**，底部常驻日志区。八个页签（`tools/panels/base.py` 的
-`_build_tabs`）：
-**知识库结构**（逐项写清"存放内容、占多少、能不能删"）、**经验库**、
-**分类建议**、**运行环境**（项目目录 / Python / Ollama 三个位置 + 检测报告 ——
-面板打不开九成是这三者之一不对；这三项**面板里也能改**，写的是与插件设置
-同一份 `kb-location.json`）、**损坏查询**、**元数据**、**高级**
-（侧载安装、诊断、打包、复制 token、补齐分级文件这类功能集中在这里，
-不挡日常操作）、**提示词**（见 B12）。
+管理面板的三层结构、10 页清单与页面约定不随仓库发布（另见开发说明）。
 
-版面（用户 2026-10-05 要求）：每个页签都套一层**可滚动画布**（`_tab_panes`，
-内容比窗口高时用滚轮看，不必拉长窗口）；页签内部要"钉在下面"的文本框
-（输出/详情/试跑结果）与底部**运行日志**都是**可拖的分隔格**（`ttk.PanedWindow`，
-`_scroll_hosts` + `_on_wheel` 负责"滚鼠标底下那一页"）。
+两条容易踩的约束（细节见代码注释）：页面必须与宿主**同进程**（不要用
+`openInViewer(页面地址)`，那会把页面切进远程进程），且这类窗口里 `window.parent === window`
+—— 所以宿主**自建 `<browser>`** 并在页面的 `postMessage` 上**装一道分派钩子**。
+
+> `KB_FILE_SPEC`（「知识库结构」页那张"是什么 / 占多大 / 能不能删"的清单）住在
+> `offline/kb_manifest.py`；"项目根在哪"的判据是 `online/engine.py` + `offline/schemas.py`
+> （见 `zotero-plugin/src/02-paths.js::_looksLikeProjectRoot`）。
 
 #### B10. DSH 侧接入：bundle 与模板
 
@@ -857,11 +838,11 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
   （`parse_item()` / `fulltext_for()`，见下面 B11.1）。
   默认仍是 `zotero`，所以**没装 MinerU 的用户行为逐字节不变**。
 - 安装：`scripts/install-mineru.ps1`（可选组件，装在项目内的 `.mineru\`，
-  不写 PATH/注册表，删目录即卸载）+ 图形化引导
-  `tools/panels/mineru_guide.py（已退役 2026-10-14）`（说明 → 档位 → 预检 → 后台装 → 复检并写回配置）。
+  不写 PATH/注册表，删目录即卸载）+ 管理面板「运行环境」页里的图形化引导
+  （说明 → 档位 → 预检 → 后台装 → 复检并写回配置；`content/admin-pages/env.js`）。
 
-  ⚠ 三条实测出来的坑（脚本与文档里都写了）：Windows 上 `mineru[full]` 装的是
-  **LMDeploy**（vLLM 只有 Linux），而它在本机起不来
+  三条实测出来的坑（脚本与文档里都写了）：Windows 上 `mineru[full]` 装的是
+  **LMDeploy**（vLLM 只有 Linux），而它在这类机器上起不来
   （`ValueError: high is out of bounds for int32`）→ 所以装 `mineru[torch]`，
   VLM 档走 **llama.cpp + Q8 GGUF**；**PyPI 的 Windows torch 是 CPU 版**，得从
   `download.pytorch.org` 换 CUDA 轮子；模型走 modelscope（hf-mirror 的 API 403）。
@@ -886,9 +867,9 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 | 失败 | **按篇回落**到 Zotero 缓存 / PyMuPDF，`source` 加 `+fallback` 后缀、MANIFEST 里列出来 | 95 篇里混着扫描件/加密/损坏文件，任何一篇失败都不该把整轮降级 |
 | 面板 | 新页「PDF 解析」：档位下拉 + 只补缺失 / 全库重解析 / 解析选中这篇 / 删产物 / 打开产物目录 + 状态表（来源 / 档位 / 页数 / 图 / 耗时 / 产物状态）+ 汇总（多少篇已是 MinerU、产物占多少 MB） | "重解析全库"是几十分钟的操作，看不见状态没人敢点 |
 | CLI | `tools/kb_admin.py mineru {status,parse,clear,missing,reparse}` | 面板按钮调的就是它；`missing`/`reparse` 内部**包一层 `convert.build(ns)`**，不写第二份正文抽取 |
-| **批量** | `mineru.parse_many(pairs, batch_size=20)`：把 PDF 以 `<KEY>.pdf` **硬链**到临时输入目录 → `parse <目录> -o <输出> --format zip` **跑一次** → 按 `<KEY>.zip` 映射回 key 落产物；日志走 `_run_stream`（实时，面板也看它） | ⚠ **每次 `mineru-kit parse` 都要重新加载模型**（实测约 2 分钟）：逐篇跑 93 篇 ≈ 3 小时；批量时模型只加载一次，实测 1.7 页/秒。`missing`/`reparse` 因此都是「先批量解析（写好产物与指纹），再让 convert 命中指纹、只做切片与向量」 |
+| **批量** | `mineru.parse_many(pairs, batch_size=20)`：把 PDF 以 `<KEY>.pdf` **硬链**到临时输入目录 → `parse <目录> -o <输出> --format zip` **跑一次** → 按 `<KEY>.zip` 映射回 key 落产物；日志走 `_run_stream`（实时，面板也看它） | **每次 `mineru-kit parse` 都要重新加载模型**（实测约 2 分钟）：逐篇跑 93 篇 ≈ 3 小时；批量时模型只加载一次，实测 1.7 页/秒。`missing`/`reparse` 因此都是「先批量解析（写好产物与指纹），再让 convert 命中指纹、只做切片与向量」 |
 
-⚠ 三个实测出来的坑（都写进代码注释了）：
+三个实测出来的坑（都写进代码注释了）：
 ① 全库解析前**先退出 Ollama** —— 抢同一块显存，同一篇 5 页论文模型阶段
 104.8 秒 → 8.9 秒（0.048 → 0.223 page/s）；
 ② `convert.build(args)` **只吃一个参数**、且内部要读
@@ -898,7 +879,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 
 #### B14. 右侧栏「知识库」：**自建一列**，独占条目窗格
 用户先说「把知识库里的 md 显示在右侧栏，方便和原文对照」，看过 `leike0813/zotero-agents`
-的 ACP Chat 后又拍板「仿他的做，要能独占一页」→ `zotero-plugin/src/20-kbview.js`
+的 ACP Chat 后又决定「仿他的做，要能独占一页」→ `zotero-plugin/src/20-kbview.js`
 + `zotero-plugin/content/kbview.{html,css,js}`。
 
 - **为什么不能再用 `ItemPaneManager.registerSection`**：Zotero 的 itemPane 是一列纵向堆叠，
@@ -906,11 +887,11 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   所以改成自己往 `#zotero-item-pane` 里插一列（`insertBefore(container, #zotero-view-item-sidenav)`），
   打开时把原生的 `#zotero-item-pane-content` 临时 `hidden`，视觉上独占。
 - **rail 按钮 append 到 `#zotero-view-item-sidenav`**（天然就在最下面），`class="btn"`
-  继承 Zotero 自己的 rail 样式。⚠ **绝不能给它 `data-pane`** —— `ItemPaneSidenav#render()`
+  继承 Zotero 自己的 rail 样式。**绝不能给它 `data-pane`** —— `ItemPaneSidenav#render()`
   会按"已注册的分区"隐藏 `.btn[data-pane]` 的**父元素**，而父元素就是 rail 本身。
 - **页面跑在 XUL `<browser type="content">` 里，地址是 `resource://zotero-kb/content/kbview.html`**：
-  插件在 startup 注册自己的 `resource://` 包（`KB_RES_KEY`）。⚠ 直接加载 `rootURI`（`jar:`）
-  的两难、以及 `maychangeremoteness` 让它变远程进程的坑，见 `接手.md` §5.9 ——
+  插件在 startup 注册自己的 `resource://` 包（`KB_RES_KEY`）。直接加载 `rootURI`（`jar:`）
+  的两难、以及 `maychangeremoteness` 让它变远程进程的坑，源码注释里有记录 ——
   Zotero 自己的 reader 也是 `createXULElement('browser')` + `resource://`。
 - **分工**：**宿主取数据**（IOUtils / kbDir / `kbLevels()` / `doc-edit` / `kbviewFixImgs`），
   **页面只渲染**（普通 HTML/CSS/JS，终于能正常写 CSS：`overflow-wrap:anywhere`、
@@ -919,7 +900,7 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - **图片走 `resource://zotero-kb-files/`**（→ 知识库目录），**不能走 `file://`**
   （resource:// 页面加载 file:// 图片会被安全策略拦掉，静默空白）。
 - **宽度归原生 splitter**（用户要"同宽窄能拉动"）：列只是 `flex:1` 撑满原生条目窗格，
-  我们**不改窗格 width**；`hidden`/`collapsed`/splitter state 关闭时逐项还原。
+  本插件**不改窗格 width**；`hidden`/`collapsed`/splitter state 关闭时逐项还原。
 - **条目切换**自己盯（自建列没有 `onItemChange` 回调）：打开期间每 400ms 比一次
   `kbviewCurrentItem()`（阅读器页签取附件→**父条目**，与 Zotero 的 item-details 一致）。
 - **取不到内部 id 就降级**（换 Zotero 版本）：退回 `registerSection` 只读模式并写状态文件，
@@ -927,22 +908,22 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - 「改这一页 / 恢复原版 / 导出草稿」仍是原逻辑，只换了传输层；`md2html()` 与
   `kbviewSplitMd()` 仍是纯函数（桩测试盯着）。
 
-**阅读器对照列的三处新增**（当时暂定 v1.12.0，实际随 **v1.11.0** 发布）（派发包《对照页-左右并排》v4：不做独立窗口、不做 `/doc-pdf`）：
+**阅读器对照列的三处新增**（随 **v1.11.0** 发布；不做独立窗口、不做 `/doc-pdf`）：
 
 - ① **阅读器那一列**（`kbviewRoots(win, "reader")` → `#zotero-context-pane` /
   `-inner` / `-sidenav`）：与条目窗格那一列**共用同一个页面**（`content/kbview.html`），
   只是宿主落点不同；打开时把 `#zotero-context-pane-inner` 临时 `hidden`。
   **左 PDF 右正文、同一个窗口**，零 PDF 渲染成本；关闭时逐项还原。
 - ② **一键对照**：`Zotero.Reader.registerEventListener("renderToolbar", …)` 往阅读器工具栏
-  塞一个「对照」按钮。⚠ 这个事件是**一次性**的（React 那个 `CustomSections` 只在 mount 时发一次），
-  而 Zotero 会**在启动时恢复会话里的阅读器** —— 那些阅读器早于我们注册监听，于是永远收不到事件。
+  塞一个「对照」按钮。这个事件是**一次性**的（React 那个 `CustomSections` 只在 mount 时发一次），
+  而 Zotero 会**在启动时恢复会话里的阅读器** —— 那些阅读器早于本插件注册监听，于是永远收不到事件。
   所以另有一条**直接注入**（`kbviewInjectToolbarButton`，往 `.custom-sections` 里 append）
   兜底，并在 Notifier 的 `tab` select/add 时补一次。
 - ③ **停在正在读的那一页（只在打开时定位一次）**：打开阅读器那一列时取当前页
   （`kbviewReaderPage` / `kbviewReaderInfo`）作**初始页**，页面滚过去并高亮。
   当前页优先取 `reader._state.primaryViewState.pageIndex`（实时），读不到才退回
   `items` 表的「最后阅读页」—— 后者会留着"上次退出时的页码"，先问它会拿到陈旧的页。
-  ⚠ **翻页不跟随**（发布版已去掉）：开发期间曾做过跟随（Notifier 的 `pageChange`
+  **翻页不跟随**（发布版已去掉）：开发期间曾做过跟随（Notifier 的 `pageChange`
   + 400ms 轮询重推），用户实测"没生效也不用要了，手动翻找并不麻烦"，于是功能与代码
   一起去掉 —— 那段周期性重渲染同时也是最可疑的"渲染抽搐"来源。函数
   `kbviewFanoutPage`（一次性把当前页推给已打开的列）按派发包要求**保留**，但没有
@@ -958,7 +939,7 @@ latex2mathml 转不了 `\begin{aligned}`（会转成一串 `&`）；而逐块编
 
 **收尾（用户看过界面之后的调整，v1.11.0）**：删掉了页面工具条上那个「对照页」按钮
 与 `kbviewOpenDoc`（阅读器那一列已经在同一个窗口里对着 PDF 看了，再跳浏览器多一步；
-**浏览器兜底页（`/doc` 等五个端点）已于 2026-10-12 删除**）；编辑框改成**跟着内容
+浏览器兜底页与它那五个端点已经没有）；编辑框改成**跟着内容
 自动长高**并跟预览等高；分页线由浅灰虚线改成**实线**；页工具条字号比正文略大；
 正文与预览里的图**限高**（150 / 110）——放图只为确认"对应原文哪张图"；MinerU 带出来的
 `<sub>`/`<sup>` 用**无属性白名单**精确回填（不开 `html:true`，见 `allowInlineTags`）。
@@ -1005,13 +986,13 @@ latex2mathml 转不了 `\begin{aligned}`（会转成一串 `&`）；而逐块编
   参考文献/致谢/附录**跳过**（占位"（略）"，不调模型）；超长节按段落再切；
   节数上限 24（超了合并相邻节）。每节带 `p.起–止` 页码 → 细看就按页取原文。
 - **按节指纹缓存**（`sha1(标题+正文[:2000])[:6]`）→ 改一章只重跑那一章；
-  ⚠ 缓存判据里带 `tried`：有些节本来就产出不了要点（正文过短/模型没给结果），
+  缓存判据里带 `tried`：有些节本来就产出不了要点（正文过短/模型没给结果），
   只认"有 summary"的话这些节会**每次构建都被重问**（实测第二次仍有 1 节被重问）。
 - **只读不生成**：`kbviews._render_outline` / MCP 资源 `zotero-kb://item/outline/<KEY>`
   只读现成产物；生成入口是 **Zotero 条目右键菜单（`POST /digest` → 后台 job，
   `digest.build(should_stop=…)` 可中断）**、面板按钮与 `python offline/digest.py <KEY>`
   —— 一篇学位论文要几分钟，不能挂在"随手点一下"的读路径上。
-- **批量入口在插件侧**（T0-9，2026-10-10）：条目右键 →「生成分节纲要」逐篇**串行**
+- **批量入口在插件侧**（T0-9）：条目右键 →「生成分节纲要」逐篇**串行**
   提交（单 GPU 不能并发打 Ollama）、失败不中断整批、已有纲要的直接跳过，结束时汇总
   「已生成 / 跳过（已有纲要）/ 失败」并立刻刷一次两列；进度与每篇结果落在
   `plugin-status.json` 的 `digestBusy` / `lastDigest` 里。
@@ -1019,7 +1000,7 @@ latex2mathml 转不了 `\begin{aligned}`（会转成一串 `&`）；而逐块编
 
 #### B18. 提示词注册表：话术只有一份，且用户改得动
 
-`offline/prompts.py`（2026-10-05 起 6 条：tag/summary/extract/metafill/
+`offline/prompts.py`（6 条：tag/summary/extract/metafill/
 draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/prompts.json`。要点：
 
 - **渲染用 `{占位符}` 替换，不用 `str.format`**：这些提示词里本来就含 JSON 示例
@@ -1039,7 +1020,7 @@ draft/chunks —— chat/para/propose 随窗格删了）+ 覆盖文件 `kb/promp
 - **"权重 = 经验的函数"**：任何改经验的动作都是"先回滚旧贡献 → 改行 → 应用新贡献"，
   而且**三步在同一个事务里**（分三次写的话中间失败会留下"权重回滚了、行没改"的
   不一致状态，且没有任何报错 —— 实测撞到过）。
-- **`history` 留档**：`-- 经验层：只追加，永不覆盖` 对**自动流程**仍然成立，
+- **`history` 只是追加记录**：`-- 经验层：只追加，永不覆盖` 对**自动流程**仍然成立，
   只对用户显式编辑开口子，且旧值 push 进 `history`。
 - **新增两个写入口**：面板「修改/增添经验」（口述 + 表单两条路，表单任何时候都能用）
   与 CLI `kb_admin.py add/edit`。面板里「选文献…」走 `PaperPicker` 的**多选模式**
@@ -1089,7 +1070,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 `offline/experience.py::item_refs()` 是"key 怎么显示"的**唯一实现**：正常显示
 「作者 年份 · 短标题 [KEY]」，被删 / 被并 / 不在库里各有各的写法。
 
-> ⚠ **还没做**：relink（把图谱 / 引文表里指向被并项的行走改指保留项）与权重合并。
+> **还没做**：relink（把图谱 / 引文表里指向被并项的行走改指保留项）与权重合并。
 > 它们要等分类树那批把 `kg_*` 表建出来；而且现在库里没有数据挂在被并 key 上，**暂时不痛**。
 
 #### A10. 路径从哪来：`.env` 覆盖层与"来源可见"
@@ -1107,7 +1088,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 - **每一档都会记下来源**：面板「运行环境」页逐项显示（含"被谁盖住了"和"填的值不存在"），
   所以"改了不生效"能一眼看出是谁在起作用。
 
-#### B20. 公式就地纠错：右键 → 定位 → 编辑 → 回写（2026-10-12）
+#### B20. 公式就地纠错：右键 → 定位 → 编辑 → 回写
 
 **问题**：MinerU 解析公式会出错（多行矩阵尤甚），而公式在正文里是 **LaTeX 文本** ——
 看着像原文，其实已经错了，肉眼对不核对。全库 1314 个块公式里有 3 个是**源 LaTeX 本身
@@ -1126,17 +1107,17 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 | 回写 | `POST /formula-apply` → `replace_nth_formula()` 换掉该页第 n 条 `$$…$$`（新 LaTeX 没写 `\\tag` 时沿用旧编号）→ 交给**既有唯一写路径** `POST /doc-edit`（修订层 + 重切重向量） |
 
 **为什么不做本地公式识别（OCR）模型**：做过一轮选型（393 条矩阵公式做基准，脚本与结果
-留在工作文件夹 `formula-bench/`（原中文目录名，2026-10-15 改 ASCII））：
+留在项目仓库外的选型工作目录（不进仓库）：
 
 | 候选 | 结论 |
 |---|---|
-| pix2tex（MIT） | ❌ 与 MinerU 的矩阵环境重叠 17%、结构自洽 27%（MinerU 85%），明显更差 |
+| pix2tex（MIT） | 与 MinerU 的矩阵环境重叠 17%、结构自洽 27%（MinerU 85%），明显更差 |
 | PP-FormulaNet_plus-M（PaddleOCR，Apache-2.0） | ⚪ 结构自洽 86% vs MinerU 85%、**救回 6 / 退化 4** —— 属"打平"而非"明显更强"；而且**偏导符号 ∂ 两个模型都认错** |
 
 按预登记判据（"没有候选明显强于 MinerU 自身输出就停手"）**不落地**，两个 spike 环境
 都已卸载。结论：**识别错只能靠人改，那就把"改"做到最省事**（右键 + 用户本来就会的编辑器）。
 
-**坐标口径（实测定死）**：MinerU 的 equation 块 **bbox 是归一化、左上原点**；Zotero 的
+**坐标换算（实测确定）**：MinerU 的 equation 块 **bbox 是归一化、左上原点**；Zotero 的
 `position`/标注 `rects` 是 **PDF 用户空间点、左下原点**（pageIndex 0 基）。
 换算 `ny = (2*my0 + mh - y)/mh`。不翻 Y 会裁到别的行、画面看着还"正常"
 （正文也是文字），只有比对原文才露馅。
@@ -1148,12 +1129,12 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 
 ```
 <项目目录的上级>\                       跨工作区可复用
-├── zotero-kb\                       ★ 知识库本体
+├── zotero-kb\                         知识库本体
 │   ├── offline\                     离线管道：读 Zotero、清洗、切片、向量
 │   │   ├── zreader.py               只读快照（含 WAL）
 │   │   ├── converter.py             清洗 / HTML→MD / 按页切块
 │   │   ├── convert.py               CLI 构建入口（收尾时生成分级视图）
-│   │   ├── kbviews.py              ★ 分级视图：LEVELS + 渲染 + 落盘（唯一事实来源）
+│   │   ├── kbviews.py                分级视图：LEVELS + 渲染 + 写文件（唯一事实来源）
 │   │   ├── judge.py                 本地小模型（Ollama）调用
 │   │   ├── learn.py                 从会话记录里挖经验
 │   │   ├── maintain.py              check / stats / backup / views / reindex-fst / vacuum
@@ -1161,35 +1142,34 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 │   ├── online\                      在线服务
 │   │   ├── searcher.py              混合检索 + 经验查询（唯一读库入口）
 │   │   ├── server.py                MCP 服务器（13 工具 + 4 资源）
-│   │   ├── engine.py                ★ 无端口引擎（管理面板用；stdio JSON-RPC，业务复用 localserver）
+│   │   ├── engine.py                  无端口引擎（管理面板用；stdio JSON-RPC，业务复用 localserver）
 │   │   ├── taskbox.py               文件信箱任务通道（<知识库>\mailbox\）
 │   │   ├── query.py                 中文分词 / 查询改写 / 覆盖率
-│   │   └── localserver.py           旧 HTTP 服务（:8765，**已停**；回退件 scripts\4-service.vbs）
+│   │   └── localserver.py           旧 HTTP 服务（:8765；已停用，需要时用 scripts\4-service.vbs 起回）
 │   ├── kb\                          数据（可迁移）
-│   │   ├── index.db                 ★ 单一事实来源
+│   │   ├── index.db                   单一事实来源
 │   │   ├── papers\*.md              每篇文献的 Markdown
 │   │   ├── fulltext\                按页正文
-│   │   ├── views\*.md               ★ 分级视图（摘要与要点 / 图注与表格 / 权重与经验）
+│   │   ├── views\*.md                 分级视图（摘要与要点 / 图注与表格 / 权重与经验）
 │   │   ├── MANIFEST.json            构建清单
 │   │   └── taxonomy-plan.json       分类重整方案
 │   ├── tools\                       管理工具（自检、升级、同步、打包、诊断…）
-│   │   ├── test_engine_rpc.py       ★ 无端口引擎的 RPC 自检（176 项）
+│   │   ├── test_engine_rpc.py         无端口引擎的 RPC 自检
 │   │   ├── paper_picker.py          选文献的弹窗（可拖宽、可排序；multi=True 多选）
-│   │   ├── build_bootstrap.py       ★ 把 src\*.js 拼成 bootstrap.js
-│   │   ├── check_kb_levels.py       ★ 盯分级清单在 Python 与 JS 两侧一致
-│   │   └── ~~gui.py + panels\~~     旧 Tk 面板（**2026-10-14 全删**，备份 kb\backup-20261015-0059-tk-panel\）
-│   ├── zotero-plugin\               ★ Zotero 插件源码 + 诊断脚本
-│   │   ├── src\*.js                 ★ 按功能拆的源码（26 个文件）
-│   │   ├── content\kbview.{html,css,js}  ★ 侧栏页面（条目窗格列 + 阅读器对照列共用）
-│   │   ├── content\admin.{html,js,css} + admin-pages\*.js  ★ 管理面板页面（一页一个文件，共 10 页）
-│   │   ├── content\vendor\           ★ 原样引入的第三方库（markdown-it / KaTeX，含 LICENSE 与字体）
-│   │   └── bootstrap.js             ★ 生成物（xpi 里装的是它，别直接改）
+│   │   ├── build_bootstrap.py         把 src\*.js 拼成 bootstrap.js
+│   │   └── check_kb_levels.py         盯分级清单在 Python 与 JS 两侧一致
+│   ├── zotero-plugin\                 Zotero 插件源码 + 诊断脚本
+│   │   ├── src\*.js                   按功能拆的源码（26 个文件）
+│   │   ├── content\kbview.{html,css,js}    侧栏页面（条目窗格列 + 阅读器对照列共用）
+│   │   ├── content\admin.{html,js,css} + admin-pages\*.js    管理面板页面（一页一个文件，共 10 页）
+│   │   ├── content\vendor\             原样引入的第三方库（markdown-it / KaTeX，含 LICENSE 与字体）
+│   │   └── bootstrap.js               生成物（xpi 里装的是它，别直接改）
 │   ├── tests\                       本机跑的测试（要真实知识库）
 │   ├── bundle\                      接入 DSH 的 MCP bundle
 │   ├── skills\                      给 DSH 的技能（使用规则 + 插件开发经验）
 │   └── scripts\                     双击用的批处理 / VBS
 │
-└── zotero-bridge\                   ★ DSH 侧收件箱（独立插件）
+└── zotero-bridge\                     DSH 侧收件箱（独立插件）
     └── bundle\                      package.json + cordis.patch.yml + index.js
 
 ~\.dsh\                              平台管理
@@ -1240,7 +1220,7 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 | 7 | 跑 `tools\test_task_bridge.py` 等测试 | 各测试退出码 0 |
 | 8 | （可选）装 DSH 侧收件箱 bundle | 往信箱丢个 json，看 results 出结果 |
 
-**易错点（本机都踩过）**：
+**常见错误**：
 - DSH 的 patch 层是**覆盖**语义，新增条目必须写在 `- insert:` 里
 - 插件 manifest **必须**有 `update_url`（否则装不上，报错却只说"可能不兼容"）
 - Zotero 插件更新后**必须完全重启 Zotero**（不会重跑 `startup`）
@@ -1269,27 +1249,25 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 
 | 部件 | 状态 | 证据 |
 |---|---|---|
-| 知识库 | ✅ 94 条目 / 16426 切片（父 2537 + 子 13889 = 逐段 13795 + 全篇 94）/ 11236 向量 / 经验 11 条 | `offline/maintain.py check` |
-| 正文来源 | ✅ 94/94 篇都有 MinerU 产物；93 篇正文走 `mineru-basic`，1 篇 PDF 损坏按篇回落 `zotero-cache+fallback` | `items.fulltext_src` |
-| 图片与表格 | ✅ 97 篇正文含图片引用（2169 处）；管道表渲染成 `<table>`；页尾不再附第二份图注 | `pages.json` / 侧边栏真机 5 篇 |
-| 正文修订层 | ✅ 按页覆盖 + 改完立即重切重向量 + 「基于旧解析」提示 + 草稿导入导出 | 真机：改一页 → 15s 内 fulltext 与 chunks 变；重跑全量后修订仍在、`structured_content.json` sha256 不变 |
-| 父子切块 | ✅ 父块（节/章）不进 FTS/向量；子块 300 字带 `section_path`；命中子块返回父块上下文 | `maintain.py check`（FTS 与应索引子块一一对应）+ 归档→还原 `parent_id` 无悬空 |
-| 索引层 L2 清洗 | ✅ 切片/向量只吃清洗后的正文（去引文上标 / `[n]` 编号 / 页首版权行），L1 不改 | `tests/test_l2_clean.py` |
-| 摘要深度分层 | ✅ `chunks.depth`（逐段 / 逐节 / 全篇概要）；全篇概要块**默认参与检索**；留出集评估无下降 | `tests/test_depth.py`、`online/searcher.py` |
-| 混合检索 | ✅ 中文短语召回 + 向量 + RRF + 权重上浮 + small-to-big 上下文 | 关键词与语义两路实测均可用 |
-| MCP 接入 | ✅ **13 工具 + 4 资源** | AI 里 `kb_search` 等可直接调用 |
-| Zotero 插件 | ✅ 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** | 真机验收（v1.8.0 / v1.9.0） |
-| 「知识库」侧栏 | ✅ **自建一列**独占条目窗格：rail 最下面一个图标 → 开/关；正文/图片/宽表格都正常；宽度跟原生一样可拖；多窗口各一份、禁用后 DOM 干净 | 真机验收 9 项（v1.10.0，见 `接手.md` §5.9） |
-| 阅读器对照列 | ✅ 阅读器右侧同一份页面：**左 PDF 右正文、同一个窗口**；工具栏「对照」按钮一键开/关；**打开就停在正在读的那一页**（翻页**不**跟随，v1.11.0 去掉）；公式 **KaTeX** 排版、上下标真排版；**按块编辑**（左框右预览、改动块标黄、整页源码开关）；**每页工具条吸顶**；关阅读器自动收起并还原原生窗格 | 真机验收 7 项（v1.11.0 建并去跟随 + 上下标，见 `接手.md` §5.11） |
-| 公式就地纠错 | ✅ 阅读器里**右键公式**直接改（不用先画标注）：原文裁剪图对照 + 可编辑 LaTeX + KaTeX 实时预览 + 多条可挑；**MathType 剪贴板往返**（未装只置灰）；应用只改这一条并立即重切重向量 | 真机验收（v1.12.0）；坐标与匹配见 `tests/test_formula.py` 的真库往返（12 条定位正确率 ≥ 90%） |
-| 对照页（浏览器兜底页） | ❌ **2026-10-12 已删除**：`online/docpage.{py,html}` 与 `/doc`、`/doc-text`、`/doc-raw`、`/doc-page.png`、`/kb-image` 五个 GET 端点（只保留 `POST /doc-edit` 修订层） | `online/localserver.py --test` 的 `[5e]` 404 自检 |
-| 条目生命周期 | ✅ 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `trash_acceptance.py` 真机六步 + `tests/test_sections.py` |
-| 本地服务 | ✅ 115 项自检 | `online/localserver.py --test` |
-| 测试 | ✅ 40 个测试文件全过（0 失败） | `tools/run_tests.py`（工作文件夹） |
-| DSH 侧接入 | ✅ 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
-| 提示词注册表 | ✅ 话术可看可改可还原 | `tools/panels/tab_prompts.py（已退役 2026-10-14）` |
-| ~~内容窗格「本地模型」~~ | **已删除**：没用而且 bug 多；`check_plugin.py` 有反向检查盯着它别回来 | — |
-| ~~逐段检查（可中断可续跑）~~ | **已删除**（连三张表一起） | — |
+| 知识库 | 94 条目 / 16426 切片（父 2537 + 子 13889 = 逐段 13795 + 全篇 94）/ 11236 向量 / 经验 11 条 | `offline/maintain.py check` |
+| 正文来源 | 94/94 篇都有 MinerU 产物；93 篇正文走 `mineru-basic`，1 篇 PDF 损坏按篇回落 `zotero-cache+fallback` | `items.fulltext_src` |
+| 图片与表格 | 97 篇正文含图片引用（2169 处）；管道表渲染成 `<table>`；页尾不再附第二份图注 | `pages.json` / 侧边栏真机 5 篇 |
+| 正文修订层 | 按页覆盖 + 改完立即重切重向量 + 「基于旧解析」提示 + 草稿导入导出 | 真机：改一页 → 15s 内 fulltext 与 chunks 变；重跑全量后修订仍在、`structured_content.json` sha256 不变 |
+| 父子切块 | 父块（节/章）不进 FTS/向量；子块 300 字带 `section_path`；命中子块返回父块上下文 | `maintain.py check`（FTS 与应索引子块一一对应）+ 归档→还原 `parent_id` 无悬空 |
+| 索引层 L2 清洗 | 切片/向量只吃清洗后的正文（去引文上标 / `[n]` 编号 / 页首版权行），L1 不改 | `tests/test_l2_clean.py` |
+| 摘要深度分层 | `chunks.depth`（逐段 / 逐节 / 全篇概要）；全篇概要块**默认参与检索**；留出集评估无下降 | `tests/test_depth.py`、`online/searcher.py` |
+| 混合检索 | 中文短语召回 + 向量 + RRF + 权重上浮 + small-to-big 上下文 | 关键词与语义两路实测均可用 |
+| MCP 接入 | **13 工具 + 4 资源** | AI 里 `kb_search` 等可直接调用 |
+| Zotero 插件 | 自动入库 + 分类建议 + 元数据补全 + **生成纲要** + **列表两列** | 真机验收（v1.8.0 / v1.9.0） |
+| 「知识库」侧栏 | **自建一列**独占条目窗格：rail 最下面一个图标 → 开/关；正文/图片/宽表格都正常；宽度跟原生一样可拖；多窗口各一份、禁用后 DOM 干净 | 真机验收（v1.10.0） |
+| 阅读器对照列 | 阅读器右侧同一份页面：**左 PDF 右正文、同一个窗口**；工具栏「对照」按钮一键开/关；**打开就停在正在读的那一页**（翻页**不**跟随）；公式 **KaTeX** 排版、上下标真排版；**按块编辑**（左框右预览、改动块标黄、整页源码开关）；**每页工具条吸顶**；关阅读器自动收起并还原原生窗格 | 真机验收（v1.11.0） |
+| 公式就地纠错 | 阅读器里**右键公式**直接改（不用先画标注）：原文裁剪图对照 + 可编辑 LaTeX + KaTeX 实时预览 + 多条可挑；**MathType 剪贴板往返**（未装只置灰）；应用只改这一条并立即重切重向量 | 真机验收（v1.12.0）；坐标与匹配见 `tests/test_formula.py` 的真库往返（12 条定位正确率 ≥ 90%） |
+| 管理面板 | Zotero 内一个窗口，10 页；与引擎之间**无端口、无 token、不常驻** | 真机走查该版 10 页全部可用 |
+| 条目生命周期 | 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `tests/test_trash*.py` 与真机六步走查 |
+| 本地服务（旧通道） | 已停用；`--test` 115 项仍全过（自带进程内服务） | `online/localserver.py --test` |
+| 测试 | `tests/` 全部用例通过（MinerU 全量用例按需另跑，见 `docs/DEVELOPMENT.md`） | `tools/run_tests.py` |
+| DSH 侧接入 | 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
+| 提示词注册表 | 话术可看可改可还原 | 管理面板「提示词」页（`content/admin-pages/prompts.js`） |
 
 **13 个 MCP 工具**：`kb_search` / `kb_item` / `kb_fulltext` / `kb_figures` /
 `kb_experience_add` / `kb_experience_query` / `kb_weight_set` / `kb_reindex` /
@@ -1320,4 +1298,4 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 所以系统里最该被认真维护的不是代码，而是 `experience` 表 ——
 每做一次尝试就记一条，检索时它就会把"验证过有效"的文献往上推。
 这也是为什么权重公式里 `ineffective` 也有正分：
-**知道哪条路不通，本身就是在省时间。**
+知道哪条路不通，本身就是在省时间。

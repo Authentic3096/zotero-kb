@@ -6,7 +6,7 @@
  * 独立窗口那一层 —— 直接把文献列表放在页面上，选中哪一行就是对哪一篇动作，
  * 少一次弹窗往返（用户要「简约干净」）。
  *
- * 依赖的引擎方法（契约 docs/ADMIN-API-W2B.md，2026-10-13 冻结）：
+ * 依赖的引擎方法（契约见开发说明，2026-10-13 冻结）：
  *   GET  /papers           → {rows:[{key,title,year,first_author,collections[],
  *                                     fulltext_chars,in_kb}], total}
  *   POST /summarize        {key} → {key, summary, ms}                      120s

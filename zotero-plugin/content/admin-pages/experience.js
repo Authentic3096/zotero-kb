@@ -8,7 +8,7 @@
  *   · 一个列表 + 一个详情（Tk 版早年那两个"显示经验的窗口"就合并过一次了）；
  *   · 不做拖拽调列宽（Tk 版有，网页这版按用户要求不做）。
  *
- * ## 依赖的引擎方法（契约 docs/ADMIN-API-W2.md，2026-10-13 冻结）
+ * ## 依赖的引擎方法（契约见开发说明，2026-10-13 冻结）
  *
  *   GET  /experience?mode=all|query|checkup|pending&q=&limit=
  *        → {rows:[{id,date,effect,source,refs:[{key,label}],question,summary,checkup?}],
@@ -129,7 +129,7 @@
    * 多个 = 并集；与搜索框叠加（交集）。占位行不受它影响（见 filtered 里的说明）。
    *
    * 返回 Promise<{keys:[…], names:{key:label}} | null>，null = 取消（一个都不动）。
-   * 取数只走 ctx.get("/papers")（契约 docs/ADMIN-API-W2B.md），不自己开通道。
+   * 取数只走 ctx.get("/papers")（契约见开发说明），不自己开通道。
    */
   function pickPapers(ctx, selected) {
     const el = ctx.el;

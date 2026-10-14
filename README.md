@@ -10,9 +10,8 @@
 
 第 ⑤ 步的经验会回流到第 ④ 步：下次检索时「验证过有效」的文献自动排在前面。
 
-> **当前版本 2.0.0（架构换代，2026-10-15）**：管理面板搬进 Zotero、无端口引擎、
-> 8765 常驻服务下线、旧 Tk 面板退役。**升级前先读**
-> [docs/RELEASE-2.0.0.md](docs/RELEASE-2.0.0.md)（含已知限制与**回退路径**）。
+**当前版本 2.0.0。** 这一版把管理面板搬进了 Zotero、并去掉了常驻的本地 HTTP 服务
+（**不再监听任何端口**）。升级前请读 [发布说明](docs/RELEASE-2.0.0.md)。
 
 ## 能做什么
 
@@ -60,27 +59,25 @@
 
 **管理面板**集中管知识库：每个文件都写清「是什么、占多大、能不能删」。
 
+- 入口：Zotero **工具 →「知识库管理…」**（主工具栏的「打开文献知识库管理面板」按钮、
+  条目右键的「打开知识库管理面板」也指向同一个面板）。
+- 页签（10 个）：知识库结构 · 经验库 · 分类建议 · 分节纲要 · 运行环境 · PDF 解析 ·
+  损坏查询 · 元数据 · 高级 · 提示词
 - 顶部状态栏：知识库位置、条目/切片/向量/经验条数、正文总字数、用的嵌入模型
-- 页签（10 个）：知识库结构 · 经验库 · 分类建议 · 分节纲要 · 运行环境 · PDF 解析 · 损坏查询 · 元数据 · 高级 · 提示词
 - 底部：实时运行日志（长任务在后台跑，进度打在这里）
-- 核心按钮：手动更新 · 全部重建 · 环境自检 · 备份 · 打开知识库 · **对账**（知识库 vs Zotero 的差异报告）· 文献管理器中查看
+- 核心按钮：手动更新 · 全部重建 · 环境自检 · 备份 · 打开知识库 · **对账**（知识库 vs Zotero
+  的差异报告）· 文献管理器中查看
 
-**它只有一个入口（2026-10-14 起）**：
-
-- **Zotero 工具菜单 →「知识库管理…」**（工具栏按钮与条目右键那两个入口也指向同一个面板）：
-  Zotero 自己的窗口（不是另开 Python 进程），页面从 `resource://zotero-kb/content/admin.html`
-  加载。它与知识库之间**没有监听端口、没有常驻服务**：插件按需拉起一个 Python 引擎子进程，
-  用父子进程的 stdin/stdout 说话，**随 Zotero 退出**。10 页全部可用；详见
-  [docs/ADMIN-PANEL.md](docs/ADMIN-PANEL.md)。
-- ~~旧的 Tk 面板 / `scripts\0-panel.vbs` / 常驻 `127.0.0.1:8765` 服务~~：**2026-10-14 已退役/已停**。
-  两套界面当年管的是**同一批后端逻辑**（都复用 `offline\*.py` 与 `localserver` 里的实现），
-  所以换代没有重写业务；8765 的回退件仍是 `scripts\4-service.vbs`。
+面板是 **Zotero 自己的一个窗口**（不是另开 Python 进程），页面从
+`resource://zotero-kb/content/admin.html` 加载。它与知识库之间**没有监听端口、没有 token、
+没有常驻服务**：插件按需拉起一个 Python 引擎子进程，用父子进程的 stdin/stdout 说话，
+**随 Zotero 退出**。
 
 **Zotero 插件设置**（Zotero → 编辑 → 设置 → 文献知识库）分两组：知识库位置与自动处理
 （位置、可选的跨机同步方式、分类列表、新文献自动处理、从 DSH 导入、测试连接）；
-本地模型与运行环境（本地服务地址、访问 token、用哪个本地模型、项目目录 / Python 解释器 /
-Ollama 程序，后三项留空则自动探测）。运行环境那三项在面板「运行环境」页也能改，
-写的是同一份配置。
+本地模型与运行环境（用哪个本地模型、项目目录 / Python 解释器 / Ollama 程序，后三项留空则自动探测）。
+运行环境那三项在面板「运行环境」页也能改，写的是同一份配置。
+（设置里的「本地服务地址 / 访问 token」是旧 HTTP 通道留下的配置项，平时不用管。）
 
 ## 为什么比「把 PDF 丢给 AI」好用
 
@@ -102,14 +99,14 @@ Ollama 程序，后三项留空则自动探测）。运行环境那三项在面�
 ## 快速开始
 
 ```powershell
-# 1. 拿到项目（不想装 git 就去 Releases 下 Source code zip 解压）
-git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
+# 1. 拿到项目（不想装 git 就去 Releases 下 Source code zip 解压到一个目录）
+git clone https://github.com/Authentic3096/zotero-kb.git <你的目录>\zotero-kb
 
 # 2. 一键装 Python 环境（本机没装 Python 也行，它会自己下载一个）
-D:\zotero-kb\scripts\install-env.cmd
+<你的目录>\zotero-kb\scripts\install-env.cmd
 
 # 3. 建知识库
-D:\zotero-kb\scripts\1-convert.cmd
+<你的目录>\zotero-kb\scripts\1-convert.cmd
 
 # 4. 装 Zotero 插件：到 Releases 下载 zotero-kb-<版本>.xpi →
 #    Zotero → 工具 → 插件 → 右上角齿轮 → Install Plugin From File… → 完全退出 Zotero 再打开
@@ -131,13 +128,8 @@ MathType 也可选（用于公式的可视化排版；不装照样能手改 LaTe
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 架构与关键实现：三块怎么分工、四条链路、正文从哪来、检索怎么算分、插件机制 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 设计与用法详解：各功能怎么用、为什么这么做、边界与已知限制 |
 | [docs/知识库层级设计.md](docs/知识库层级设计.md) | 知识库的层级结构：索引 / 原始 / 正文 / 档案 / 视图 / **归档**各是什么、谁生成、能不能删 |
-| [docs/MODEL-SELECTION.md](docs/MODEL-SELECTION.md) | 模型目录与选择的设计依据：三层兜底（静态内置目录 / 动态探测 / 手填自定义）与各家实做对照 |
-| [docs/ADMIN-PANEL.md](docs/ADMIN-PANEL.md) | **管理面板（无端口版）**：入口、三层架构、10 页、协议与契约、页面实现约定、**页面行为口径**、开发回路、待办 |
-| [docs/DEV-PREVIEW-HARNESS.md](docs/DEV-PREVIEW-HARNESS.md) | 开发套路：**界面预览桩**（真页面 + 假宿主半）怎么搭、怎么人眼+机器验收、有哪些坑 |
-| [docs/ADMIN-PORT-PLAN.md](docs/ADMIN-PORT-PLAN.md) | 范围 B 施工契约：三条迁移线、W1–W4 分波、不变量、风险、**§10 线 3 进度与判据** |
-| [docs/ADMIN-API-W2.md](docs/ADMIN-API-W2.md) | 管理面板 ↔ 引擎的接口契约（批次 A）+ 实际口径 + 页面硬约束 |
-| [docs/ADMIN-API-W2B.md](docs/ADMIN-API-W2B.md) | 同上（批次 B：分类建议 / PDF 解析 / 损坏查询 / 高级） |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 给要改这个项目的人：目录结构、构建与测试、发版流程、排错入口 |
+| [docs/RELEASE-2.0.0.md](docs/RELEASE-2.0.0.md) | 2.0.0 的对外说明：这一版换掉了什么、已知限制 |
 
 ## 许可证
 

@@ -147,7 +147,7 @@ Object.assign(ZoteroKB, {
    * schemas.resolve_* 就能读到，面板启动时自然用对。
    *
    * ⚠ **W3 线2.5（2026-10-13）：这一处故意没迁到引擎桥，因为入参/回包形状都对不上**
-   *   （真机取证见 docs\ADMIN-PORT-PLAN.md §10.3 第 1 行）：
+   *   （真机取证见开发说明）：
    *     · 老 HTTP `POST /env-config` 收的是**嵌套** `{env:{project_root,…}}`，
    *       回包带 **`report`**；
    *     · 引擎 `env.save` 收的是**扁平**键（`project_root/python/ollama/mineru/figures`），

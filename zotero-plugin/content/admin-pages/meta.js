@@ -5,7 +5,7 @@
  * 检查类型与标题污染 / 看某篇的建议明细）。本页覆盖同样的功能，布局按"简约"重做：
  * 顶上一行按钮、一行统计、一张结果表，点某一行看明细（不再另放一个"看明细"按钮）。
  *
- * 数据来源照 docs/ADMIN-API-W2.md 的批次 A：
+ * 数据来源照开发说明的批次 A：
  *   POST /metafill-scan        {use_model?,limit?}
  *        → meta.fillScan  → {rows:[{key,title,high,low,skipped,notes}], summary}
  *   POST /metafill-scan-cancel {}

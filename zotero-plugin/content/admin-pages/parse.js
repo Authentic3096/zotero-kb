@@ -11,7 +11,7 @@
  *   · **没选中时两个按钮置灰**，原因写进 `title`（照 outline.js::updateActions 的写法）；
  *   · `全库重解析` / `只补缺失` / `刷新状态` 是页面级动作，与有没有选中无关，原位不动。
  *
- * 数据来源照 docs/ADMIN-API-W2B.md 的 PDF 解析那一组：
+ * 数据来源照开发说明的 PDF 解析那一组：
  *   GET  /mineru-status  → mineru.status → {probe:{ok,exe,why},
  *        rows:[{key,title,tier,fulltext_src,pages,figures,elapsed,
  *               artifacts_size,built_at}], total}

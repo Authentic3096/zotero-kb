@@ -3,17 +3,17 @@
 把新加入的文献**自动送进本地知识库**（切片 + 索引 + 向量），并用**本地模型**
 推荐分类与标签，弹窗让你**一键应用**。
 
-> 本机已升级到 Zotero 10.0.5；插件声明 `7.0 ~ 11.*`，9 和 10 都能装。
+> 插件声明兼容 `7.0 ~ 11.*`；Zotero 9 与 10 都装得上。
 
 ---
 
 ## 源码怎么组织（改代码前先看这段）
 
 ```
-zotero-plugin/src/00-core.js … 99-bootstrap.js    ← ★ 源码，改这里
+zotero-plugin/src/00-core.js … 99-bootstrap.js    ← 源码，改这里
         │  python tools/build_bootstrap.py
         ▼
-zotero-plugin/bootstrap.js                        ← ★ 生成物，xpi 里装的是它
+zotero-plugin/bootstrap.js                        ← 生成物，xpi 里装的是它
 ```
 
 Zotero 的 bootstrapped extension **只加载 xpi 根目录下的 `bootstrap.js` 一个
@@ -45,11 +45,11 @@ Zotero 的兜底链是 精确 → 同语种 → en-US → 第一个可用的）�
 "bootstrap.js 里用到的每个 l10nID 都在 ftl 里有定义"，并断言 `locale/**` 真的进了 xpi
 （打包器原来是"只收根目录的文件"，会把整个 `locale/` 目录漏掉）。
 
-⚠ 插件里"字段名写错 / 名字写错"在 Zotero 里**没有任何报错**，只表现为
+插件里"字段名写错 / 名字写错"在 Zotero 里**没有任何报错**，只表现为
 "按钮点了没反应"。`tools/verify_bootstrap.js`（Node 的 vm + 桩 `Zotero` 跑真机
 `bootstrap.js`）专门盯这类问题，已接进 `check_plugin.py`，不需要重启 Zotero。
 
-⚠ **改完 src 必须跑 `python tools/build_bootstrap.py`**，否则 xpi 里装的还是旧
+**改完 src 必须跑 `python tools/build_bootstrap.py`**，否则 xpi 里装的还是旧
 代码（插件表现像没改，而 Zotero 的报错没有任何线索）。忘了也不会出事：
 `tools/pack_plugin.py` 打包前会校验并**拒绝出包**，CI 里也有一条会红的检查。
 
@@ -63,9 +63,9 @@ Zotero 的兜底链是 精确 → 同语种 → en-US → 第一个可用的）�
 
 ## 安装（两步）
 
-> ⚠ **2026-10-14 起不需要先启动任何服务**：常驻的 `127.0.0.1:8765` 已停用，
-> 管理面板走"插件按需拉起的引擎子进程（stdio JSON-RPC）"、跨程序任务走
-> `<知识库>\mailbox\` 文件信箱。下面第 1 步只在你要**复现旧 HTTP 通道**时才做。
+> **不需要先启动任何服务**：管理面板走"插件按需拉起的引擎子进程（stdio JSON-RPC）"、
+> 跨程序任务走 `<知识库>\mailbox\` 文件信箱，**没有常驻进程、也不监听端口**。
+> 下面第 0 步是旧 HTTP 通道的备用起法，平时用不到。
 
 ### 0.（可选，旧通道）启动本地 HTTP 服务
 
@@ -79,7 +79,7 @@ Zotero → **工具 → 插件** → 右上角**齿轮 → Install Plugin From F
 → 选 `zotero-plugin\zotero-kb-<版本>.xpi`（当前 **2.0.0**；跑
 `python tools\check_plugin.py` 会现打一个，文件名跟 `manifest.json` 的版本走）
 
-> ⚠ 本机实测：**往 profile 的 `extensions\` 目录丢 xpi 是无效的**
+> 实测：**往 profile 的 `extensions\` 目录丢 xpi 是无效的**
 > （Zotero 9/10 都不再扫描那里），必须走上面这个入口。
 > 装完不用重启。
 
@@ -89,7 +89,7 @@ Zotero → **编辑 → 设置 → 文献知识库**：
 
 | 项 | 填什么 |
 |---|---|
-| 本地服务地址 | `http://127.0.0.1:8765`（默认已填）—— **旧 HTTP 通道的留档**：2026-10-14 起常驻服务已停，这一项只在你要复现旧通道（先跑 `scripts\4-service.vbs`）时才有用 |
+| 本地服务地址 | `http://127.0.0.1:8765`（默认已填）—— 旧 HTTP 通道留下的配置项，这一项只在你要用旧通道（先跑 `scripts\4-service.vbs`）时才有用 |
 | 访问 token | 通常**不用填** —— 插件探活时会自动从服务端取回并保存（同上，仅旧通道） |
 | **模型来源** | `Ollama（本机）` 或 `OpenAI 兼容 API`，见下一节 |
 | 分类列表 | 留空 = 用知识库里现有的分类 |

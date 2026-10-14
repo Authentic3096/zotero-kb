@@ -8,7 +8,7 @@
  *   · **没选中时按钮置灰**，原因写在 `title` 里（照 experience.js::updateActions 的写法）。
  * 页面上再没有原生 `<select>`：状态筛选是 btn-group，分类筛选是自绘下拉（见 admin.js）。
  *
- * 数据来源照 docs/ADMIN-API-W2.md / W2B（页面只说 HTTP 语义，路径由宿主半
+ * 数据来源见开发说明（批次 A / B）（页面只说 HTTP 语义，路径由宿主半
  * src/23-admin.js 的映射表翻成引擎方法）：
  *   GET  /outline-list?filter=all|missing|orphan[&collection=<分类名>]
  *        → outline.list → {rows:[{key,title,year,sections,has_file,orphan,built_at,
