@@ -204,8 +204,8 @@ Object.assign(ZoteroKB, {
       try {
         res = await this.request("GET", "/weights");
         if (!res || !res.weights) {
-          // 拿不到（服务刚重启、token 变了、服务刚被拉起还没就绪）→
-          // 补问一次 /health，它会顺手把新 token 同步进 pref，再试一次。
+          // 拿不到（引擎刚起、还没就绪）→ 补问一次 healthCheck（问引擎桥的 kb.health），
+          // 再试一次。
           await this.healthCheck();
           res = await this.request("GET", "/weights");
         }

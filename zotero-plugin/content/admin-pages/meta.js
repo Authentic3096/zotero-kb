@@ -287,7 +287,7 @@
           ctx.log("[元数据] " + line, "ok");
         } catch (e) {
           setNote(label + "：失败 —— " + (e && e.message ? e.message : e)
-                  + "（引擎/本地服务没起来时也会这样）", "err");
+                  + "（引擎没起来时也会这样）", "err");
           ctx.log("[元数据] " + label + " 失败：" + e, "err");
         } finally {
           setBusy(false);

@@ -152,12 +152,10 @@ Object.assign(ZoteroKB, {
     }
     try {
       const url = "http://127.0.0.1:8765/shutdown";
-      const tok = self.getPref(self.PREFS.token, "");
       const req = new XMLHttpRequest();
       req.open("POST", url, false);         // false = 同步，关闭流程里必须这样
       req.setRequestHeader("Content-Type", "application/json");
-      if (tok) req.setRequestHeader("X-KB-Token", tok);
-      req.send(JSON.stringify({ token: tok }));
+      req.send("{}");
       Zotero.debug("[zotero-kb] 已请求本地服务退出，HTTP " + req.status);
     } catch (e) {
       Zotero.debug("[zotero-kb] 请求服务退出失败：" + e);

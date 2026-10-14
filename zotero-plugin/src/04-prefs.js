@@ -10,8 +10,6 @@ Object.assign(ZoteroKB, {
     // 默认值可以在这里设，也可以走 prefs.js 前缀注册。
     // 这里用 Zotero.Prefs.set 兜底（只在未设置时写），避免依赖 defaults 文件。
     const defaults = {};
-    defaults[this.PREFS.server] = "http://127.0.0.1:8765";
-    defaults[this.PREFS.token] = "";
     defaults[this.PREFS.model] = "";
     defaults[this.PREFS.autoProcess] = true;
     defaults[this.PREFS.categories] = "";   // 空=用知识库现有的
@@ -41,17 +39,4 @@ Object.assign(ZoteroKB, {
     }
   },
 
-
-  registerPrefObserver: function () {
-    const self = this;
-    this.prefObserver = {
-      observe: function (_subject, _topic, pref) {
-        if (pref === self.PREFS.server || pref === self.PREFS.token) {
-          self.healthCheck().catch(() => {});
-        }
-      },
-    };
-    Zotero.Prefs.registerObserver(this.PREFS.server, this.prefObserver);
-    Zotero.Prefs.registerObserver(this.PREFS.token, this.prefObserver);
-  },
 });

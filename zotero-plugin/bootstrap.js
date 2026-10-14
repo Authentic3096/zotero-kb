@@ -120,7 +120,6 @@ var ZoteroKB = {
       // 才能在父进程里跑、宿主才拿得到 contentWindow（真机实测，见 KB_RES_KEY）。
       step("registerKbResource", () => self.registerKbResource());
       step("registerPrefs", () => self.registerPrefs());
-      step("registerPrefObserver", () => self.registerPrefObserver());
       step("registerPrefPane", () => self.registerPrefPane());
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
@@ -417,8 +416,6 @@ Object.assign(ZoteroKB, {
   // ================================================================ 首选项
 
   PREFS: {
-    server: "zotero-kb.server",
-    token: "zotero-kb.token",
     model: "zotero-kb.model",
     autoProcess: "zotero-kb.autoProcess",
     categories: "zotero-kb.categories",
@@ -1031,12 +1028,10 @@ Object.assign(ZoteroKB, {
     }
     try {
       const url = "http://127.0.0.1:8765/shutdown";
-      const tok = self.getPref(self.PREFS.token, "");
       const req = new XMLHttpRequest();
       req.open("POST", url, false);         // false = 同步，关闭流程里必须这样
       req.setRequestHeader("Content-Type", "application/json");
-      if (tok) req.setRequestHeader("X-KB-Token", tok);
-      req.send(JSON.stringify({ token: tok }));
+      req.send("{}");
       Zotero.debug("[zotero-kb] 已请求本地服务退出，HTTP " + req.status);
     } catch (e) {
       Zotero.debug("[zotero-kb] 请求服务退出失败：" + e);
@@ -1208,8 +1203,6 @@ Object.assign(ZoteroKB, {
     // 默认值可以在这里设，也可以走 prefs.js 前缀注册。
     // 这里用 Zotero.Prefs.set 兜底（只在未设置时写），避免依赖 defaults 文件。
     const defaults = {};
-    defaults[this.PREFS.server] = "http://127.0.0.1:8765";
-    defaults[this.PREFS.token] = "";
     defaults[this.PREFS.model] = "";
     defaults[this.PREFS.autoProcess] = true;
     defaults[this.PREFS.categories] = "";   // 空=用知识库现有的
@@ -1239,19 +1232,6 @@ Object.assign(ZoteroKB, {
     }
   },
 
-
-  registerPrefObserver: function () {
-    const self = this;
-    this.prefObserver = {
-      observe: function (_subject, _topic, pref) {
-        if (pref === self.PREFS.server || pref === self.PREFS.token) {
-          self.healthCheck().catch(() => {});
-        }
-      },
-    };
-    Zotero.Prefs.registerObserver(this.PREFS.server, this.prefObserver);
-    Zotero.Prefs.registerObserver(this.PREFS.token, this.prefObserver);
-  },
 });
 
 // ===== src/05-server.js =====
@@ -1265,14 +1245,20 @@ Object.assign(ZoteroKB, {
 
   // ================================================================ 与服务通信
 
+  /**
+   * 老的 HTTP 通道地址（**固定值**，不再有首选项）。
+   *
+   * 8765 服务已退役、插件平时不碰它；这个地址只剩一个用途：万一有人按回退说明
+   * （`scripts\4-service.vbs`）手动把它起起来，`kbItemInfo` / `kbJobGet` 的兜底
+   * 分支还认得它。所以这里写死字面量，**不再从 pref 读**（那个 pref 已删）。
+   */
   baseURL: function () {
-    return this.getPref(this.PREFS.server, "http://127.0.0.1:8765").replace(/\/+$/, "");
+    return "http://127.0.0.1:8765";
   },
 
 
   request: async function (method, path, body) {
     const url = this.baseURL() + path;
-    const token = this.getPref(this.PREFS.token, "");
     const options = {
       method: method,
       headers: { "Content-Type": "application/json" },
@@ -1281,9 +1267,6 @@ Object.assign(ZoteroKB, {
       // Zotero 7+ 的 HTTP 封装
       ...(body ? { body: JSON.stringify(body) } : {}),
     };
-    if (token) {
-      options.headers["X-KB-Token"] = token;
-    }
     // 记下最近几次请求的结果 —— catch 里只 Zotero.debug 的话，
     // 用户和我都看不到失败原因（本机踩过：权重缓存一直是 0，
     // 但没有任何地方说明为什么）。写进状态文件才查得动。
@@ -1315,7 +1298,6 @@ Object.assign(ZoteroKB, {
         const xhr = new XMLHttpRequest();
         xhr.open(method, url, true);
         xhr.setRequestHeader("Content-Type", "application/json");
-        if (token) xhr.setRequestHeader("X-KB-Token", token);
         xhr.timeout = 120000;
         xhr.onload = () => {
           try { resolve(JSON.parse(xhr.responseText || "{}")); }
@@ -1399,19 +1381,15 @@ Object.assign(ZoteroKB, {
   },
 
 
+  /**
+   * 插件/引擎是否活着（问引擎桥的 `kb.health`，**不碰 8765**）。
+   *
+   * 判据是 `kb.health`：它给 kb_dir / project_root / python / ollama，够定位知识库
+   * 与运行环境（stdio 通道没有"浏览器偷 token"这回事，所以它本来就不含 token）。
+   * 引擎桥拿不到时，仍会退回老 HTTP `/health` —— 那只在有人手动起了 8765 才会成功，
+   * 属于回退路径，不是常态。
+   */
   healthCheck: async function () {
-    // W3 线2.5（2026-10-14）：**改成"引擎桥优先、老 HTTP 只用来补 token"**。
-    //
-    // 为什么要这么切（这是 #2 最容易切坏的一处）：
-    //   · `kb.health`（引擎）**不含 token** —— stdio 通道没有"浏览器偷 token"这回事；
-    //     但它有 kb_dir / project_root / python / ollama，够定位知识库与运行环境。
-    //   · 老 HTTP `/health` 的价值只剩一个：**把服务端现写的 token 同步进 pref**。
-    //     过渡期老 HTTP 通道（`/weights`、`/task`）还要 token → 所以**这条不能删**，
-    //     但**不能让它当"服务在线"的判据**（否则停掉服务后 serverOk 永远 false，
-    //     权重列/两列会被判成"服务没起来"）。
-    //   · 于是：① 桥拿 kb_dir（不依赖服务）→ ② **best-effort** 打一次老 HTTP 只为
-    //     刷新 token（失败/401/服务没跑都只是 debug 一行，**不改任何 pref**）；
-    //     token 的写入仍是"与现值不同才写"，与老代码行为一致（不会写坏）。
     var self = ZoteroKB;
     let engineInfo = null;
     try {
@@ -1427,22 +1405,10 @@ Object.assign(ZoteroKB, {
       this.serverProjectRoot = engineInfo.project_root || this.serverProjectRoot || "";
       Zotero.debug("[zotero-kb] 引擎桥在线（kb_dir=" + this.serverKbDir + "）");
     }
-    // 过渡期：老 HTTP 若还在，顺手把 token 同步进 pref（**唯一**保留它的理由）。
-    // 注意这里**不回写 serverOk**：服务不在不代表插件不可用（桥已经给了 kb_dir）。
+    // 桥不可用时，老 HTTP 仍是兜底（8765 平时是停的，所以这条路通常直接失败）
     try {
       const info = await this.request("GET", "/health");
-      if (info && info.token) {
-        const cur = this.getPref(this.PREFS.token, "");
-        if (cur !== info.token) {
-          try {
-            Zotero.Prefs.set(this.PREFS.token, info.token);
-            Zotero.debug("[zotero-kb] 已自动写入服务 token（过渡期）");
-          } catch (e) { Zotero.debug("[zotero-kb] 写 token 失败：" + e); }
-        }
-      } else if (info && info.token_withheld) {
-        Zotero.debug("[zotero-kb] 服务没返回 token：" + info.token_withheld);
-      }
-      if (!engineInfo) {                      // 桥不可用时，老 HTTP 仍是兜底
+      if (!engineInfo) {
         this.serverOk = !!(info && info.ok);
         this.serverInfo = info;
         this.rememberServerInfo(info);
@@ -1536,11 +1502,10 @@ Object.assign(ZoteroKB, {
     this.pending[item.id] = true;
     try {
       if (!(await this.healthCheck())) {
-        this.notify("知识库服务没启动",
-          "请先启动本地服务（`scripts\\4-service.vbs` 能手动开，或跑 "
-          + "`python online\\localserver.py`）。\n"
-          + "（W4 起 Tk 面板已退役：管理面板都在 Zotero 里开 ——"
-          + "工具菜单 →「知识库管理…」）",
+        this.notify("知识库引擎没起来",
+          "先在 Zotero 里打开管理面板：工具菜单 →「知识库管理…」→「运行环境」页，"
+          + "那里能自检并按提示安装（Python 环境、Ollama 都在那一页）。\n"
+          + "插件不依赖任何常驻的本地服务。",
           null, true);
         return;
       }
@@ -1737,7 +1702,7 @@ Object.assign(ZoteroKB, {
     const res = await this.classifyOnly(item, feedback, previous);
     if (!res) {
       this.notify("分类建议失败",
-                  "看起来本地服务或模型没响应（面板「运行环境」可自检）",
+                  "看起来模型没响应（面板「运行环境」页可自检）",
                   null, true);
       return;
     }
@@ -2126,8 +2091,8 @@ Object.assign(ZoteroKB, {
       this.alertDialog(
         "补全建议失败",
         String((res && res.error) || "服务端没有返回可用的结果")
-        + "\n\n如果提示是「连不上服务」，先确认本地服务在跑："
-        + "工具菜单 →「知识库管理…」→「运行环境」页里能看；或重启 Zotero 让它自动拉起。");
+        + "\n\n先看一眼运行环境：工具菜单 →「知识库管理…」→「运行环境」页，"
+        + "那里能看到引擎、Python 与 Ollama 的状态，缺什么就按提示装上。");
       return;
     }
     if (typeFixDone) {
@@ -4878,9 +4843,9 @@ Object.assign(ZoteroKB, {
     }
     try {
       if (!(await self.healthCheck())) {
-        self.notify("知识库服务没启动",
-          "纲要要由本地服务调模型生成。\n"
-          + "先把它起起来：工具菜单 →「知识库管理…」→「运行环境」页。",
+        self.notify("知识库引擎没起来",
+          "生成纲要要调模型。\n"
+          + "先在 工具菜单 →「知识库管理…」→「运行环境」页把环境弄好（缺什么那页会提示）。",
           null, true);
         return;
       }
@@ -5712,7 +5677,7 @@ Object.assign(ZoteroKB, {
    * 为什么不用之前那套：旧实现去 `document.getElementById("zotero-prefpane-advanced")`
    * 注入 DOM，而 Zotero 7+ 的设置窗口根本不是那个结构 —— 那个元素不存在，
    * 而且 `addToWindow` 也不在 Zotero 的插件生命周期里、压根不会被调用。
-   * 结果就是插件装上了却没有可用的设置界面（用户没法填服务地址/token）。
+   * 结果就是插件装上了却没有可用的设置界面（用户没法填项目目录/解释器）。
    *
    * 现在把 settings.xhtml 交给 Zotero 自己渲染，交互逻辑放在 settings.js 里
    * （通过 scripts 选项加载，避免内联脚本被 CSP 拦掉）。
@@ -5789,7 +5754,6 @@ Object.assign(ZoteroKB, {
         pluginVersion: self.version,
         zoteroVersion: Zotero.version,
         platformVersion: Services.appinfo.platformVersion,
-        server: self.getPref(self.PREFS.server, ""),
         model: self.getPref(self.PREFS.model, ""),
         autoProcess: !!self.getPref(self.PREFS.autoProcess, true),
         serverOk: self.serverOk,
@@ -6054,8 +6018,8 @@ Object.assign(ZoteroKB, {
       try {
         res = await this.request("GET", "/weights");
         if (!res || !res.weights) {
-          // 拿不到（服务刚重启、token 变了、服务刚被拉起还没就绪）→
-          // 补问一次 /health，它会顺手把新 token 同步进 pref，再试一次。
+          // 拿不到（引擎刚起、还没就绪）→ 补问一次 healthCheck（问引擎桥的 kb.health），
+          // 再试一次。
           await this.healthCheck();
           res = await this.request("GET", "/weights");
         }
@@ -6832,7 +6796,7 @@ Object.assign(ZoteroKB, {
       }
     } catch (e) { info = null; }
     if (!info) {
-      self.caps.localWhy = "还没拿到本地服务状态（点面板「服务状态」看一眼）";
+      self.caps.localWhy = "还没拿到运行环境状态（点面板「运行环境」看一眼）";
       return null;
     }
     if (!info.exists) {

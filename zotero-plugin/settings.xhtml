@@ -26,31 +26,6 @@
     把新加入的文献自动送进本地知识库，并用本地模型推荐分类与标签。
   </html:p>
 
-  <html:div style="margin-bottom: 14px;">
-    <html:label style="display:block; font-weight:600; margin-bottom:4px;">
-      本地服务地址
-    </html:label>
-    <html:input type="text" data-pref="zotero-kb.server"
-                style="width: 320px; padding: 4px 6px;"
-                placeholder="http://127.0.0.1:8765"/>
-    <html:div style="color:#888; font-size:12px; margin-top:3px;">
-      默认 http://127.0.0.1:8765。这个旧通道已停用，插件不再依赖它；确实需要时手动启动 scripts\4-service.vbs。
-    </html:div>
-  </html:div>
-
-  <html:div style="margin-bottom: 14px;">
-    <html:label style="display:block; font-weight:600; margin-bottom:4px;">
-      访问 token
-    </html:label>
-    <html:input type="text" data-pref="zotero-kb.token"
-                style="width: 420px; padding: 4px 6px;"
-                placeholder="从 知识库目录\kb\service-token.txt 复制"/>
-    <html:div style="color:#888; font-size:12px; margin-top:3px;">
-      本地服务默认已停（2026-10-14 起插件走引擎桥与文件信箱，不再依赖它）；
-      只有你手动跑过 <code>scripts\4-service.vbs</code> 时才需要这个 token。
-    </html:div>
-  </html:div>
-
 
   <!-- 模型：只用本机 Ollama。
        ⚠ 外接 API 的 UI 已按用户要求去掉（"直接就用本地模型"）。
@@ -64,7 +39,7 @@
     <html:div style="color:#666; font-size:12px; margin-bottom:6px;">
       用本机的 Ollama 跑模型 —— 完全离线、不花钱、文献不出本机。
     </html:div>
-    <!-- 下拉列表：选项由 settings.js 从本机 Ollama 拉（GET /models）。
+    <!-- 下拉列表：选项由 settings.js 经引擎桥问本机 Ollama（`llm.discover`）。
          ⚠ 用 select 而不是 input（用户要求"oll 的本地模型选择也用下拉列表"）：
            原来是个空白输入框，用户得先自己 `ollama list` 看有哪些、再手打
            模型名 —— 打错一个字就报"模型不存在"，而且不知道本机装了什么。 -->

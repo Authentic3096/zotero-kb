@@ -41,7 +41,7 @@ try {
 
   // ---------------------------------------------------------------- 2
   say("");
-  say("[2] 本地服务与认证");
+  say("[2] 引擎（无端口通道）");
   const ok = await KB.healthCheck();
   check("服务在线", ok);
   check("token 已自动配置", !!KB.getPref(KB.PREFS.token, ""),

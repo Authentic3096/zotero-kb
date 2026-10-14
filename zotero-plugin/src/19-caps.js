@@ -174,7 +174,7 @@ Object.assign(ZoteroKB, {
       }
     } catch (e) { info = null; }
     if (!info) {
-      self.caps.localWhy = "还没拿到本地服务状态（点面板「服务状态」看一眼）";
+      self.caps.localWhy = "还没拿到运行环境状态（点面板「运行环境」看一眼）";
       return null;
     }
     if (!info.exists) {

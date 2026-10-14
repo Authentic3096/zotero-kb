@@ -147,8 +147,6 @@ Object.assign(ZoteroKB, {
   // ================================================================ 首选项
 
   PREFS: {
-    server: "zotero-kb.server",
-    token: "zotero-kb.token",
     model: "zotero-kb.model",
     autoProcess: "zotero-kb.autoProcess",
     categories: "zotero-kb.categories",

@@ -14,7 +14,7 @@ Object.assign(ZoteroKB, {
    * 为什么不用之前那套：旧实现去 `document.getElementById("zotero-prefpane-advanced")`
    * 注入 DOM，而 Zotero 7+ 的设置窗口根本不是那个结构 —— 那个元素不存在，
    * 而且 `addToWindow` 也不在 Zotero 的插件生命周期里、压根不会被调用。
-   * 结果就是插件装上了却没有可用的设置界面（用户没法填服务地址/token）。
+   * 结果就是插件装上了却没有可用的设置界面（用户没法填项目目录/解释器）。
    *
    * 现在把 settings.xhtml 交给 Zotero 自己渲染，交互逻辑放在 settings.js 里
    * （通过 scripts 选项加载，避免内联脚本被 CSP 拦掉）。
@@ -91,7 +91,6 @@ Object.assign(ZoteroKB, {
         pluginVersion: self.version,
         zoteroVersion: Zotero.version,
         platformVersion: Services.appinfo.platformVersion,
-        server: self.getPref(self.PREFS.server, ""),
         model: self.getPref(self.PREFS.model, ""),
         autoProcess: !!self.getPref(self.PREFS.autoProcess, true),
         serverOk: self.serverOk,

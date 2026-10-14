@@ -1,6 +1,4 @@
 /* 默认首选项。Zotero 加载 bootstrapped extension 时会读这个文件。 */
-pref("extensions.zotero.zotero-kb.server", "http://127.0.0.1:8765");
-pref("extensions.zotero.zotero-kb.token", "");
 pref("extensions.zotero.zotero-kb.model", "");
 pref("extensions.zotero.zotero-kb.autoProcess", true);
 pref("extensions.zotero.zotero-kb.categories", "");

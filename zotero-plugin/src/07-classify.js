@@ -107,7 +107,7 @@ Object.assign(ZoteroKB, {
     const res = await this.classifyOnly(item, feedback, previous);
     if (!res) {
       this.notify("分类建议失败",
-                  "看起来本地服务或模型没响应（面板「运行环境」可自检）",
+                  "看起来模型没响应（面板「运行环境」页可自检）",
                   null, true);
       return;
     }

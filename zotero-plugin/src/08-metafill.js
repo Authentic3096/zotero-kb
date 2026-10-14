@@ -105,8 +105,8 @@ Object.assign(ZoteroKB, {
       this.alertDialog(
         "补全建议失败",
         String((res && res.error) || "服务端没有返回可用的结果")
-        + "\n\n如果提示是「连不上服务」，先确认本地服务在跑："
-        + "工具菜单 →「知识库管理…」→「运行环境」页里能看；或重启 Zotero 让它自动拉起。");
+        + "\n\n先看一眼运行环境：工具菜单 →「知识库管理…」→「运行环境」页，"
+        + "那里能看到引擎、Python 与 Ollama 的状态，缺什么就按提示装上。");
       return;
     }
     if (typeFixDone) {

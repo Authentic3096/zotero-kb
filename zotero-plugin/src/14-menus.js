@@ -385,9 +385,9 @@ Object.assign(ZoteroKB, {
     }
     try {
       if (!(await self.healthCheck())) {
-        self.notify("知识库服务没启动",
-          "纲要要由本地服务调模型生成。\n"
-          + "先把它起起来：工具菜单 →「知识库管理…」→「运行环境」页。",
+        self.notify("知识库引擎没起来",
+          "生成纲要要调模型。\n"
+          + "先在 工具菜单 →「知识库管理…」→「运行环境」页把环境弄好（缺什么那页会提示）。",
           null, true);
         return;
       }

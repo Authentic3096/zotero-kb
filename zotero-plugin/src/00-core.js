@@ -113,7 +113,6 @@ var ZoteroKB = {
       // 才能在父进程里跑、宿主才拿得到 contentWindow（真机实测，见 KB_RES_KEY）。
       step("registerKbResource", () => self.registerKbResource());
       step("registerPrefs", () => self.registerPrefs());
-      step("registerPrefObserver", () => self.registerPrefObserver());
       step("registerPrefPane", () => self.registerPrefPane());
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());

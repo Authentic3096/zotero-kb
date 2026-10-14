@@ -2,8 +2,6 @@
 // 用 Zotero.Prefs 读写（与 bootstrap.js 里的键保持一致）。
 
 const KB_PREFS = {
-  server: "zotero-kb.server",
-  token: "zotero-kb.token",
   model: "zotero-kb.model",
   categories: "zotero-kb.categories",
   autoProcess: "zotero-kb.autoProcess",
@@ -223,7 +221,7 @@ function kbInitEnvSection(doc, root, save) {
  *
  * ⚠ 键名必须是**相对键**（`zotero-kb.X`）：`Zotero.Prefs.get` 会自动补
  *   `extensions.zotero.` 前缀。写成完整键会变成双前缀，读出来永远是空
- *   —— 本机就这么中招过（token 读成空 → 需要认证的接口全 401）。
+ *   —— 本机就这么中招过（读成空 → 什么都不对）。
  */
 function readBackPrefs(doc) {
   const out = {};
@@ -232,7 +230,6 @@ function readBackPrefs(doc) {
     python: "zotero-kb.pythonExe",
     ollama: "zotero-kb.ollamaExe",
     model: "zotero-kb.model",
-    token: "zotero-kb.token",
   };
   for (const [k, key] of Object.entries(map)) {
     try {
@@ -376,20 +373,22 @@ async function kbFillOllamaModels(doc, root) {
     if (hint) { hint.textContent = "正在读本机已装的模型…"; hint.style.color = "#888"; }
     let data = null;
     try {
-      kbDiag("  请求 GET /models …");
-      data = await KB.request("GET", "/models");
+      kbDiag("  经引擎桥请求 GET /models …");
+      // 走引擎桥（HTTP 语义的 /models → 引擎 llm.discover）：不再依赖已停用的 8765。
+      data = await KB.kbAdminHostRoute("GET", "/models", null);
       kbDiag("  /models 返回：" + JSON.stringify(data).slice(0, 300));
     } catch (e) {
       kbDiag("  /models 抛错：" + e);
       data = null;
     }
     if (!data) {
-      // 服务没起来 —— 退化成"只有自动选"的列表，并说清原因
+      // 引擎没给数据 —— 退化成"只有自动选"的列表，并说清怎么办
       rebuild([], null, "");
-      kbDiag("  服务无响应，已降级显示");
+      kbDiag("  引擎没响应，已降级显示");
       if (hint) {
-        hint.textContent = "✗ 读不到模型列表：本机知识库服务没在响应。"
-          + "（Zotero 启动时会自动拉起它；也可以双击 scripts\\4-service.vbs）";
+        hint.textContent = "✗ 读不到模型列表：没能问到本机的 Ollama。"
+          + "先确认 Ollama 在跑（浏览器打开 http://127.0.0.1:11434/api/tags 应该看到 JSON），"
+          + "没装就去 https://ollama.com/download 装一个；装好回来点「刷新列表」。";
         hint.style.color = "#c00";
       }
       return;
@@ -664,7 +663,8 @@ async function kbInitPane(doc) {
             + " v" + (info.version || "?") + "）";
           status.style.color = "#0a0";
         } else {
-          status.textContent = "✗ 连不上：检查服务是否启动、地址与 token";
+          status.textContent = "✗ 没连上引擎：看面板「运行环境」页的提示"
+            + "（Python 环境/项目目录要填对；Ollama 没跑也会这样）";
           status.style.color = "#c00";
         }
         Zotero.ZoteroKB.writeStatusFile();

@@ -72,11 +72,10 @@ Object.assign(ZoteroKB, {
     this.pending[item.id] = true;
     try {
       if (!(await this.healthCheck())) {
-        this.notify("知识库服务没启动",
-          "请先启动本地服务（`scripts\\4-service.vbs` 能手动开，或跑 "
-          + "`python online\\localserver.py`）。\n"
-          + "（W4 起 Tk 面板已退役：管理面板都在 Zotero 里开 ——"
-          + "工具菜单 →「知识库管理…」）",
+        this.notify("知识库引擎没起来",
+          "先在 Zotero 里打开管理面板：工具菜单 →「知识库管理…」→「运行环境」页，"
+          + "那里能自检并按提示安装（Python 环境、Ollama 都在那一页）。\n"
+          + "插件不依赖任何常驻的本地服务。",
           null, true);
         return;
       }
