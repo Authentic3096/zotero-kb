@@ -148,6 +148,7 @@ Object.assign(ZoteroKB, {
 
   PREFS: {
     model: "zotero-kb.model",
+    filterBareModels: "zotero-kb.filterBareModels",
     autoProcess: "zotero-kb.autoProcess",
     categories: "zotero-kb.categories",
     // ---- 模型来源（支持多后端）

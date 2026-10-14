@@ -1,5 +1,8 @@
 /* 默认首选项。Zotero 加载 bootstrapped extension 时会读这个文件。 */
 pref("extensions.zotero.zotero-kb.model", "");
+// 模型下拉是否只列"名字带上下文后缀"的派生模型（默认开）。
+// 没有后缀的模型看不出上下文窗口大小，容易挑错。
+pref("extensions.zotero.zotero-kb.filterBareModels", true);
 pref("extensions.zotero.zotero-kb.autoProcess", true);
 pref("extensions.zotero.zotero-kb.categories", "");
 pref("extensions.zotero.zotero-kb.createMissing", true);

@@ -332,6 +332,30 @@ async function kbFillOllamaModels(doc, root) {
 
   kbDiag("  已保存的模型名=" + JSON.stringify(saved));
 
+  // 排序与默认选中规则（**不针对具体模型名硬编码**）：
+  //   ① 引擎给的推荐模型（`recommended`）所属的"系"优先 —— 系 = 去掉 `-Nk` 后缀的名字；
+  //   ② 同系里上下文大的排前面（后缀数字大的优先）；
+  //   ③ 其余按名字排；
+  //   ④ 默认选中排第一的那个（**没有"自动选"这一项**：一个模型时就等于直接用它）；
+  //      若用户存过的模型还在列表里，仍按它选。
+  const ctxOf = (n) => {
+    const m = String(n).match(/-(\d+)k$/i);
+    return m ? parseInt(m[1], 10) : -1;
+  };
+  const baseOf = (n) => String(n).replace(/-\d+k$/i, "");
+
+  const sortModels = (models, recommended) => {
+    const recBase = baseOf(recommended || "");
+    return models.slice().sort((a, b) => {
+      const ra = (recBase && baseOf(a.name) === recBase) ? 0 : 1;
+      const rb = (recBase && baseOf(b.name) === recBase) ? 0 : 1;
+      if (ra !== rb) return ra - rb;
+      const ca = ctxOf(a.name), cb = ctxOf(b.name);
+      if (ca !== cb) return cb - ca;                 // 上下文大的在前
+      return String(a.name).localeCompare(String(b.name));
+    });
+  };
+
   const rebuild = (models, extraNote, recommended) => {
     // 清空重填（保留"自动选"这一项在最前）
     while (sel.firstChild) sel.removeChild(sel.firstChild);
@@ -349,16 +373,18 @@ async function kbFillOllamaModels(doc, root) {
       sel.appendChild(o);
       return o;
     };
-    add("", "自动选（推荐：质量更好的那个）");
-    let matchedIdx = 0;
-    models.forEach((m, i) => {
-      add(m.name, m.name + (m.note ? ("　— " + m.note) : ""));
-      if (m.name === saved) matchedIdx = i + 1;      // +1 因为前面有"自动选"
+    const sorted = sortModels(models, recommended);
+    let matchedIdx = 0;                              // 默认选排第一的那个（＝推荐）
+    sorted.forEach((m, i) => {
+      const isTop = i === 0;
+      add(m.name, m.name + (m.note ? ("　— " + m.note) : "")
+        + (isTop ? "　— 推荐" : ""));
+      if (m.name === saved) matchedIdx = i;           // 存过的模型优先
     });
-    if (saved && matchedIdx === 0) {
-      // 保存的模型本机没有 —— 留着它，并让用户知道
-      add(saved, saved + "　— 已保存，但本机没找到");
-      matchedIdx = models.length + 1;
+    if (saved && sorted.length && !sorted.some((m) => m.name === saved)) {
+      // 保存的模型已不在列表里 —— 留着它，并让用户知道
+      add(saved, saved + "　— 已保存，但列表里没有");
+      matchedIdx = sorted.length;
     }
     // ⚠ 用索引，不用 sel.value（见函数头说明）
     try { sel.selectedIndex = matchedIdx; } catch (e) { /* ignore */ }
@@ -382,7 +408,7 @@ async function kbFillOllamaModels(doc, root) {
       data = null;
     }
     if (!data) {
-      // 引擎没给数据 —— 退化成"只有自动选"的列表，并说清怎么办
+      // 引擎没给数据 —— 空列表，并说清怎么办
       rebuild([], null, "");
       kbDiag("  引擎没响应，已降级显示");
       if (hint) {
@@ -394,41 +420,49 @@ async function kbFillOllamaModels(doc, root) {
       return;
     }
     let models = (data.models || []).filter((m) => m && m.name);
-    // ① 只列**带上下文后缀**的派生模型（`-4k` / `-16k` / `-24k`…）。
-    //    裸 tag（`qwen3.5:9b`）看不出多少上下文，挑到它就是"不知道自己在用什么窗口"。
-    //    万一本机一个派生模型都没有（别人机器上可能如此），就照旧全列出来，免得列表空白；
-    //    当前选中的若是裸 tag，也留着（否则选择会跳掉），但后面会提醒一句。
+    const rawCount = models.length;
+    // 默认只列**带上下文后缀**的模型（`-4k` / `-16k` / `-24k`…）：没有后缀的看不出
+    // 上下文窗口，挑到它就是"不知道自己在用什么窗口"。这个开关在界面上可关
+    // （pref `zotero-kb.filterBareModels`）；关掉后是 Ollama 报什么就列什么。
+    // 当前选中的若是没有后缀的，仍保留在列表里（否则选择会跳掉），并给一句提醒。
     const MODEL_SUFFIX = /-\d+k$/i;
+    const filterOn = !!KB.getPref(KB.PREFS.filterBareModels, true);
+    const savedModel = String(KB.getPref(KB.PREFS.model, "") || "");
     const suffixed = models.filter((m) => MODEL_SUFFIX.test(String(m.name)));
-    if (suffixed.length) {
+    let filteredOut = 0;
+    if (filterOn && suffixed.length) {
+      filteredOut = models.length - suffixed.length;
       models = suffixed;
-      const savedNow = KB.getPref(KB.PREFS.model, "");
-      if (savedNow && !MODEL_SUFFIX.test(savedNow)
-          && !models.some((m) => m.name === savedNow)) {
-        models = models.concat([{ name: savedNow,
-                                  note: "未指定上下文，建议换成带后缀的派生模型" }]);
+      if (savedModel && !MODEL_SUFFIX.test(savedModel)
+          && !models.some((m) => m.name === savedModel)) {
+        models = models.concat([{ name: savedModel,
+                                  note: "没有上下文后缀" }]);
       }
     }
     rebuild(models, data.hint, data.recommended);
     if (!hint) return;
     if (!data.ok) {
-      hint.textContent = "✗ " + (data.error || "连不上 Ollama")
-        + "　" + (data.hint || "");
+      hint.textContent = "✗ " + (data.error || "没能问到本机的 Ollama")
+        + (data.hint ? ("　" + data.hint) : "")
+        + "。先确认 Ollama 在跑（浏览器打开 http://127.0.0.1:11434/api/tags）。";
       hint.style.color = "#c00";
-    } else if (!models.length) {
-      hint.textContent = "⚠ 这台机器上还没有带上下文后缀的模型。列表只列带后缀的"
-        + "派生模型（例如 qwen3:4b-instruct-24k），这样一眼能看出上下文多大。";
+    } else if (!models.length && filteredOut) {
+      hint.textContent = "读到的模型都没有上下文后缀，已按上面的勾选过滤掉。"
+        + "给它们做一个带后缀的派生模型（见 INSTALL 的「本地模型与上下文」），"
+        + "或取消那个勾选。";
       hint.style.color = "#c60";
-    } else if (String(KB.getPref(KB.PREFS.model, ""))
-               && !MODEL_SUFFIX.test(String(KB.getPref(KB.PREFS.model, "")))) {
-      hint.textContent = "本机已装 " + models.length + " 个模型"
-        + (data.recommended ? ("；推荐 " + data.recommended) : "")
-        + "。当前选的这个没带上下文后缀，建议换成带后缀的。";
+    } else if (!models.length && !rawCount) {
+      hint.textContent = "没读到模型。先确认 Ollama 在跑"
+        + "（浏览器打开 http://127.0.0.1:11434/api/tags），再拉一个模型："
+        + "ollama pull <模型名>。装好回来点「刷新列表」。";
+      hint.style.color = "#c60";
+    } else if (savedModel && !MODEL_SUFFIX.test(savedModel)) {
+      hint.textContent = "当前选中的模型没有上下文后缀，建议换成带后缀的"
+        + "（见 INSTALL 的「本地模型与上下文」）。";
       hint.style.color = "#c60";
     } else {
-      hint.textContent = "本机已装 " + models.length + " 个模型"
-        + (data.recommended ? ("；推荐 " + data.recommended) : "")
-        + "。要装新的：ollama pull <模型名>";
+      hint.textContent = "装新的模型：ollama pull <模型名>，再用 ollama create "
+        + "把上下文写进名字后缀（见 INSTALL 的「本地模型与上下文」）。";
       hint.style.color = "#888";
     }
     if (verbose) {

@@ -66,11 +66,16 @@ WINDOW_CHARS = 4000            # 没有任何标题时的兜底窗口
 SECTION_INPUT_CHARS = 5000     # 每节最多喂给模型多少字
 MAX_SECTIONS = 24              # 每篇最多这么多个节（超了就合并相邻节）
 
-# 这些节在纲要里不展开（参考文献动辄 3000~10000 字，问模型纯属浪费）：
+# 这些节在纲要里不展开（参考文献动辄 3000~10000 字，问模型纯属浪费）。
 # 保留一行占位让读者知道"它在原文里有"，但**不调模型**。
+#
+# ⚠ 中文那几个词**必须容忍字间空格**：MinerU 切出来的标题常是 `参 考 文 献`
+#   （本机实测库里就有，而且往往是最长的那几节：9150 字），写死 `参考文献`
+#   会漏掉它们、白喂一次模型。词序也两种都认（`参考文献` / `文献参考`）。
 SKIP_TITLE_RE = re.compile(
-    r"(参考文献|references?|致\s*谢|acknowledg|附录|appendix|"
-    r"作者简介|攻读学位期间|发表论文|index)", re.I)
+    r"(参\s*考\s*文\s*献|文\s*献\s*参\s*考|引\s*用\s*文\s*献"
+    r"|references?|bibliograph(?:y|ies)|works\s+cited|literature\s+cited"
+    r"|致\s*谢|acknowledg|附录|appendix|作者简介|攻读学位期间|发表论文|index)", re.I)
 
 
 # ================================================================ 切节（纯函数）
@@ -382,7 +387,7 @@ def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
     adir = M.artifact_dir(key, kb_dir)
     struct_path = os.path.join(adir, "structured_content.json")
     out = {"ok": False, "key": key, "n_sections": 0, "cached": 0, "asked": 0,
-           "seconds": 0.0, "why": "", "outline": {}, "cancelled": False}
+           "skipped": 0, "seconds": 0.0, "why": "", "outline": {}, "cancelled": False}
     if not os.path.isfile(struct_path):
         out["why"] = ("没有 MinerU 产物（先解析这一篇：面板「PDF 解析」页或 "
                       "tools\\kb_admin.py mineru parse --key " + key + "）")
@@ -426,6 +431,7 @@ def build(key: str, kb_dir: str = "", force: bool = False, model: str = "",
             kept.append(dict(sec, summary="（这一节不展开：参考文献/致谢/附录类）",
                              points=[], model="", cached=True, tried=True))
             out["cached"] += 1
+            out["skipped"] += 1
             continue
         prev = old_by_fp.get(sec["fp"])
         # ⚠ 判据里必须带 `tried`：有些节本来就产出不了要点（正文过短、

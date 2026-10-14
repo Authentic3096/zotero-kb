@@ -48,6 +48,11 @@
     </html:select>
     <html:button id="zotero-kb-refresh-models-btn"
                  style="padding:4px 10px; margin-left:6px;">刷新列表</html:button>
+    <html:label style="display:block; margin-top:6px;">
+      <html:input type="checkbox" data-pref="zotero-kb.filterBareModels"/>
+      <html:span>只列带上下文后缀的模型</html:span>
+      <html:span style="color:#888;">（没有后缀的看不出上下文窗口大小）</html:span>
+    </html:label>
     <html:div id="zotero-kb-ollama-model-hint"
               style="color:#888; font-size:12px; margin-top:4px;">
       正在读本机已装的模型…
