@@ -76,7 +76,7 @@ Zotero 的兜底链是 精确 → 同语种 → en-US → 第一个可用的）�
 ### 1. 装插件
 
 Zotero → **工具 → 插件** → 右上角**齿轮 → Install Plugin From File…**
-→ 选 `zotero-plugin\zotero-kb-<版本>.xpi`（当前 **2.0.0**；跑
+→ 选 `zotero-plugin\zotero-kb-<版本>.xpi`（当前 **2.0.1**；跑
 `python tools\check_plugin.py` 会现打一个，文件名跟 `manifest.json` 的版本走）
 
 > 实测：**往 profile 的 `extensions\` 目录丢 xpi 是无效的**
