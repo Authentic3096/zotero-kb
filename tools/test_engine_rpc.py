@@ -19,7 +19,7 @@
     坏输入覆盖（写经验、改配置、删纲要都不在测试里做），唯一真跑的长任务
     `learn.scan` 扫的是一个**不存在的会话 id**；
   · **W2 批次 B 的方法**（契约见开发说明）：papers.list / ai.* /
-    maintain.run / mineru.* / quality.* / config.figures / kb.search / kb.weight /
+    maintain.run / mineru.* / quality.* / kb.search / kb.weight /
     advanced.* —— 同上：纯查询真跑，会改数据或跑几分钟的只覆盖坏输入；
     `_job_dispatch` 的派发形状用 `quality.repair` + 一个**不存在的 key**
     （inspect 查不到 → 立刻收尾、一篇都不动）覆盖；
@@ -182,6 +182,16 @@ def main() -> int:
         names = [x["name"] for x in rows]
         check("含 index.db 那一行", any(n == "index.db" for n in names),
               "、".join(names[:4]) + "…")
+        # 口径已统一（2026-10-16）：index.db 那一行的「内容量」由引擎直接给真实
+        # 数字（"N 篇 / M 切片"），**不再**是"见上面状态栏"那种指着别处的占位话
+        # —— 页面侧那段"见到占位串就去状态块取数替换"的逻辑已删。
+        dbrow = [x for x in rows if x["name"] == "index.db"]
+        check("index.db 行的内容量是真实数字（N 篇 / M 切片），不是占位话",
+              bool(dbrow)
+              and "篇" in str(dbrow[0].get("count"))
+              and "切片" in str(dbrow[0].get("count"))
+              and "见上面状态栏" not in str(dbrow[0].get("count")),
+              str(dbrow[0].get("count")) if dbrow else "没有这一行")
         check("带 kb_dir / total_size_text",
               bool(sdata.get("kb_dir")) and bool(sdata.get("total_size_text")),
               str(sdata.get("total_size_text")))
@@ -583,7 +593,7 @@ def main() -> int:
         #
         # ⚠ 与批次 A 同一条纪律：**会改数据/跑几分钟的动作只覆盖坏输入**
         #   （mineru.parse 不真派；quality.scan 不真扫 —— 它会把 item_health
-        #   整批重写；config.figures 不真写 kb-location.json；plugin build /
+        #   整批重写；plugin build /
         #   upgrade backup 不真跑）。
         #   纯查询的真跑：papers.list / maintain.run(collections) /
         #   mineru.status / quality.stats / quality.detail / kb.search /
@@ -691,14 +701,6 @@ def main() -> int:
                   f"{len(dd.get('rows') or [])} 行 kind={dd.get('verdict')}")
         # ⚠ quality.scan **不在自检里真跑**（会整批重写 item_health）；
         #   派发形状下面用 quality.repair 覆盖。
-        r, _ = send("config.figuresGet")
-        check("config.figuresGet → {figures: bool}（读真值，不瞎勾）",
-              bool(r.get("ok")) and isinstance((r.get("data") or {}).get("figures"),
-                                               bool),
-              str(r.get("data"))[:48])
-        r, _ = send("config.figures", {})
-        check("config.figures 缺 on → ok:false（不写 kb-location.json）",
-              r.get("ok") is False)
 
         r, events = send("quality.repair", {"keys": ["ZZZZZZZZ"]}, timeout=60)
         ld = r.get("data") or {}

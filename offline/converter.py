@@ -10,7 +10,7 @@ from __future__ import annotations
 # 本项目模块平铺在 offline/ 与 online/ 下，用 `from schemas import ...` 这种
 # 平铺方式互相导入，因此要求对应目录在 sys.path 里。调用者通常配好了，但
 # **直接运行本文件**时没有"调用者"，就会 ModuleNotFoundError。
-# 本机踩过同类问题：gui.py 只加了 offline/，面板点「列出全部经验」报
+# 本机踩过同类问题：只把 offline/ 加进 sys.path 时，「列出全部经验」会报
 #   ModuleNotFoundError: No module named 'searcher'（它在 online/ 下）。
 import os as _os
 import sys as _sys

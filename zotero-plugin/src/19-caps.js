@@ -153,7 +153,7 @@ Object.assign(ZoteroKB, {
     if (provider === "openai") {
       const key = String(self.getPref(self.PREFS.apiKey, "") || "").trim();
       const base = String(self.getPref(self.PREFS.apiBaseUrl, "") || "").trim();
-      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境→模型接入）";
+      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境 → 模型配置）";
       return !!key && !!base;
     }
     let info = null;
@@ -186,7 +186,7 @@ Object.assign(ZoteroKB, {
       return null;
     }
     if (!info.api_up) {
-      self.caps.localWhy = "Ollama 没在运行（面板「运行环境」页点「启动 Ollama」）";
+      self.caps.localWhy = "Ollama 没在运行（启动 Ollama 程序：开始菜单 / 托盘图标）";
       return false;
     }
     const models = info.models || [];

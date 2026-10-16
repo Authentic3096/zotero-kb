@@ -44,9 +44,6 @@ sys.path.insert(0, os.path.join(ROOT, "offline"))
 import schemas as S  # noqa: E402
 import taskbox  # noqa: E402        # 任务通道：文件信箱（W3 线2）
 
-BASE = "http://127.0.0.1:8765"
-# ⚠ BASE / service_alive 现在**只用于"服务在不在"的诊断**：派活已经改走文件信箱
-#   （见 taskbox / mailbox_ready），不需要 token 也不需要那个常驻进程。
 UA_STR = "ZoteroAcquire/1.2 (DSH skill; plugin probe)"
 
 # 一篇大概要多久：DOI 解析 ~2s + 找 PDF 视来源 3~20s。
@@ -109,21 +106,12 @@ def normalize_items(items) -> tuple[list[dict], list[str]]:
 # ---------------------------------------------------------------- 任务通道
 
 
-def service_alive() -> bool:
-    """常驻 HTTP 服务在不在（W3 之后多数时候是 False，**不再是派活的必要条件**）。"""
-    try:
-        with urllib.request.urlopen(BASE + "/health", timeout=5) as resp:
-            return resp.status == 200
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def mailbox_ready() -> str:
     """任务信箱能不能用；返回信箱根目录，不能写就抛 AcquireError。
 
     **真写一个探针文件再删掉** —— 只有写一次才知道权限/磁盘/目录对不对，
-    只 `os.path.exists` 判断不出"只读目录"这种失败。老实现这里问的是
-    `service_alive()`（常驻服务在不在）；改成信箱后那个条件就不再是必要条件了。
+    只 `os.path.exists` 判断不出"只读目录"这种失败。
+    （旧实现这里问的是常驻 HTTP 服务在不在；派活改走文件信箱后那个条件不再需要。）
     """
     try:
         root = taskbox.box_dir()

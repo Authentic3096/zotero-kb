@@ -439,7 +439,7 @@ def views(key: str = "") -> int:
 
     keys = [key] if key else KV.all_keys()
     if not keys:
-        print("索引里没有条目。先点「更新索引（增量）」。")
+        print("索引里没有条目。先跑一次建索引：python offline\\convert.py（或管理面板「高级」页的「增量更新」）。")
         return 1
     print(f"生成分级视图：{len(keys)} 篇 → {S.VIEWS_DIR}")
     res = KV.write_many(keys, log=lambda m: print(m))

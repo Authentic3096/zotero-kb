@@ -184,8 +184,8 @@ def render(level_id: str, key: str, s=None) -> str:
 
 def _missing(key: str, why: str) -> str:
     return (f"# 未找到 {key}\n\n{why}。\n\n"
-            f"先在面板点「手动更新」，或在 Zotero 里右键这一篇"
-            f"「重建知识库条目（这一篇）」。\n")
+            f"先在管理面板「高级」页点「增量更新」，或在 Zotero 里右键这一篇"
+            f"「重建本条目知识库」。\n")
 
 
 def _render_file(level_id: str, key: str) -> str:
@@ -328,7 +328,7 @@ def _render_figures(key: str, item: dict, s) -> str:
     rows = _figure_rows(s, key)
     if rows is None:
         return (f"# {item['title']}\n\n本库还没有图注表。\n\n"
-                f"跑一次「手动更新」会从 PDF 里抽图注与表格。\n")
+                f"跑一次「增量更新」会从 PDF 里抽图注与表格。\n")
     lines = [f"# {item['title']}", "",
              f"> Zotero key `{key}`｜图注与表格共 {len(rows)} 项", ""]
     if not rows:

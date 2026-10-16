@@ -650,7 +650,7 @@ Object.assign(ZoteroKB, {
       body.push("（没有要处理的字段）");
     }
     body.push("提示：字段改了以后知识库里的索引不会自动跟着变；"
-              + "要让新值进检索/权重，右键「重建知识库条目（这一篇）」。");
+              + "要让新值进检索/权重，右键「重建本条目知识库」。");
     this.alertDialog(
       changed ? ("元数据已写入 " + done.length + " 项") : "元数据没有写入任何项",
       "《" + this.itemLabel(item) + "》\n\n" + body.join("\n\n"));

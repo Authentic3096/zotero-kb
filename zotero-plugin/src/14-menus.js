@@ -847,8 +847,8 @@ Object.assign(ZoteroKB, {
               self.refreshCaps(true).then(() => {
                 self.notify("本地模型检查",
                   (self.caps.localWhy || "可用的")
-                  + "\n\n① 面板「运行环境」→「启动 Ollama」；"
-                  + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
+                  + "\n\n① 启动 Ollama 程序（开始菜单 / 托盘图标）；"
+                  + "\n② 或到面板「运行环境 → 模型配置」改用外部 API（填地址与 Key）。",
                   null, true);
               }).catch(() => {});
             }, { ready: "", tooltip: lmCap.tooltip || "" });
@@ -1074,7 +1074,7 @@ Object.assign(ZoteroKB, {
             + (real.length > 1 ? "⚠ 一次选了多篇时，以第一项为准。\n" : "")
             + (missing.length
                ? ("⚠ 还没生成：" + missing.join("、")
-                  + "\n　去面板的「高级」页点「补齐知识库分级文件」。")
+                  + "\n　去面板的「高级」页点「补齐分级文件」。")
                : "（这一篇的五个层面都已生成）"));
 
           const op = doc.createXULElement

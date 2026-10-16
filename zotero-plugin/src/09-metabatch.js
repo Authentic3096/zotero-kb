@@ -448,7 +448,7 @@ Object.assign(ZoteroKB, {
     }
     body.push("");
     body.push("提示：字段改了以后知识库索引不会自动跟着变；"
-              + "要让新值进检索，右键「重建知识库条目（这一篇）」。");
+              + "要让新值进检索，右键「重建本条目知识库」。");
     this.alertDialog(
       out.written ? ("已批量写入 " + out.written + " 项") : "批量写入没有成功",
       body.join("\n"));
@@ -724,7 +724,7 @@ Object.assign(ZoteroKB, {
     }
     if (!body.length) body.push("（什么都没改）");
     body.push("提示：改了以后知识库索引不会自动跟着变，"
-              + "要让新值进检索，右键「重建知识库条目（这一篇）」。");
+              + "要让新值进检索，右键「重建本条目知识库」。");
     this.alertDialog(
       report.changed.length ? ("类型/标题已修正 " + report.changed.length + " 项")
                             : "类型/标题没有改动",

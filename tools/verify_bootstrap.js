@@ -1084,24 +1084,23 @@ if (KB) {
       JSON.stringify(s));
 
     s = await guideCase({ choice: 0 });
-    // W4（2026-10-14）：Tk 面板退役后「打开安装引导」**不再拉任何面板进程**，
-    // 改成指路新面板（通知里带「知识库管理…」+ 对应页名）。原断言"开的是
-    // --mineru-guide"已失效 —— 这里**改成断言新意图**（改断言，不是删断言）：
-    // ① 仍然弹一次并记 pref（用户不会被反复问）② 先缺谁就先说谁 ③ 有能照做的指引。
-    check("两个都没装 + 选「打开安装引导」→ 指路新面板（不再起进程），先缺谁开谁",
+    // 2026-10-16：图形化安装向导随 Tk 面板退役后，「看安装方法」**不再拉任何进程、
+    // 也不再指向面板里那个不存在的安装器** —— 改成直接给两条真能照做的路
+    // （MinerU 走 scripts\install-mineru.cmd；Ollama 走官网安装器）。
+    // 断言新意图：① 仍然弹一次并记 pref（用户不会被反复问）② 先缺谁就先说谁
+    // ③ 通知里给的是**真的安装路径**，不是"去面板点安装引导"。
+    check("两个都没装 + 选「看安装方法」→ 给出真安装路径（不再指面板向导），先缺谁开谁",
       s.asked === 1 && s.pref.length === 1 && s.pref[0][1] === true
       && s.panel.length === 0
       && JSON.stringify(s.missing) === JSON.stringify(["mineru", "ollama"])
-      && s.notices.some((n) => n.indexOf("知识库管理…") >= 0
-                               && n.indexOf("PDF 解析") >= 0),
+      && s.notices.some((n) => n.indexOf("install-mineru.cmd") >= 0),
       JSON.stringify(s));
 
     s = await guideCase({ mineruOk: true, choice: 0 });
-    check("只有 Ollama 缺 → 只列 Ollama，指路的是「运行环境」页",
+    check("只有 Ollama 缺 → 只列 Ollama，指的是官网安装器",
       JSON.stringify(s.missing) === JSON.stringify(["ollama"])
       && s.panel.length === 0
-      && s.notices.some((n) => n.indexOf("知识库管理…") >= 0
-                              && n.indexOf("运行环境") >= 0),
+      && s.notices.some((n) => n.indexOf("ollama.com") >= 0),
       JSON.stringify(s));
 
     // ---- ⑥c 的两条 async 断言（放在这里结算，print 前）
@@ -1133,8 +1132,12 @@ if (KB) {
     "openPanel 里应调 kbAdminOpen、且不再出现 tools\\gui.py");
   check("13-kbopen.js 不再有 panelProcess / openKbViaPanel（Tk 兜底链已删）",
     !/panelProcess|openKbViaPanel/.test(openSrc), "");
-  check("19-mineruguide.js 不再调 panelProcess（改成指路新面板）",
-    !/panelProcess/.test(minersrc) && /知识库管理…/.test(minersrc), "");
+  check("19-mineruguide.js 不再调 panelProcess，也不再指向面板里的安装向导",
+    !/panelProcess/.test(minersrc)
+    && /install-mineru\.cmd/.test(minersrc)
+    && /ollama\.com/.test(minersrc)
+    && !/面板里那个安装引导/.test(minersrc)
+    && !/安装引导在管理面板里/.test(minersrc), "");
   check("工具栏按钮与条目右键仍指向 openPanel()（入口没删，只是换实现）",
     /registerToolbarButton/.test(src) && /self\.openPanel\(\)/.test(src), "");
   // 磁盘断言：退役件必须没了；保留件必须还在（4-service.vbs 是线3 的回退路径）

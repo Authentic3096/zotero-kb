@@ -485,7 +485,7 @@
         tableHost.textContent = "";
         if (!state.papers.length) {
           tableHost.appendChild(el("div", { class: "note note-warn",
-            text: "知识库索引里还没有文献 —— 先跑一次「手动更新」建索引。" }));
+            text: "知识库索引里还没有文献 —— 先去「高级」页点一次「增量更新」建索引。" }));
           countLabel.textContent = "";
           updateActions();
           return;

@@ -133,7 +133,7 @@ Object.assign(ZoteroKB, {
         return "  · " + t;
       }).join("\n")
       + "\n\n可以先在「" + self.kbDir() + "」里手动打开它；"
-      + "如果这份文件本来就不该在，去面板点「补齐知识库分级文件」。");
+      + "如果这份文件本来就不该在，去面板「高级」页点「补齐分级文件」。");
     return "";
   },
 
@@ -148,7 +148,7 @@ Object.assign(ZoteroKB, {
    *
    * 为什么不在这里"现生成"：生成要在 Python 进程里读库（几百毫秒起，
    * 还要等子进程），而右键菜单点下去要立刻有反应。所以分工是：
-   * 插件负责打开，生成交给构建/面板的「补齐知识库分级文件」。
+   * 插件负责打开，生成交给构建/面板的「补齐分级文件」。
    */
   openKbLevel: function (key, levelId) {
     var self = ZoteroKB;
@@ -159,8 +159,8 @@ Object.assign(ZoteroKB, {
     if (!row.exists) {
       self.notify("这一层还没生成", "「" + row.label + "」"
         + "（" + row.path + "）\n\n"
-        + "去面板的「高级」页点「补齐知识库分级文件」，"
-        + "或跑一次「手动更新（增量）」。", null, true);
+        + "去面板的「高级」页点「补齐分级文件」，"
+        + "或在那里点「增量更新」。", null, true);
       return "";
     }
     return self.openKbPath(row.path, row.label);

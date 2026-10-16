@@ -610,7 +610,7 @@
     v.innerHTML = "";
     v.appendChild(el("div", "kbv-empty", msg.emptyWhy || "知识库里还没有这一篇的任何分级文件。"));
     if (msg.probe) v.appendChild(el("div", "kbv-probe", msg.probe));
-    v.appendChild(el("div", "kbv-empty", "先在管理面板「手动更新」建一次索引，"
+    v.appendChild(el("div", "kbv-empty", "先在管理面板「高级」页的「增量更新」建一次索引，"
       + "或用右键菜单「重建本条目知识库」。"));
   }
 

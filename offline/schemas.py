@@ -34,7 +34,7 @@ except ImportError:                  # 极端情况：offline\ 不在 sys.path �
 # 这里有**四个互相独立**的位置，谁也不能从谁推算出来（推算是本机踩过的坑）：
 #
 #   KB_DIR      知识库（数据）  默认跟着 Zotero 数据目录走，为了能整包同步
-#   KB_ROOT     项目目录（代码）  .venv / gui.py / 脚本 在哪儿
+#   KB_ROOT     项目目录（代码）  .venv / 脚本 在哪儿
 #   PYTHON_EXE  解释器           KB_ROOT\.venv 优先，但不一定在那儿
 #   OLLAMA_EXE  本地模型程序     官方安装器装到 %LOCALAPPDATA%\Programs\Ollama
 #

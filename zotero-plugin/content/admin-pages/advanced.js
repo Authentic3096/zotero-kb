@@ -82,6 +82,8 @@
 
     async render(host, ctx) {
       const el = ctx.el;
+      // 索引重建是长任务，走壳里的 runTask（提交 → 轮询 /jobs/<id>）。
+      const runTask = ctx.runTask;
 
       // ============================================================ 底部只读输出区
       // 先建出来（所有动作都往这里写原样文本）。
@@ -191,10 +193,45 @@
         wHost,
       ]));
 
+      // ============================================================ 卡片：索引重建
+      //
+      // 这两件事原来是命令行（`scripts\1-convert.cmd`）；面板补上入口，插件里
+      // 几处提示（「手动更新（增量）」）也才有对应的按钮可指。
+      //
+      // ⚠ 它们是**长任务**：`POST /reindex` 派发即返回 `{job:{id}}`，之后由
+      //   ctx.runTask 轮询 `/jobs/<id>` —— 与 PDF 解析页同一套，进度打到底部日志。
+      const incrBtn = el("button", {
+        class: "btn btn-subtle", text: "增量更新",
+        title: "只处理变过的条目（秒级）。新加了文献、或改了元数据之后点它。",
+      });
+      const fullBtn = el("button", {
+        class: "btn btn-danger", text: "全部重建",
+        title: "全库重跑：重新解析正文、重切块、重算向量（100 篇约 1~3 分钟）。"
+             + "会二次确认。",
+      });
+
+      const rebuildKids = [
+        el("div", { class: "row" }, [
+          el("strong", { text: "索引重建" }),
+          el("span", { class: "faint",
+                       text: "改了 Zotero 库之后让知识库跟上；进度在底部日志里" }),
+        ]),
+        el("div", { class: "sep" }),
+        actionRow(el, incrBtn, "只处理变过的条目，秒级；日常新加文献后用这个"),
+        actionRow(el, fullBtn, "全库重跑（解析 / 切片 / 向量），会二次确认"),
+      ];
+      host.appendChild(el("div", { class: "card" }, rebuildKids));
+
       // ============================================================ 卡片：维护动作
       const MAINTAIN = [
         { task: "stats", text: "统计",
           desc: "知识库各表有多少行（条目 / 切片 / 向量 / 经验）。" },
+        { task: "check", text: "环境自检",
+          desc: "查依赖 / 索引 / Zotero 本地 API / Ollama 是否就绪（几秒）。" },
+        { task: "backup", text: "备份索引",
+          desc: "把 index.db（含经验层与权重）复制一份到知识库的 backups\\ 下。" },
+        { task: "reconcile", text: "对账巡检",
+          desc: "只读：核对知识库与 Zotero 的差异（归档 / 磁盘残留 / 失效引用），不改数据。" },
         { task: "views", text: "补齐分级文件",
           desc: "给每篇补「摘要与要点 / 图注与表格 / 权重与经验」——"
               + "侧栏对照页和右键菜单读的就是它。" },
@@ -536,15 +573,72 @@
         ]));
       }
 
+      /** 维护动作的中文名（只给日志与提示用，别拿它当分支条件）。 */
+      const MAINTAIN_LABEL = {
+        stats: "统计", check: "环境自检", backup: "备份索引",
+        reconcile: "对账巡检", views: "补齐分级文件", "sync-skill": "重载技能",
+        collections: "分类分布", "judge-status": "模型状态",
+      };
+
       async function doMaintain(task) {
-        showOut("维护动作 " + task + "：已发出，等子进程跑完（最多 120s）…");
+        const label = MAINTAIN_LABEL[task] || task;
+        showOut(label + "：已发出，等子进程跑完（最多 120s）…");
         try {
           const r = await ctx.post("/maintain", { task: task }, null, 120000);
-          showOut("维护动作 " + task + "：\n" + outputOf(r), "ok");
-          ctx.logAuto("维护动作 " + task + " 完成");
+          const ok = !(r && r.ok === false);
+          showOut(label + "：\n" + outputOf(r), ok ? "ok" : "err");
+          ctx.logAuto("维护动作「" + label + "」"
+                      + (ok ? "完成" : "回包报失败（见上方输出）"));
+          // ⚠ 不在这里调 KBAdmin.show("structure") 去"刷新"状态页：壳对已渲染过的页
+          //   是**直出缓存**（`show()` 见到 `done` 就返回），那样只会把用户切走、
+          //   并不会刷新数据。要看最新数字，关掉面板再开一次（缓存随窗口一起清）。
         } catch (e) {
-          showOut("维护动作 " + task + " 失败：" + msgOf(e), "err");
-          ctx.logAuto("维护动作 " + task + " 失败：" + msgOf(e));
+          showOut(label + "失败：" + msgOf(e), "err");
+          ctx.logAuto("维护动作「" + label + "」失败：" + msgOf(e));
+        }
+      }
+
+      /**
+       * 索引重建（长任务）：`POST /reindex` 派发即返回 `{job:{id}}`，
+       * 之后轮询 `/jobs/<id>`；进度进底部日志。
+       */
+      async function doReindex(full) {
+        const label = full ? "全部重建" : "增量更新";
+        if (full) {
+          const body = el("div", null, [
+            el("div", { text: "会重新解析全库正文、重切块、重算向量。" }),
+            el("div", { class: "faint",
+              text: "100 篇大约 1~3 分钟；跑之前建议先「备份索引」。"
+                  + "PDF 没变、档位没变的那批会按指纹跳过。" }),
+          ]);
+          const ok = await confirmBox(ctx, "确认「全部重建」？", body, "开始重建");
+          if (!ok) { showOut("已取消「全部重建」。"); return; }
+        }
+        showOut(label + "：已派发，等引擎…（进度见底部日志；关掉这一页任务也会继续）");
+        ctx.logAuto(label + "：已派发");
+        try {
+          const job = await runTask({
+            submit: function () {
+              return ctx.post("/reindex", full ? { full: true } : {});
+            },
+            interval: 1500,
+            onTick: function (j) {
+              const logs = Array.isArray(j.log) ? j.log : [];
+              const last = logs.length ? String(logs[logs.length - 1]) : "";
+              ctx.log("[" + label + "] "
+                      + (String(j.message || last || "运行中…"))
+                      + (j.percent == null || j.percent === ""
+                         ? "" : ("（" + j.percent + "%）")));
+            },
+          });
+          const res = (job && job.result) || job || {};
+          showOut(label + "：完成\n" + outputOf(res, JSON.stringify(res)), "ok");
+          ctx.logAuto(label + " 完成");
+          // 重建会改条目 / 切片数与权重榜，顺手刷新一次权重榜。
+          loadWeights();
+        } catch (e) {
+          showOut(label + "失败：" + msgOf(e), "err");
+          ctx.logAuto(label + " 失败：" + msgOf(e));
         }
       }
 
@@ -608,6 +702,8 @@
         if (ev.key === "Enter") doSearch();
       });
       btnWeight.addEventListener("click", function () { doWeight(); });
+      incrBtn.addEventListener("click", function () { doReindex(false); });
+      fullBtn.addEventListener("click", function () { doReindex(true); });
       btnWReload.addEventListener("click", function () { loadWeights(); });
       wPrev.addEventListener("click", function () {
         wState.page -= 1;          // clampPage 会把越界夹回来

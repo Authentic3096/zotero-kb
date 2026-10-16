@@ -112,7 +112,7 @@
  *          POST /apply-suggestion · POST /maintain
  *          PDF 解析：GET /mineru-status · POST /mineru/parse · POST /mineru/clear
  *          损坏查询：GET /quality-stats · POST /quality-scan ·
- *          POST /quality-repair · GET /quality-detail · GET|POST /config/figures
+ *          POST /quality-repair · GET /quality-detail
  *          高级：    POST /search · POST /weight · GET /weight-list ·
  *          GET /collections · POST /zotero-sync · POST /plugin ·
  *          POST /zotero-upgrade
@@ -239,10 +239,6 @@ Object.assign(ZoteroKB, {
     "POST /quality-scan": { method: "quality.scan", from: "body" },
     "POST /quality-repair": { method: "quality.repair", from: "body" },
     "GET /quality-detail": { method: "quality.detail", from: "query" },
-    // 图注/表格开关：**GET 读当前值**（页面那个勾选框必须显示真值，不能瞎勾），
-    // POST 写 —— 同一个路径两种方法，与 /llm-config 的写法一致。
-    "GET /config/figures": { method: "config.figuresGet", from: "query" },
-    "POST /config/figures": { method: "config.figures", from: "body" },
     // 高级（`POST /search`、`POST /weight` 批次 A 没有，本轮补上）
     "POST /search": { method: "kb.search", from: "body" },
     "POST /weight": { method: "kb.weight", from: "body" },

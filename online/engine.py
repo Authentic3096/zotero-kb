@@ -50,7 +50,6 @@ W2 批次 B（2026-10-13）新增的方法表（契约见开发说明）：
     papers.list / ai.summarize / ai.classify / ai.apply / maintain.run /
     mineru.status / mineru.parse / mineru.clear /
     quality.stats / quality.scan / quality.repair / quality.detail /
-    config.figures / config.figuresGet /
     kb.search / kb.weight / advanced.weightList / advanced.collections /
     advanced.zoteroSync / advanced.plugin / advanced.upgrade
 """
@@ -312,6 +311,28 @@ _SAFE_SHORT = {"✗": "绝不删", "○": "可删", "✓": "可删",
                "△": "看情况", "?": "看情况"}
 
 
+def _db_count_text() -> str:
+    """`index.db` 那一行的「内容量」：`N 篇 / M 切片`。
+
+    口径统一（2026-10-16）：**这里直接给真实数字**。早先返回的是"见上面状态栏"
+    那种占位话、由页面 `structure.js` 再去状态块里取数替换 —— 两处口径迟早会漂，
+    所以改成引擎算完直接给；页面只负责显示。
+    读不到索引库时给一句实话，**不留指着别处的占位**。
+    """
+    try:
+        import schemas as S
+        conn = S.connect(S.INDEX_DB)
+        try:
+            n = conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+            k = conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
+        finally:
+            conn.close()
+        return f"{int(n)} 篇 / {int(k)} 切片"
+    except Exception as exc:      # noqa: BLE001
+        log(f"读 index.db 的条目/切片数失败：{exc}")
+        return "（读不到索引库）"
+
+
 def _m_structure(params: dict) -> dict:
     """「知识库结构」页那张表。
 
@@ -324,7 +345,7 @@ def _m_structure(params: dict) -> dict:
         name      文件 / 文件夹名（目录带结尾反斜杠；glob 条目是模式名）
         what      存放内容（**已剥掉 markdown 的 `**`** —— Tk 不渲染它，
                   页面是 HTML 能渲染，但保持与面板同形更省心）
-        count     内容量（目录 "N 个文件" / db "见上面状态栏" / glob "N 个" /
+        count     内容量（目录 "N 个文件" / db "N 篇 / M 切片" / glob "N 个" /
                   单文件 "12.3 KB"）
         size      占用字节数（int）
         size_text 占用的人读写法（"12.3 MB"）
@@ -375,7 +396,7 @@ def _m_structure(params: dict) -> dict:
             # 只算主库：-wal / -shm 由 `index.db-*` 那一行单独列，这里再算一遍
             # 会让「合计」重复计（面板注释里记过这个坑）
             size = os.path.getsize(p)
-            count = "见上面状态栏"
+            count = _db_count_text()
         elif kind == "glob":
             # 一类文件合并成一行（历史备份这种：多份、同样大，逐行列反而看不清）
             import glob as _glob
@@ -2168,18 +2189,22 @@ def _m_ai_apply(params: dict) -> dict:
             "returncode": rc, "key": key, "category": category, "tags": tags}
 
 
-_MAINTAIN_TASKS = ("stats", "views", "collections", "judge-status", "sync-skill")
+_MAINTAIN_TASKS = ("stats", "views", "collections", "judge-status", "sync-skill",
+                   "check", "backup", "reconcile")
 
 
 def _m_maintain_run(params: dict) -> dict:
     """维护动作 → `{task, ok, output}`；`output` 是原样文本。
 
-    Tk 面板里这些是四个不同按钮（`maintain.py stats/views`、`judge.py status`、
-    `scripts/sync-skill.ps1`），页面把它们收成一个下拉 + 「运行」。
-    `collections`（2026-10-13 契约更正补的）**没有对应的脚本** ——
-    `maintain.py stats` 打的是"前 8 个分类 + 一堆别的数"，页面要完整分类分布，
-    所以直接问 `Searcher.collections()`；输出仍是同一形状的等宽文本，
-    页面不用为它开分支。
+    对应 `maintain.py <task>` / `judge.py status` / `scripts/sync-skill.ps1`，
+    以及 `collections`（没有对应脚本，直接问 `Searcher.collections()`）。
+    输出一律是同一形状的等宽文本，页面不用为某个 task 开分支。
+
+    ⚠ 三个**有副作用或耗时长**的 task 用之前要想清楚：
+      · `check`（环境自检）会探 Ollama 与 Zotero 本地 API，各带几秒超时；
+      · `backup`（备份索引）会复制 `index.db`（几十到几百 MB），要等它跑完；
+      · `reconcile`（对账巡检）**默认只读**（不带 `--apply`），会读一遍 Zotero
+        的 key 集合；页面只提供这一种只读用法。
     """
     task = str(params.get("task") or "").strip().lower()
     if task not in _MAINTAIN_TASKS:
@@ -2577,51 +2602,6 @@ def _m_quality_detail(params: dict) -> dict:
             "checker": d.get("checker") or "",
             "fulltext_src": d.get("fulltext_src") or "",
             "fulltext_chars": d.get("fulltext_chars")}
-
-
-def _figures_on() -> bool:
-    """`kb-location.json` 里"构建时提取图注与表格"的当前值（默认开）。"""
-    import schemas as S
-    try:
-        return bool(S.figures_enabled())
-    except Exception as exc:          # noqa: BLE001 —— 读不到按默认（开）处理
-        log(f"读 figures 开关失败（按开处理）：{exc}")
-        return True
-
-
-def _m_config_figures(params: dict) -> dict:
-    """构建时要不要抽图注与表格 → `{saved, figures}`（写 kb-location.json）。
-
-    复用 `schemas.write_location_config`（它知道位置优先级与写回格式，手写
-    JSON 容易写到另一份文件上）—— 与 Tk 面板那个勾选框同一份实现。
-    """
-    if "on" not in params:
-        raise RpcError("需要 on（true / false）")
-    import schemas as S
-
-    val = params.get("on")
-    if isinstance(val, str):
-        # 插件设置里可能传字符串 "0"/"false" —— 按关处理（与 env.save 一致）
-        val = val.strip().lower() not in ("0", "false", "no", "off", "")
-    else:
-        val = bool(val)
-    try:
-        path = S.write_location_config(figures=val)
-    except (ValueError, OSError) as exc:
-        raise RpcError(f"写入配置失败：{exc}") from exc
-    return {"saved": True, "figures": val,
-            "figures_enabled": _figures_on(),
-            "path": path}
-
-
-def _m_config_figures_get(params: dict) -> dict:
-    """读那个开关的当前值 → `{figures: bool}`。
-
-    为什么要有**读**端点（契约 2026-10-13 补）：页面那个勾选框必须显示**真值**
-    —— 假勾一个状态是骗人。值来自 `schemas.figures_enabled()`（与构建侧读的
-    是同一份 `kb-location.json`）。
-    """
-    return {"figures": _figures_on()}
 
 
 # ---------------------------------------------------------------- 高级
@@ -3191,8 +3171,6 @@ METHODS = {
     "quality.scan": _m_quality_scan,
     "quality.repair": _m_quality_repair,
     "quality.detail": _m_quality_detail,
-    "config.figures": _m_config_figures,
-    "config.figuresGet": _m_config_figures_get,
     "kb.search": _m_kb_search,
     "kb.weight": _m_kb_weight,
     # W3 线2.5：Zotero 文献列表的权重列要的是**全量映射**（与 HTTP GET /weights 同口径）。

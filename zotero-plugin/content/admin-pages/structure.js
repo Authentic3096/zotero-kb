@@ -181,21 +181,15 @@
       const rows = Array.isArray(struct) ? struct : (struct.rows || []);
 
       /**
-       * 内容量这一格。
+       * 内容量这一格：**直接显示引擎给的值**。
        *
-       * ⚠ `index.db` 那一行引擎给的是**字面量「见上面状态栏」**（照抄 Tk 面板口径，
-       *   见 tab_struct.py：面板里表格上方真有一行状态栏）。Zotero 页面里没有那行，
-       *   照着显示就是一句指着不存在东西的话 —— 所以这里**换成真实数字**
-       *   （状态块里的 文献 / 切片）。2026-10-13 与引擎作者拍板：引擎侧不动。
+       * ⚠ 口径已统一（2026-10-16）：引擎对 `index.db` 那一行已经给真实数字
+       *   （`N 篇 / M 切片`，见 `online/engine.py::_db_count_text`）。
+       *   早先引擎给的是"见上面状态栏"这种指着别处的占位话、由这里去状态块取数
+       *   替换 —— 两处口径迟早会漂，所以那段替换逻辑已删。
        */
       const countText = function (r) {
-        let c = String(r.count == null ? "" : r.count);
-        if (c.indexOf("见上面状态栏") >= 0 && status) {
-          const n = (status.items == null ? "?" : status.items);
-          const k = (status.chunks == null ? "?" : status.chunks);
-          c = n + " 篇 / " + k + " 切片";
-        }
-        return c;
+        return String(r.count == null ? "" : r.count);
       };
 
       /**

@@ -1810,7 +1810,7 @@ def health_payload() -> dict:
         "ok": True, "service": "zotero-kb", "version": "1.0",
         "kb_dir": S.KB_DIR,
         # ⚠ 项目根（代码/venv 所在）与知识库位置（数据所在）**是两回事**：
-        #   知识库默认跟着 Zotero 数据目录走，而 venv / gui.py / 脚本
+        #   知识库默认跟着 Zotero 数据目录走，而 venv / 脚本
         #   仍在项目目录里。插件要启动管理面板就必须知道**项目根**，
         #   不能从 kb_dir 反推 —— 本机就因为反推，面板报"找不到 py 环境"
         #   （kb 搬走后，反推出的目录是 Zotero 数据目录，那里没有 .venv）。
@@ -3457,7 +3457,7 @@ def self_test(port: int) -> int:
          token=True, expect=200)
 
     print("\n[8] 知识库位置与同步接口")
-    # /health 也要报告"项目根 / python / 面板脚本" —— 插件靠它启动管理面板。
+    # /health 也要报告"项目根 / python / 引擎脚本" —— 插件靠它找到项目根、启动管理面板。
     # ⚠ 这三个不能从 kb_dir 反推：知识库跟着 Zotero 数据目录走，
     #   代码/venv 还在项目目录里。本机就因为反推，面板报"找不到 py 环境"。
     h = call("GET", "/health", token=False, expect=200)
@@ -3466,7 +3466,7 @@ def self_test(port: int) -> int:
         panel_ok = os.path.exists(h.get("panel") or "")
         print(f"  PASS  /health 带 project_root={h['project_root']}")
         print(f"  {'PASS' if py_ok else 'FAIL'}  python 存在：{h.get('python')}")
-        print(f"  {'PASS' if panel_ok else 'FAIL'}  引擎脚本存在（项目根标记，W4 起替代 gui.py）：{h.get('panel')}")
+        print(f"  {'PASS' if panel_ok else 'FAIL'}  引擎脚本存在（项目根标记）：{h.get('panel')}")
         passed += 1 + (1 if py_ok else 0) + (1 if panel_ok else 0)
         failed += (0 if py_ok else 1) + (0 if panel_ok else 1)
     else:

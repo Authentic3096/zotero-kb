@@ -2636,7 +2636,7 @@ Object.assign(ZoteroKB, {
       body.push("（没有要处理的字段）");
     }
     body.push("提示：字段改了以后知识库里的索引不会自动跟着变；"
-              + "要让新值进检索/权重，右键「重建知识库条目（这一篇）」。");
+              + "要让新值进检索/权重，右键「重建本条目知识库」。");
     this.alertDialog(
       changed ? ("元数据已写入 " + done.length + " 项") : "元数据没有写入任何项",
       "《" + this.itemLabel(item) + "》\n\n" + body.join("\n\n"));
@@ -3094,7 +3094,7 @@ Object.assign(ZoteroKB, {
     }
     body.push("");
     body.push("提示：字段改了以后知识库索引不会自动跟着变；"
-              + "要让新值进检索，右键「重建知识库条目（这一篇）」。");
+              + "要让新值进检索，右键「重建本条目知识库」。");
     this.alertDialog(
       out.written ? ("已批量写入 " + out.written + " 项") : "批量写入没有成功",
       body.join("\n"));
@@ -3370,7 +3370,7 @@ Object.assign(ZoteroKB, {
     }
     if (!body.length) body.push("（什么都没改）");
     body.push("提示：改了以后知识库索引不会自动跟着变，"
-              + "要让新值进检索，右键「重建知识库条目（这一篇）」。");
+              + "要让新值进检索，右键「重建本条目知识库」。");
     this.alertDialog(
       report.changed.length ? ("类型/标题已修正 " + report.changed.length + " 项")
                             : "类型/标题没有改动",
@@ -4401,7 +4401,7 @@ Object.assign(ZoteroKB, {
         return "  · " + t;
       }).join("\n")
       + "\n\n可以先在「" + self.kbDir() + "」里手动打开它；"
-      + "如果这份文件本来就不该在，去面板点「补齐知识库分级文件」。");
+      + "如果这份文件本来就不该在，去面板「高级」页点「补齐分级文件」。");
     return "";
   },
 
@@ -4416,7 +4416,7 @@ Object.assign(ZoteroKB, {
    *
    * 为什么不在这里"现生成"：生成要在 Python 进程里读库（几百毫秒起，
    * 还要等子进程），而右键菜单点下去要立刻有反应。所以分工是：
-   * 插件负责打开，生成交给构建/面板的「补齐知识库分级文件」。
+   * 插件负责打开，生成交给构建/面板的「补齐分级文件」。
    */
   openKbLevel: function (key, levelId) {
     var self = ZoteroKB;
@@ -4427,8 +4427,8 @@ Object.assign(ZoteroKB, {
     if (!row.exists) {
       self.notify("这一层还没生成", "「" + row.label + "」"
         + "（" + row.path + "）\n\n"
-        + "去面板的「高级」页点「补齐知识库分级文件」，"
-        + "或跑一次「手动更新（增量）」。", null, true);
+        + "去面板的「高级」页点「补齐分级文件」，"
+        + "或在那里点「增量更新」。", null, true);
       return "";
     }
     return self.openKbPath(row.path, row.label);
@@ -5305,8 +5305,8 @@ Object.assign(ZoteroKB, {
               self.refreshCaps(true).then(() => {
                 self.notify("本地模型检查",
                   (self.caps.localWhy || "可用的")
-                  + "\n\n① 面板「运行环境」→「启动 Ollama」；"
-                  + "\n② 或在「模型接入」里改用 API 模型（填地址与 Key）。",
+                  + "\n\n① 启动 Ollama 程序（开始菜单 / 托盘图标）；"
+                  + "\n② 或到面板「运行环境 → 模型配置」改用外部 API（填地址与 Key）。",
                   null, true);
               }).catch(() => {});
             }, { ready: "", tooltip: lmCap.tooltip || "" });
@@ -5532,7 +5532,7 @@ Object.assign(ZoteroKB, {
             + (real.length > 1 ? "⚠ 一次选了多篇时，以第一项为准。\n" : "")
             + (missing.length
                ? ("⚠ 还没生成：" + missing.join("、")
-                  + "\n　去面板的「高级」页点「补齐知识库分级文件」。")
+                  + "\n　去面板的「高级」页点「补齐分级文件」。")
                : "（这一篇的五个层面都已生成）"));
 
           const op = doc.createXULElement
@@ -6775,7 +6775,7 @@ Object.assign(ZoteroKB, {
     if (provider === "openai") {
       const key = String(self.getPref(self.PREFS.apiKey, "") || "").trim();
       const base = String(self.getPref(self.PREFS.apiBaseUrl, "") || "").trim();
-      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境→模型接入）";
+      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境 → 模型配置）";
       return !!key && !!base;
     }
     let info = null;
@@ -6808,7 +6808,7 @@ Object.assign(ZoteroKB, {
       return null;
     }
     if (!info.api_up) {
-      self.caps.localWhy = "Ollama 没在运行（面板「运行环境」页点「启动 Ollama」）";
+      self.caps.localWhy = "Ollama 没在运行（启动 Ollama 程序：开始菜单 / 托盘图标）";
       return false;
     }
     const models = info.models || [];
@@ -6887,20 +6887,13 @@ Object.assign(ZoteroKB, {
 /**
  * 19-mineruguide.js —— **可选组件**的首次安装引导（MinerU 与 Ollama 两个）。
  *
- * ## 用户定的规矩（2026-10-05）
+ * ## 规矩
  *
  *   · 插件**首次启动**、且**没检测到**某个可选组件时，弹**一次**对话框：
- *     「打开安装引导」/「以后再说」。
- *   · 选「以后再说」就收进角落 —— 入口留在面板「知识库结构」页那些按钮里
- *     （面板那边**只在没装时才显示**，装了按钮就消失）。
- *   · 所以：**无论选哪个都记 `optionalGuideDone`**，不再打扰。
- *   · 已经装齐的用户**一次都不弹**（连 pref 都不写）。
- *
- * 两个组件：
- *   · **MinerU**（PDF 解析增强，装了公式变 LaTeX）
- *   · **Ollama**（本地模型后端，装了分类/摘要能离线跑）—— 用户后加的要求：
- *     「『ollama 程序』能不能也像 minerU 那样做成『ollama（可选）』然后也有
- *     一样逻辑的图形化引导」。
+ *     「看安装方法」/「以后再说」。
+ *   · 「看安装方法」弹一条提示，直接写清去哪装、怎么装（MinerU 用项目里的
+ *     `scripts\install-mineru.cmd`；Ollama 用官网安装器）。
+ *   · 无论选哪个都记 `optionalGuideDone`，不再打扰；已经装齐的用户一次都不弹。
  *
  * ## 为什么先本地看一眼、再问服务
  *
@@ -6913,12 +6906,12 @@ Object.assign(ZoteroKB, {
  * Ollama 走 `/health`（里面带 `ollama` 字段，同样是 `resolve_ollama()`）。
  * 服务没起来就按"本地看到什么算什么"处理。
  *
- * ## 为什么引导在 Zotero 里做（W4 2026-10-14 改写）
+ * ## 本文件只做"首启引导"
  *
- * 原来这一步是"拉起 Tk 面板的安装向导"（向导逻辑原本在 `tools/panels/*_guide.py`，
- * 那套代码已随 Tk 面板一起退役 2026-10-14）。
- * Tk 面板退役后那套代码已删，MinerU 的入口统一到**新面板的「PDF 解析」页**
- * （Ollama 在「运行环境」页）；本文件保留的是"首页首次引导对话框"。
+ * 早期那套图形化安装向导（说明代价 → 体检 → 后台安装）随旧的 Tk 面板一起退役，
+ * 那时它是 `tools/panels/*_guide.py`。现在**没有任何一键安装按钮**：面板的
+ * 「运行环境」页看四个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
+ * 所以这里**不许**再把用户指向"面板里的安装向导"。
  */
 Object.assign(ZoteroKB, {
 
@@ -7021,7 +7014,7 @@ Object.assign(ZoteroKB, {
 
   /**
    * 弹对话框。`missing` 是缺的组件名数组（"mineru" / "ollama"）。
-   * 返回 0 =「打开安装引导」，1 =「以后再说」。
+   * 返回 0 =「看安装方法」，1 =「以后再说」。
    *
    * 为什么用 `Services.prompt.confirmEx` 而不是自绘窗口：它是**同步**的、
    * 两个按钮的文案都能自定义，而且不需要额外 xhtml。
@@ -7029,22 +7022,23 @@ Object.assign(ZoteroKB, {
   askOptionalGuide: function (missing) {
     const names = (missing || []).map(function (m) {
       return m === "mineru" ? "MinerU（让 PDF 解析更准，公式变 LaTeX）"
-                            : "Ollama（本地模型，分类/摘要可离线跑）";
+                            : "Ollama（本地模型，分类/摘要/大纲可离线跑）";
     });
     const body = "知识库有两个**可选**组件还没装：\n\n"
       + names.map(function (n) { return "  · " + n; }).join("\n")
       + "\n\n不装完全不影响现有功能：\n"
       + "  · 不装 MinerU：正文仍用 Zotero 缓存 + PyMuPDF 解析；\n"
-      + "  · 不装 Ollama：在面板「运行环境 → 模型接入」里改成用 API（DeepSeek 等）即可。\n\n"
-      + "面板里那个安装引导会：说明代价 → 体检磁盘/网络 → 后台安装（可取消）→ 自动填好路径。\n\n"
-      + "要不要现在打开安装引导？";
+      + "  · 不装 Ollama：在面板「运行环境 → 模型配置」里改成用 API（DeepSeek 等）即可。\n\n"
+      + "要看怎么装吗？\n"
+      + "  · MinerU：双击项目里的 scripts\\install-mineru.cmd；\n"
+      + "  · Ollama：到 ollama.com 下 Windows 安装器。";
     try {
       const ps = Services.prompt;
       const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
         + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_IS_STRING;
       const win = (Zotero.getMainWindow && Zotero.getMainWindow()) || null;
       return ps.confirmEx(win, "知识库：可选组件（不装也能用）", body, flags,
-                          "打开安装引导", "以后再说", null, null, {});
+                          "看安装方法", "以后再说", null, null, {});
     } catch (e) {
       Zotero.debug("[zotero-kb] 弹可选组件引导失败：" + e);
       return 1;
@@ -7053,23 +7047,30 @@ Object.assign(ZoteroKB, {
 
 
   /**
-   * 打开对应组件的安装引导。`which` = "mineru" | "ollama"。
+   * 「看安装方法」：弹一条提示，直接写清**去哪装、怎么装**。
+   * `which` = "mineru" | "ollama"。
    *
-   * W4（2026-10-14）：原来这里是"拉起 Tk 面板的引导窗口"（起面板进程 + 传 --mineru-guide）。Tk 面板退役后那条路没了，改成**引导用户去新面板的对应页**
-   * （新面板第 5 页「PDF 解析」就是 MinerU 的入口；Ollama 在「运行环境」页）。
-   * 返回 false 让调用方知道"没自动打开"，但**给的是能照做的指引**，不是死路。
+   * ⚠ 这里**不能**把用户指向"面板里的安装向导" —— 那套图形化向导随旧的 Tk 面板
+   * 一起退役了；现在面板的「运行环境」/「PDF 解析」页只负责**看状态与跑解析**，
+   * 没有一键安装按钮。所以这里给的是真能照着做的两条路。
+   * 返回 false 让调用方知道"没自动打开"。
    */
   openOptionalGuide: function (which) {
     var self = ZoteroKB;
-    const where = which === "ollama"
-      ? "「运行环境」页（本地模型那一栏）"
-      : "「PDF 解析」页（MinerU 那一栏）";
+    const isOllama = (which === "ollama");
+    const how = isOllama
+      ? ("到 ollama.com/download 下 Windows 安装器装上（按用户安装，不需要管理员），\n"
+         + "再拉一个模型：ollama pull qwen3:4b-instruct。\n"
+         + "装完在面板「运行环境」页能看到它被认出来，"
+         + "「模型配置」那一栏就能选它。")
+      : ("双击项目里的 scripts\\install-mineru.cmd"
+         + "（加 -WithVlm 会连 VLM 档一起装），或在命令行跑：\n"
+         + "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\install-mineru.ps1\n"
+         + "装完在面板「运行环境」页会显示已认到，「PDF 解析」页可以开始解析。");
     try {
-      self.notify("安装引导在管理面板里",
-        "打开：工具菜单 →「知识库管理…」→ " + where + "。\n"
-        + "（也可以直接双击项目里的 "
-        + (which === "ollama" ? "（Ollama 用系统安装包）" : "scripts\\install-mineru.cmd")
-        + "）", null, false);
+      self.notify("装 " + (isOllama ? "Ollama" : "MinerU") + "（可选组件）",
+        how + "\n\n面板里的对应页只负责看状态、跑解析，没有一键安装按钮。",
+        null, false);
     } catch (e) { /* 提示失败不影响调用方 */ }
     return false;
   },
@@ -9712,7 +9713,7 @@ ZoteroKB.kbFormulaWaitJob = function (win, kind, jobId, tries) {
  *          POST /apply-suggestion · POST /maintain
  *          PDF 解析：GET /mineru-status · POST /mineru/parse · POST /mineru/clear
  *          损坏查询：GET /quality-stats · POST /quality-scan ·
- *          POST /quality-repair · GET /quality-detail · GET|POST /config/figures
+ *          POST /quality-repair · GET /quality-detail
  *          高级：    POST /search · POST /weight · GET /weight-list ·
  *          GET /collections · POST /zotero-sync · POST /plugin ·
  *          POST /zotero-upgrade
@@ -9839,10 +9840,6 @@ Object.assign(ZoteroKB, {
     "POST /quality-scan": { method: "quality.scan", from: "body" },
     "POST /quality-repair": { method: "quality.repair", from: "body" },
     "GET /quality-detail": { method: "quality.detail", from: "query" },
-    // 图注/表格开关：**GET 读当前值**（页面那个勾选框必须显示真值，不能瞎勾），
-    // POST 写 —— 同一个路径两种方法，与 /llm-config 的写法一致。
-    "GET /config/figures": { method: "config.figuresGet", from: "query" },
-    "POST /config/figures": { method: "config.figures", from: "body" },
     // 高级（`POST /search`、`POST /weight` 批次 A 没有，本轮补上）
     "POST /search": { method: "kb.search", from: "body" },
     "POST /weight": { method: "kb.weight", from: "body" },

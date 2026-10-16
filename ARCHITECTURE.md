@@ -841,6 +841,11 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 PDF 解析 · 损坏查询 · 元数据 · 分节纲要 · 高级 · 提示词**。页面只画自己那一页、
 数据一律经宿主半取（页面**不直接**向本机发请求）；一页一文件，改一页不动别人。
 
+日常维护集中在「高级」页：**索引重建**（`POST /reindex`，增量 / 全量两条）与
+**维护动作**（`POST /maintain`，task = `stats` / `check` / `backup` / `reconcile` /
+`views` / `sync-skill`）。重建是长任务 —— 派发即返回 `{job:{id}}`、页面轮询
+`/jobs/<id>`，进度打到底部日志；危险动作（全部重建、分类重整、插件动作）都要二次确认。
+
 两条容易踩的约束（细节见代码注释）：页面必须与宿主**同进程**（不要用
 `openInViewer(页面地址)`，那会把页面切进远程进程），且这类窗口里 `window.parent === window`
 —— 所以宿主**自建 `<browser>`** 并在页面的 `postMessage` 上**装一道分派钩子**。
