@@ -66,7 +66,7 @@ EXTS = {".py", ".js", ".mjs", ".xhtml", ".html", ".json", ".md", ".txt",
 # 的碎片）。白名单按**前缀**列 —— 以后再加 vendor 库不用改这里。
 #
 # ⚠ 这个豁免只认「原样引入」：vendor 目录里绝不能放我们自己写的代码，
-#   否则它就绕过了整份审计。纪律写在 docs/DEVELOPMENT.md。
+#   否则它就绕过了整份审计。纪律写在 ARCHITECTURE.md 的「开发与维护」。
 VENDOR_PREFIX = "zotero-plugin/content/vendor/"
 
 
