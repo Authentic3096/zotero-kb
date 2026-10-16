@@ -100,7 +100,8 @@
           el("span", { class: "grow" }),
           el("button", {
             class: "btn btn-subtle", text: "刷新",
-            on: { click: function () { KBAdmin.show("structure"); } },
+            title: "重新读一遍库规模与结构表（只读索引库与目录，秒级）",
+            on: { click: function () { KBAdmin.reload("structure"); } },
           }),
         ]),
         el("div", { class: "sep" }),

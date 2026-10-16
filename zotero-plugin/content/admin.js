@@ -176,6 +176,13 @@
    *   要的"关闭面板才清空"，不需要持久化，也不需要显式 clear。
    * ⚠ 渲染**失败**时把盒子和错误条留下给用户看，但**清掉 done/promise**，所以下次
    *   切回来会重试（否则那份坏页面会一直被当成"已缓存"）。
+   *
+   * ## 「刷新」怎么走：`KBAdmin.reload(id)`（= `show(id, {force:true})`）
+   *
+   * 页面自己的「刷新 / 重新检测」按钮**不要**再调 `show(id)` —— 那是切页用的，
+   * 见到 `done` 就直接返回，等于什么都不做（2026-10-16 修的真实 bug）。
+   * 走 `reload(id)` 会清掉这一页的 `done` 与旧 DOM，再跑一遍 `render()`；
+   * 正在渲染时（`promise` 非空）不叠第二次，直接把那次当作结果。
    */
   const pageState = new Map();      // id -> { box, promise, done }
 
@@ -192,7 +199,7 @@
     return st;
   }
 
-  async function show(id) {
+  async function show(id, opts) {
     const p = byId[id];
     if (!p) return;
     document.querySelectorAll("#nav button").forEach((b) => {
@@ -208,6 +215,21 @@
     const st = ensureBox(id);
     st.box.hidden = false;
 
+    // 强制重渲染（`KBAdmin.reload(id)` / `show(id, {force:true})`）：
+    // 清掉 `done` 标记与旧 DOM，让下面重新跑一遍 `render()`。
+    //
+    // 三条边界（都是"别把有意的缓存设计弄坏"）：
+    //   · **正在渲染时不做**（`st.promise` 非空就直接把它当结果）—— 两次渲染同时
+    //     往同一个 box 里画会得到重复/交错的 DOM；正在渲染本来就代表"数据是新的"。
+    //   · 旧 DOM 用 `textContent = ""` 整段清掉：挂在里面元素上的监听随节点一起
+    //     被释放，不会留在 document 上（页面级的 document 级监听只在弹层打开时
+    //     短暂存在，弹层自身负责移除；see attachPopup）。脚本里没有每页常驻的
+    //     setInterval —— 唯一的定时器在壳（boot 检查 + 长任务轮询），与页面重渲染无关。
+    //   · 只影响被点名的那一页；其它页的 box 与 `done` 原样不动。
+    if (opts && opts.force && !st.promise) {
+      st.done = false;
+      st.box.textContent = "";
+    }
     if (st.done || st.promise) return st.promise;   // 已渲染 / 正在渲染 → 直出
 
     st.promise = Promise.resolve()
@@ -217,7 +239,7 @@
         //   `el(...)` 直接抛 "el is not a function" —— 整页渲染失败，而外层 catch
         //   只显示一行红字，看着像"页面没做"（2026-10-13 预览回路抓到）。
         return p.render(st.box, Object.assign({}, helpers, {
-          api, get, post, call, runTask, log, logAuto, page,
+          api, get, post, call, runTask, log, logAuto, page, reload,
         }));
       })
       .then(() => { st.done = true; })
@@ -230,6 +252,11 @@
       })
       .then(() => { st.promise = null; });
     return st.promise;
+  }
+
+  /** 强制重渲染某一页（「刷新」按钮走这条路）。语义见上面 show() 的注释。 */
+  async function reload(id) {
+    return show(id, { force: true });
   }
 
   // ---------------------------------------------------------------- 自绘控件
@@ -623,7 +650,7 @@
 
   window.KBAdmin = {
     page: registerPage, api, get, post, call, runTask, log, logAuto,
-    show, el, table, dialog, select, boot, PAGES,
+    show, reload, el, table, dialog, select, boot, PAGES,
   };
   document.addEventListener("DOMContentLoaded", () => {
     // 各页脚本（admin-pages/*.js）在自己的文件里注册；等它们都执行完再 boot

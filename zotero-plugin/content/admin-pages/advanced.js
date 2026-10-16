@@ -589,9 +589,9 @@
           showOut(label + "：\n" + outputOf(r), ok ? "ok" : "err");
           ctx.logAuto("维护动作「" + label + "」"
                       + (ok ? "完成" : "回包报失败（见上方输出）"));
-          // ⚠ 不在这里调 KBAdmin.show("structure") 去"刷新"状态页：壳对已渲染过的页
-          //   是**直出缓存**（`show()` 见到 `done` 就返回），那样只会把用户切走、
-          //   并不会刷新数据。要看最新数字，关掉面板再开一次（缓存随窗口一起清）。
+          // ⚠ 不在这里调 KBAdmin.show("structure") 去"刷新"状态页：那是切页用的，
+          //   壳对已渲染过的页是直出缓存（`show()` 见到 `done` 就返回），只会把用户
+          //   切走、并不会刷新数据。要看最新数字，到「知识库结构」页按它自己的「刷新」。
         } catch (e) {
           showOut(label + "失败：" + msgOf(e), "err");
           ctx.logAuto("维护动作「" + label + "」失败：" + msgOf(e));

@@ -1166,6 +1166,34 @@ if (KB) {
     fs.existsSync(path.join(root, "scripts", "4-service.vbs")));
 }
 
+// ============ 管理面板：「刷新」必须真刷新（2026-10-16 修的既有 bug）============
+//
+// 壳对渲染过的页是**直出缓存**：`show(id)` 见到 `done` 就 return。所以页面自己
+// 的「刷新」按钮一旦调 `show(id)`（切页语义）就等于什么都不做 —— 真机上
+// 「知识库结构」页的「刷新」就是这么坏的。现在页面要走 `KBAdmin.reload(id)`。
+{
+  console.log("\n[面板] 强制重渲染通道");
+  const shell = fs.readFileSync(path.join(PLUGIN, "content", "admin.js"), "utf8");
+  check("壳提供 reload(id)（= show(id, {force:true})）并挂到 KBAdmin 上",
+    /async function reload\(id\)/.test(shell)
+    && /show\(id, \{ force: true \}\)/.test(shell)
+    && /show, reload,/.test(shell), "");
+  // 通用闸门：admin-pages 里任何**代码行**（行内注释不算）都不许用 show() 当刷新。
+  const pdir = path.join(PLUGIN, "content", "admin-pages");
+  const offlineRefresh = [];
+  fs.readdirSync(pdir).filter((f) => f.endsWith(".js")).forEach((f) => {
+    fs.readFileSync(path.join(pdir, f), "utf8").split("\n").forEach((ln, i) => {
+      const code = ln.split("//")[0];
+      if (code.indexOf("KBAdmin.show(") >= 0) offlineRefresh.push(f + ":" + (i + 1));
+    });
+  });
+  check("admin-pages 里没有人拿 KBAdmin.show() 当刷新（那是切页语义）",
+    offlineRefresh.length === 0, offlineRefresh.join(", "));
+  const structure = fs.readFileSync(path.join(pdir, "structure.js"), "utf8");
+  check("「知识库结构」页的「刷新」调 KBAdmin.reload(\"structure\")",
+    /KBAdmin\.reload\("structure"\)/.test(structure), "");
+}
+
 
   console.log("\n通过 " + pass + "，失败 " + fail);
     
