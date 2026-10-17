@@ -306,11 +306,14 @@
         return s;
       }
 
-      /** 来源标签：灰字=机器事实（自动探测/默认），黑字=用户设过的。 */
-      function sourceCell(r) {
+      /** 来源标签列（固定文案）与来源值列（自动探测/面板设置/环境变量/默认）。 */
+      function sourceLabelCell() {
+        return el("span", { class: "env-src-label", text: "来源：" });
+      }
+      function sourceValueCell(r) {
         const raw = String(r.source == null ? "" : r.source).trim();
-        const span = el("span", { class: "faint env-src",
-                                  text: raw ? ("来源：" + raw) : "来源：未知" });
+        const span = el("span", { class: "env-src",
+                                  text: raw || "未知" });
         span.title = raw === "自动探测"
           ? "这一项没有手填，值是自动探测出来的（灰字）"
           : (isUserSet(raw) ? "这一项是你明确设过的（黑字）：" + raw
@@ -401,26 +404,32 @@
         return el("div", { class: "env-path-cell" }, [disp, inp]);
       }
 
-      /** 一行：名字 · 路径 · 来源 · 状态 · 浏览… ·（必要时）恢复自动 */
+      /**
+       * 一行固定七列：名字 · 路径 · 「来源：」 · 来源值 · 状态 · 浏览… · 恢复自动。
+       *
+       * ⚠ 七列**每行都必须占满**：每一行是独立 grid，缺子项就会按本行内容重算列宽，
+       *   八行右半边立刻参差。没有「恢复自动」时留同宽空 span（2026-10-18 两轮返工）。
+       */
       function envRow(r) {
         const name = el("span", { class: "env-name",
                                   text: String(r.name || ENV_LABELS[r.key] || r.key) });
+        // 「恢复自动」只在**当前来源是面板设置**时有意义（其它档清不掉：
+        // 环境变量在系统里、`.env` 在文件里、自动探测本来就没手填）。
+        const restore = (String(r.source == null ? "" : r.source).trim() === "面板设置")
+          ? el("button", {
+              class: "btn btn-subtle", text: "恢复自动",
+              title: "清掉这一项的手填值，回到自动探测",
+              on: { click: function () { restoreAuto(r); } },
+            })
+          : el("span", { class: "env-restore-slot", "aria-hidden": "true" });
         const row = el("div", { class: "env-row" }, [
-          name, pathCell(r), sourceCell(r), statusCell(r),
+          name, pathCell(r), sourceLabelCell(), sourceValueCell(r), statusCell(r),
           el("button", {
             class: "btn", text: "浏览…", title: pickTitle(r),
             on: { click: function () { browseEnv(r); } },
           }),
+          restore,
         ]);
-        // 「恢复自动」只在**当前来源是面板设置**时有意义（其它档清不掉：
-        // 环境变量在系统里、`.env` 在文件里、自动探测本来就没手填）。
-        if (envEdit.sources[r.key] === "面板设置") {
-          row.appendChild(el("button", {
-            class: "btn btn-subtle", text: "恢复自动",
-            title: "清掉这一项的手填值，回到自动探测",
-            on: { click: function () { restoreAuto(r); } },
-          }));
-        }
         let note = null;
         if (r.note) note = el("div", { class: "env-note", text: String(r.note) });
         return el("div", { class: "env-item" }, [row, note]);

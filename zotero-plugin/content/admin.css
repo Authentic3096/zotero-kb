@@ -513,7 +513,8 @@ dialog[open] > :not(h2):not(.actions) {
    点一下才出现输入框（截图里那一列就整齐了，长路径也不会把行撑开）。 */
 .env-row {
   display: grid;
-  grid-template-columns: 9.5em minmax(0, 1fr) 7.2em 4.8em auto auto;
+  /* 名字 | 路径 | 「来源：」 | 来源值 | 状态 | 浏览… | 恢复自动 —— 七列全定宽 */
+  grid-template-columns: 9.5em minmax(0, 1fr) 3.6em 5.5em 5.2em 5.2em 5.8em;
   gap: var(--sp-s) var(--sp-m);
   align-items: center;
 }
@@ -526,11 +527,13 @@ dialog[open] > :not(h2):not(.actions) {
             font-size: var(--fs-mono); }
 .env-input { width: 100%; min-width: 0; font-family: Consolas,
              "Cascadia Mono", monospace; font-size: var(--fs-mono); }
-.env-src { justify-self: end; width: 7.2em; text-align: right;
-           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.env-st { justify-self: end; width: 4.8em; text-align: right;
-          white-space: nowrap; }
-.env-row .btn { white-space: nowrap; }
+.env-src-label { white-space: nowrap; color: var(--faint); text-align: left; }
+.env-src { width: 100%; text-align: left; overflow: hidden;
+           text-overflow: ellipsis; white-space: nowrap; }
+.env-st { width: 100%; text-align: left; white-space: nowrap; }
+.env-row .btn { width: 100%; white-space: nowrap; }
+/* 没有「恢复自动」的行也占住第 7 列，保证八行七列逐列对齐。 */
+.env-row > .env-restore-slot { display: block; width: 100%; }
 .env-item + .env-item { margin-top: 4px; }
 .env-note { grid-column: 1 / -1; color: var(--faint); font-size: var(--fs-small); }
 
