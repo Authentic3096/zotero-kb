@@ -15,16 +15,18 @@
  * （见 scripts/install-mineru.ps1）；Ollama 的默认位置是
  * `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`。这两个判断**不需要服务在跑**，
  * 一次 `exists` 就够，成本最低、也最不容易误报"没装"。
- * 但也可能装在别处（PATH 上、或用户自定义路径），那只有服务端知道：
- * MinerU 走 `/mineru-check`（`schemas.resolve_mineru()` 六级优先级），
- * Ollama 走 `/health`（里面带 `ollama` 字段，同样是 `resolve_ollama()`）。
- * 服务没起来就按"本地看到什么算什么"处理。
+ * 但也可能装在别处（PATH 上、或用户自定义路径），那只有引擎知道：
+ * MinerU 走引擎桥的 `/mineru-check`（`schemas.resolve_mineru()` 六级优先级），
+ * Ollama 走引擎桥的 `/health`（里面带 `ollama` 字段，同样是 `resolve_ollama()`）。
+ * 引擎没起来就按"本地看到什么算什么"处理。
+ * ⚠ 2026-10-16：这两条原来各有一条"老 HTTP（8765）兜底"，已删 —— 这段代码跑在
+ *   启动流程里，而 8765 已退役，兜底必然失败、只剩噪音。
  *
  * ## 本文件只做"首启引导"
  *
  * 早期那套图形化安装向导（说明代价 → 体检 → 后台安装）随旧的 Tk 面板一起退役，
  * 那时它是 `tools/panels/*_guide.py`。现在**没有任何一键安装按钮**：面板的
- * 「运行环境」页看四个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
+ * 「运行环境」页看八个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
  * 所以这里**不许**再把用户指向"面板里的安装向导"。
  */
 Object.assign(ZoteroKB, {
@@ -56,7 +58,8 @@ Object.assign(ZoteroKB, {
    * 排一次首启引导检查。
    *
    * 延迟 8 秒：① 让主窗口、设置面板先就绪（首屏别抢时间）；
-   * ② 让本地服务有机会起来（`/health` 那次探测在 startup 里）。
+   * ② 让引擎有机会起来（healthCheck 那次引擎桥探测在 startup 里 ——
+   *    2026-10-16 起它**不碰老 HTTP 8765**，这里也不再等那个服务）。
    * 用 `setTimeout` 而不是窗口钩子 —— 本机实测 `onMainWindowLoad` 在
    * **Zotero 启动时已存在的那个窗口**上不会被调用（见 00-core.js 的说明）。
    */
@@ -78,37 +81,32 @@ Object.assign(ZoteroKB, {
         || self.getPref(self.PREFS.mineruGuideDone, false)) return;
 
     const missing = [];
-    // ① MinerU：先看本地文件，再问服务
+    // ① MinerU：先看本地文件，再问引擎桥
     const kit = self.mineruKitPath();
     if (!(kit && self._exists && self._exists(kit))) {
       let seen = false;
-      // W3 线2.5（2026-10-14）：桥优先（`mineru.checkRaw` = `mineru.probe()` **原文**，
-      // 与 HTTP `/mineru-check` 同一份），拿不到再退回老 HTTP。
+      // ⚠ 2026-10-16（用户拍板"HTTP 噪音一起清"）：**删掉老 HTTP `/mineru-check`
+      //   兜底**。这条探测跑在**启动流程**里，而 8765 已退役 —— 兜底必然失败，
+      //   只剩"每次启动多一次连接错误"。桥（`mineru.checkRaw` = `mineru.probe()`
+      //   原文）拿不到就算没看到，不再去够老服务。
       try {
-        let info = null;
-        try { info = await self.kbAdminHostRoute("GET", "/mineru-check"); }
-        catch (e0) {
-          Zotero.debug("[zotero-kb] 引擎桥查 MinerU 失败（退回 HTTP）：" + e0);
-          info = await self.request("GET", "/mineru-check");
-        }
+        const info = await self.kbAdminHostRoute("GET", "/mineru-check");
         seen = !!(info && info.ok);
       } catch (e) {
-        Zotero.debug("[zotero-kb] 查 MinerU 不可用（引擎与老服务都没起来？）：" + e);
+        Zotero.debug("[zotero-kb] 引擎桥查 MinerU 不可用：" + e);
       }
       if (!seen) missing.push("mineru");
     }
-    // ② Ollama：先看本地文件，再问 /health
+    // ② Ollama：先看本地文件，再问引擎桥的 /health
     const ol = self.ollamaExePath();
     if (!(ol && self._exists && self._exists(ol))) {
       let seen = false;
       try {
-        // W3 线2.5：桥优先（`kb.health` 里带 ollama 路径），退回老 HTTP。
-        let info = null;
-        try { info = await self.kbAdminHostRoute("GET", "/health"); }
-        catch (e0) { info = await self.request("GET", "/health"); }
+        // ⚠ 2026-10-16：同 ①，**删掉老 HTTP /health 兜底**（启动路径不许碰 8765）。
+        const info = await self.kbAdminHostRoute("GET", "/health");
         seen = !!(info && info.ollama);
       } catch (e) {
-        Zotero.debug("[zotero-kb] /health 不可用（服务没起来？）：" + e);
+        Zotero.debug("[zotero-kb] 引擎桥 /health 不可用：" + e);
       }
       if (!seen) missing.push("ollama");
     }

@@ -17,8 +17,8 @@
  *   POST /maintain         {task:"collections"} → {task, ok, output}       120s
  *
  * 三条硬约束（与 structure.js / experience.js 完全一致）：
- *   · 只画自己这一页，取数一律 KBAdmin.get/post，不直接 fetch 本机服务
- *     （服务端故意不给带 Origin 的请求发 token）；
+ *   · 只画自己这一页，取数一律 KBAdmin.get/post（页面不发网络请求，
+ *     宿主半按路由表转成引擎方法）；
  *   · 样式只用 admin.css 的类，不写颜色字面量、不写内联 style；
  *   · 一页一个文件、不 import。
  *
@@ -351,7 +351,7 @@
       });
       const btnSum = el("button", {
         class: "btn btn-primary", text: "生成要点",
-        title: "给选中的这一篇写一段摘要要点（几百字，调本地模型）",
+        title: "给选中的这一篇写一段摘要要点（几百字，调一次模型）",
       });
       const btnDigest = el("button", {
         class: "btn btn-primary", text: "生成纲要",
@@ -363,7 +363,7 @@
       });
       const btnApply = el("button", {
         class: "btn btn-danger", text: "应用建议",
-        title: "把最近一次分类建议的分类 / 标签**写回 Zotero**（会二次确认）",
+        title: "把最近一次分类建议的分类 / 标签写回 Zotero（会二次确认）",
       });
 
       host.appendChild(el("div", { class: "card" }, [
@@ -379,8 +379,8 @@
         ]),
         el("div", { class: "row" }, [
           el("span", { class: "faint",
-            text: "「生成要点 / 纲要 / 分类建议」只调本地模型、不动 Zotero；"
-                + "只有「应用建议」会写回你的 Zotero 库。" }),
+            text: "「生成要点 / 纲要 / 分类建议」只调你配置的模型（本地 Ollama 或外部 API），"
+                + "不动 Zotero；只有「应用建议」会写回你的 Zotero 库。" }),
         ]),
       ]));
 

@@ -153,7 +153,7 @@ ZoteroKB.kbFormulaSendWhenReady = function (win, payload, tries) {
   }
   if (tries > 40) {
     self.kbFormulaAlert("阅读器那一列没能就绪，没打开编辑区。\n"
-      + "可以先在阅读器工具栏点一下「对照」，再右键公式。");
+      + "先在阅读器右侧打开知识库那一列（rail 上的图标），再右键公式。");
     return;
   }
   try {

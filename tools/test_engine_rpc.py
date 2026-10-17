@@ -468,10 +468,17 @@ def main() -> int:
         r, _ = send("env.check")
         d = r.get("data") or {}
         items = d.get("items") or []
-        check("env.check 四个位置、字段齐（name/path/ok/source）",
-              len(items) >= 4
-              and all(all(k in x for k in ("name", "path", "ok", "source"))
+        check("env.check 八个位置、字段齐（name/path/ok/source/auto/kind）",
+              len(items) >= 8
+              and all(all(k in x for k in ("name", "path", "ok", "source",
+                                           "auto", "kind"))
                       for x in items), f"{len(items)} 项")
+        check("env.check 里 MathType 那一项在（2026-10-16 纳入同一套解析）",
+              any(x.get("key") == "mathtype" for x in items),
+              ",".join(str(x.get("key")) for x in items))
+        check("env.check 每项都带 auto（面板据此判断『这一项动过没有』）",
+              all(isinstance(x.get("auto"), str) for x in items),
+              str([x.get("auto") for x in items])[:120])
         check("env.check 带 sources（谁覆盖谁）",
               isinstance(d.get("sources"), dict) and "python" in d["sources"])
         r, _ = send("env.save", {})
@@ -567,6 +574,11 @@ def main() -> int:
         check("service.restart 如实回「没有真的重启」",
               d.get("started") is False and bool(d.get("note")),
               str(d.get("note"))[:60])
+        # 2026-10-17：同步最后一条 HTTP 端点也搬到引擎（面板「偏好设置」页用）。
+        r, _ = send("kb.sync", {"mode": "none"})
+        check("kb.sync 没启用 / 没目标 → 明确报错（不静默成功）",
+              r.get("ok") is False and "同步" in str(r.get("error") or ""),
+              str(r.get("error"))[:60])
 
         r, _ = send("prompts.list")
         prows = (r.get("data") or {}).get("rows") or []

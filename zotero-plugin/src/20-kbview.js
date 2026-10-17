@@ -386,21 +386,18 @@ Object.assign(ZoteroKB, {
       Zotero.debug("[zotero-kb] 阅读器那列没装成（不影响条目库）：" + e2);
     }
     if (!host.onMessage) self.kbviewOnWindowMessage(win);
-    // 阅读器侧的两个全局东西（幂等；放在这里 = 有主窗口就一定装上）：
-    //   · Notifier 的 pageChange —— 翻页时立刻把右边滚到同一页（见 kbviewOnNotify）
-    //   · 阅读器工具栏的「对照」按钮（见 kbviewRegisterReaderToolbar）
+    // 阅读器侧的全局东西（幂等；放在这里 = 有主窗口就一定装上）：
+    //   · Notifier（tab 事件）—— 见 kbviewOnNotify：按页跟随早就删了，
+    //     原来剩下的唯一用途是"补挂阅读器工具栏的「对照」按钮"；
+    //     那个按钮 2026-10-16 已按用户要求删除，所以它现在是一条**保留的钩子**
+    //     （派发包 §一 明确要求别把 Notifier 整体删掉，将来真要做
+    //     「跳到这一页」还要用它）。不再有"注册工具栏按钮"这一步。
     try { self.kbviewRegisterNotifier(); }
     catch (e3) { Zotero.debug("[zotero-kb] 注册侧栏 Notifier 失败：" + e3); }
-    try { self.kbviewRegisterReaderToolbar(); }
-    catch (e4) { Zotero.debug("[zotero-kb] 注册阅读器工具栏按钮失败：" + e4); }
     // 阅读器右键菜单的「知识库：修正公式」（22-formula.js）。同样幂等，
     // 失败只写状态文件，不影响别的功能。
     try { self.kbFormulaInit(); }
     catch (e4b) { Zotero.debug("[zotero-kb] 注册阅读器右键菜单失败：" + e4b); }
-    // ⚠ 会话恢复出来的阅读器**早于**我们注册 renderToolbar，收不到那个一次性
-    //   事件 —— 所以注册完再"补注入"一次（见 kbviewInjectToolbarButton）。
-    try { self.kbviewLateDispatch(function () { self.kbviewEnsureReaderToolbar(); }, 1500); }
-    catch (e5) { /* ignore */ }
     // 那份页面**不在启动期加载**（实测 863ms，见 kbviewEnsurePage 的说明）：
     // 等窗口起来、空闲下来再挂。用户要是此刻就点开，kbviewOpen 里会立刻挂上。
     try {
@@ -1461,8 +1458,9 @@ Object.assign(ZoteroKB, {
     }
     self._kbvNotifierID = null;
     try {
-      // ⚠ 只要 tab（选中/新开标签 → 补阅读器工具栏的「对照」按钮）。
-      //   file 原来是给 pageChange（按页跟随）用的，2026-10-11 去跟随之后不再需要。
+      // ⚠ 只要 tab。file 原来是给 pageChange（按页跟随）用的，2026-10-11 去掉；
+      //   tab 原来是为了补挂阅读器工具栏的「对照」按钮，那个按钮 2026-10-16
+      //   删除后它是一条**保留的钩子**（派发包 §一：别把 Notifier 整体删掉）。
       self._kbvNotifierID = Zotero.Notifier.registerObserver({
         notify: function (event, type, ids) {
           try { ZoteroKB.kbviewOnNotify(event, type, ids); }
@@ -1486,12 +1484,12 @@ Object.assign(ZoteroKB, {
   kbviewOnNotify: function (event, type, ids) {
     var self = ZoteroKB;
     // ⚠ 这里**不再**处理 file/pageChange：按页跟随已去掉（2026-10-11 用户拍板），
-    //   翻页时右边那一列不再重推、不再重渲染。留下的只有「补工具栏按钮」一条 ——
-    //   会话恢复出来的阅读器是在我们注册 renderToolbar **之前** mount 的，
-    //   那个一次性事件不会再发，只能靠标签事件补挂（见 kbviewInjectToolbarButton）。
-    if (type === "tab" && (event === "select" || event === "add")) {
-      self.kbviewEnsureReaderToolbar();
-    }
+    //   翻页时右边那一列不再重推、不再重渲染。
+    // ⚠ 原来还剩一条「补阅读器工具栏的『对照』按钮」—— 那个按钮 2026-10-16
+    //   按用户要求删除（入口精简：rail 那一列就够了），所以这里不再需要补挂。
+    //   函数与 Notifier 注册**保留**（派发包 §一 明确要求别整体删掉；
+    //   将来真要做「跳到这一页」还要用这个 tab 事件钩子）。
+    return null;
   },
 
   /**
@@ -1520,126 +1518,6 @@ Object.assign(ZoteroKB, {
         self.kbviewSend(dock, { type: "page", page: info.page });
       } catch (e2) { /* 一个窗口出错不影响别的 */ }
     }
-  },
-
-  // ================================================================ 阅读器工具栏的「对照」按钮
-
-  /**
-   * 注册阅读器工具栏的「对照」按钮（**一键进入/退出对照模式**，派发包 §二）。
-   *
-   * Zotero.Reader.registerEventListener('renderToolbar', handler, pluginID)：
-   * 阅读器每次渲染工具栏都会发这个事件，handler 拿到
-   * {type, doc, params, append, reader}，**必须同步** append。
-   * pluginID 传了之后，插件停用时 Zotero 会自己把它摘掉（不用手动反注册）。
-   */
-  kbviewRegisterReaderToolbar: function () {
-    var self = ZoteroKB;
-    if (self._kbvReaderToolbar) return true;
-    if (!Zotero.Reader || typeof Zotero.Reader.registerEventListener !== "function") {
-      return false;
-    }
-    self._kbvReaderToolbar = function (event) {
-      try { ZoteroKB.kbviewAddToolbarButton(event); }
-      catch (e) { Zotero.debug("[zotero-kb] 加阅读器「对照」按钮失败：" + e); }
-    };
-    try {
-      Zotero.Reader.registerEventListener("renderToolbar", self._kbvReaderToolbar, self.id);
-      self.writeStatusFile({ kbViewReaderToolbar: "ok" });
-      return true;
-    } catch (e) {
-      self._kbvReaderToolbar = null;
-      self.writeStatusFile({ kbViewReaderToolbar: "FAIL: " + e });
-      return false;
-    }
-  },
-
-  /**
-   * 事件回调里往阅读器工具栏塞按钮。
-   *
-   * ⚠ **必须同步创建并 append**：阅读器那边 append 之后再调用就会抛
-   *   "Append must be called directly and synchronously in the event"
-   *   （见 resource/reader/reader.js 的 CustomSections）。
-   * ⚠ 每次渲染事件都会来、工具栏的 custom-sections 每次都被 replaceChildren 清空，
-   *   所以这里**每次都新建**一个（不是「已存在就跳过」）。
-   */
-  kbviewAddToolbarButton: function (event) {
-    var self = ZoteroKB;
-    const doc = event && event.doc;
-    if (!doc || !doc.createElement || typeof event.append !== "function") return false;
-    let win = null;
-    try { win = Zotero.getMainWindow(); } catch (e) { win = null; }
-    const btn = doc.createElement("button");
-    btn.setAttribute("id", "zotero-kb-kbview-toolbar-button");
-    btn.setAttribute("class", "toolbar-button");
-    btn.setAttribute("title", "对照：右侧显示这一页的知识库正文（一键开 / 关）");
-    btn.textContent = "对照";
-    if (win && self.kbviewIsOpen(win, "reader")) {
-      btn.setAttribute("aria-pressed", "true");
-      btn.setAttribute("data-kbview-open", "true");
-    }
-    btn.addEventListener("click", function () {
-      try {
-        let w = null;
-        try { w = Zotero.getMainWindow(); } catch (e2) { w = null; }
-        self.kbviewToggle(w || win, "reader");
-      } catch (e3) { Zotero.debug("[zotero-kb] 「对照」按钮出错：" + e3); }
-    });
-    event.append(btn);
-    return true;
-  },
-
-  /**
-   * 直接往阅读器工具栏**注入**一个「对照」按钮（幂等）。
-   *
-   * ⚠ 为什么需要它（真机实测，2026-10-11）：renderToolbar 是**一次性**的
-   *   （React 那个 CustomSections 只在 mount 时发一次），而 Zotero 会**在启动时
-   *   恢复会话里的阅读器标签** —— 那些阅读器可能在插件注册监听之前就挂好了，
-   *   于是我们永远收不到事件，工具栏上就没有按钮（现象：阅读器右侧那一列只能
-   *   靠 rail 图标开，工具栏上找不到入口）。
-   *   这里绕过事件、直接把按钮塞进 React 那个 .custom-sections 容器；
-   *   下次阅读器重渲染时会清掉，但那一刻 renderToolbar 会来，又会补上。
-   */
-  kbviewInjectToolbarButton: function (reader) {
-    var self = ZoteroKB;
-    const w = reader && reader._iframeWindow;
-    if (!w) return false;
-    let doc = null;
-    try { doc = w.document; } catch (e) { return false; }
-    if (!doc) return false;
-    if (doc.getElementById("zotero-kb-kbview-toolbar-button")) return true;
-    const host = doc.querySelector(".custom-sections");
-    if (!host) return false;                 // 工具栏还没渲染 → 等下一次
-    const btn = doc.createElement("button");
-    btn.setAttribute("id", "zotero-kb-kbview-toolbar-button");
-    btn.setAttribute("class", "toolbar-button");
-    btn.setAttribute("title", "对照：右侧显示这一页的知识库正文（一键开 / 关）");
-    btn.textContent = "对照";
-    if (self.kbviewIsOpen(Zotero.getMainWindow(), "reader")) {
-      btn.setAttribute("aria-pressed", "true");
-    }
-    btn.addEventListener("click", function () {
-      try { self.kbviewToggle(Zotero.getMainWindow(), "reader"); }
-      catch (e3) { Zotero.debug("[zotero-kb] 「对照」按钮出错：" + e3); }
-    });
-    const section = doc.createElement("div");
-    section.setAttribute("class", "section");
-    section.appendChild(btn);
-    try { host.appendChild(section); } catch (e4) { return false; }
-    return true;
-  },
-
-  /** 把「对照」按钮补到**所有已经挂好的**阅读器工具栏上（幂等）。 */
-  kbviewEnsureReaderToolbar: function () {
-    var self = ZoteroKB;
-    let n = 0;
-    try {
-      const rs = (Zotero.Reader && Zotero.Reader._readers) || [];
-      for (const r of rs) {
-        try { if (self.kbviewInjectToolbarButton(r)) n++; }
-        catch (e) { /* 单个阅读器失败不影响别的 */ }
-      }
-    } catch (e2) { /* ignore */ }
-    return n;
   },
 
   // ================================================================ 图片与分块（纯函数）

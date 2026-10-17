@@ -38,6 +38,10 @@ RE_DISPLAY = re.compile(r"\$\$(.*?)\$\$", re.S)
 RE_TAG = re.compile(r"\\tag\s*\{[^}]*\}")
 
 # MathType 的落点（安装器默认装到 x86 目录；64 位也有）。
+# ⚠ 2026-10-16 起真正找它的是 `schemas.resolve_mathtype()`（注册表 App Paths →
+#   卸载信息 InstallLocation → Program Files(x86)/Program Files → 这两条历史落点），
+#   与其它运行环境项共用一套优先级，并且**可以在管理面板「运行环境」页里手填**。
+#   这里保留这两个常量只为"解析器自己崩了"时兜底，别再往这里加路径。
 MATHTYPE_CANDIDATES = (
     r"C:\Program Files (x86)\MathType\MathType.exe",
     r"C:\Program Files\MathType\MathType.exe",
@@ -273,11 +277,30 @@ def preview_png_b64(key: str, page_index: int, block=None, rect=None,
 
 
 def mathtype_state() -> dict:
-    """MathType 在不在（**没装也不要隐藏按钮，只置灰**）。"""
-    for p in MATHTYPE_CANDIDATES:
-        if os.path.exists(p):
-            return {"installed": True, "exe": p}
-    return {"installed": False, "exe": ""}
+    """MathType 在不在（**没装也不要隐藏按钮，只置灰**）。
+
+    路径与其它运行环境项走**同一套解析器**（`schemas.resolve_mathtype`）：
+    调用方指定 > 环境变量 `MATHTYPE_EXE` > 面板设置（管理面板「运行环境」页）>
+    自动探测（注册表 → 安装目录 → 常见落点）> 救急 `.env` > 空。
+    返回形状不变：`{installed, exe}`；`exe` 是**解析出来的值**（用户手填了不存在的
+    路径时它非空、`installed` 为 False —— 调用方据此区分"没装"与"填错了"）。
+    """
+    exe = ""
+    try:
+        import schemas as _S
+        exe = str(_S.resolve_mathtype() or "")
+    except Exception:      # noqa: BLE001 —— 解析器出问题不该让整个公式功能不可用
+        exe = ""
+    if not exe:
+        # 解析器给不出（自己崩了/依赖缺失）：退回两个历史落点看一眼
+        for cand in MATHTYPE_CANDIDATES:
+            if os.path.exists(cand):
+                exe = cand
+                break
+    installed = bool(exe) and os.path.exists(exe)
+    # ⚠ exe 原样返回（哪怕它不存在）：用户手填了一个不存在的路径时，
+    #   调用方要能说出"你填的那个找不到"，而不是笼统的"本机没装"。
+    return {"installed": installed, "exe": exe}
 
 
 def _to_clipboard(text: str) -> bool:
@@ -323,7 +346,14 @@ def start_mathtype(latex: str = "", dry_run: bool = False) -> dict:
             out["why"].append("把 LaTeX 放进剪贴板失败（可以手动复制）")
     if not st["installed"]:
         out["ok"] = False
-        out["why"].append("本机没装 MathType")
+        # 区分"填错了"与"没装"：用户手填的路径（source 是面板/环境变量/.env）
+        # 指到不存在的文件时，笼统说"本机没装"会让人去重装 MathType，
+        # 而真正该做的是去「运行环境」页把那个路径改对。
+        if st["exe"]:
+            out["why"].append("MathType 路径不存在：" + st["exe"]
+                              + "（到管理面板「运行环境」页改，或点「恢复自动」）")
+        else:
+            out["why"].append("本机没装 MathType（可选组件；不装也能手改 LaTeX）")
         out["why"] = "；".join(out["why"])
         return out
     if dry_run:

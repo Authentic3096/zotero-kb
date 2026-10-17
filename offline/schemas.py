@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 try:
-    import settings as SETT          # .env 用户覆盖层（前两档：环境变量 > .env）
+    import settings as SETT          # 救急 .env 覆盖层（第 5 档，见 LAYER_ORDER）
 except ImportError:                  # 极端情况：offline\ 不在 sys.path 上
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import settings as SETT
@@ -39,7 +39,8 @@ except ImportError:                  # 极端情况：offline\ 不在 sys.path �
 #   OLLAMA_EXE  本地模型程序     官方安装器装到 %LOCALAPPDATA%\Programs\Ollama
 #
 # 解析优先级统一是（**唯一一份**定义见下面 LAYER_ORDER 与 _resolve_layered）：
-#   调用方指定 > 环境变量 > 运行时设置（用户配置/面板） > .env > 自动探测 > 兜底
+#   调用方指定 > 环境变量 > 面板设置（kb-location.json） > 自动探测
+#   > 救急 .env > 兜底
 # （.env 见 offline/settings.py；每个 resolve_* 都会把"最终值 + 来源"记下来，
 #  供面板「运行环境」页与启动日志显示，见下面"来源与优先级"一节）。
 # 用户配置读两个地方（先项目根、后用户级 —— 项目被挪走时还能靠用户级找回）：
@@ -68,17 +69,20 @@ _RESOLVED: dict[str, str] = {}
 # ---------------------------------------------------------------- 来源与优先级
 #
 # 每一个"运行环境项"的最终值都要能回答"它从哪来"（见 settings.py 的说明与
-# 面板「运行环境」页）。六档，**顺序就是优先级**（2026-10-10 调整过）：
+# 面板「运行环境」页）。六档，**顺序就是优先级**（2026-10-10 与 2026-10-16 调整过）：
 #
-#   调用方指定 > 环境变量 > 运行时设置 > .env > 自动探测 > 默认
+#   调用方指定 > 环境变量 > 面板设置 > 自动探测 > 救急 .env > 默认
 #
 # ⚠ 2026-10-10 为什么把"运行时设置"提到 `.env` 之前：原来的顺序是 .env 赢过
 #   面板，于是"面板里明明保存了却不生效"（一个陈旧的 .env 键一直盖着）。面板是
 #   用户最后操作的地方，应该赢；面板起不来时运行时设置通常为空 → 自然回落
 #   .env，救急场景仍成立。外层强制仍用**环境变量**表达（那一档没动）。
-# ⚠ "自动探测"这一档**包含 runtime.json**（程序自己写的探测缓存）—— 它排在
-#   `.env` 之后：用户手写的覆盖文件应当胜过程序缓存，否则"清空面板设置后回落
-#   .env"永远做不到。
+# ⚠ 2026-10-16 为什么又把"自动探测"提到 `.env` 之前（用户要求）：**能自动探测
+#   对的时候，`.env` 不该偷偷盖住它**。`.env` 从此只做"探测也探不到时的救急
+#   层"；它是"面板起不来时唯一的入口"，但那不等于"它优先于机器上的事实"。
+#   （注意：这不影响"面板设置赢过 .env" —— 面板仍在前两档。）
+# ⚠ "自动探测"这一档**包含 runtime.json**（程序自己写的探测缓存）。它现在排在
+#   `.env` 之前：探测（含缓存）拿得到就不该让手写文件插进来。
 # ⚠ 环境变量与 .env 这两档**一律采信、不检查文件是否存在** —— 用户在外层明确
 #   写的路径哪怕写错了也照用，面板会把它标成"✗ 找不到"。这是有意的：
 #   "python.exe 找不到"正是最需要被看见的问题，静默回落到自动探测等于把错误藏
@@ -86,14 +90,19 @@ _RESOLVED: dict[str, str] = {}
 #   会记进 _REJECTED，面板据此提示"你填的那个不存在"。
 SRC_EXPLICIT = "调用方指定"
 SRC_ENV = "环境变量"
-SRC_DOTENV = ".env"
-SRC_RUNTIME = "运行时设置"
+SRC_DOTENV = "救急 .env"
+SRC_RUNTIME = "面板设置"
 SRC_AUTO = "自动探测"
 SRC_DEFAULT = "默认"
 
-# 要记录/展示来源的项（与面板「运行环境」页、启动日志一一对应）
+# 要记录/展示来源的项（与面板「运行环境」页、启动日志一一对应）。
+# 前 8 项 = 面板「运行环境」页从上到下的可编辑行序（用户 2026-10-16 指定）：
+# 项目目录 / Python / Ollama / MinerU / MinerU HOME / 知识库位置 /
+# Zotero 数据目录 / MathType。
+# ⚠ 最后的 `figures` 是**开关**不是路径（面板不画成输入框）—— 但它照样要能回答
+#   "被谁盖住"，所以留在 sources 里（`engine._env_items` 只挑前 8 项画表）。
 ENV_SOURCE_KEYS = ("project_root", "python", "ollama", "mineru", "mineru_home",
-                   "kb_dir", "zotero_data_dir", "figures")
+                   "kb_dir", "zotero_data_dir", "mathtype", "figures")
 
 _RESOLVED_SOURCE: dict[str, str] = {}
 _REJECTED: dict[str, list] = {}
@@ -115,7 +124,7 @@ def _reject(key: str, source: str, value, why: str) -> None:
 
 # 优先级**只在这里定义一次**，所有 resolve_* 都按它取（见上面"来源与优先级"）。
 # 顺序即下标顺序；任何"某档要排到某档之前"的改动都改这一处与 _resolve_layered。
-LAYER_ORDER = (SRC_EXPLICIT, SRC_ENV, SRC_RUNTIME, SRC_DOTENV, SRC_AUTO,
+LAYER_ORDER = (SRC_EXPLICIT, SRC_ENV, SRC_RUNTIME, SRC_AUTO, SRC_DOTENV,
                SRC_DEFAULT)
 
 
@@ -167,14 +176,16 @@ def _resolve_layered(key: str, env_name: str, runtime_cands, dotenv_name,
         if not why:
             return _remember(key, p, SRC_RUNTIME)
         _reject(key, SRC_RUNTIME, p, why)
-    # 第 4 档：.env（一律采信，不检查存在）
-    hit = _env_layer_dotenv(dotenv_name or env_name)
-    if hit:
-        return _remember(key, _abspath(hit[0]), SRC_DOTENV)
-    # 第 5 档：自动探测（含 runtime.json 这个程序缓存）
+    # 第 4 档：自动探测（含 runtime.json 这个程序缓存）
+    # ⚠ 2026-10-16 起它排在 `.env` **之前**：自动探测能对的时候，手写的救急层
+    #   不该偷偷盖住它（见文件头"来源与优先级"一节的说明）。
     got = auto()
     if got:
         return _remember(key, got, SRC_AUTO)
+    # 第 5 档：.env（救急层；一律采信，不检查存在）
+    hit = _env_layer_dotenv(dotenv_name or env_name)
+    if hit:
+        return _remember(key, _abspath(hit[0]), SRC_DOTENV)
     # 第 6 档：默认
     return _remember(key, default, SRC_DEFAULT)
 
@@ -189,6 +200,8 @@ _SHADOW_KEYS = {
     "mineru_home": ("MINERU_HOME", ("env.mineru_home", "mineru_home")),
     "kb_dir": ("KB_DIR", ("kb_dir",)),
     "zotero_data_dir": ("ZOTERO_DATA_DIR", ("zotero_data_dir",)),
+    # MathType（可选；公式就地纠错里「用 MathType 编辑」那个按钮）与其它位置同一套。
+    "mathtype": ("MATHTYPE_EXE", ("env.mathtype", "mathtype_exe")),
     "figures": ("ZOTERO_KB_FIGURES", ("figures",)),
 }
 
@@ -220,8 +233,14 @@ def resolve_sources() -> dict:
     返回每项 {source, rejected, shadowed}：
       source    最终值来自哪一档
       rejected  高优先档填了但被否（如面板写了不存在的路径）
-      shadowed  也写了、但**没生效**的档（面板据此提示"被谁覆盖"）—— 
+      shadowed  也写了、但**没生效**的档（面板据此提示"被谁覆盖"）——
                 用户 2026-10-10 要求：`.env` 与面板设置两边都写时要看得见
+
+    ⚠ 2026-10-16 改优先级后这里必须跟着改：`.env` 不再是"面板之后第一档"，
+      而是"自动探测之后"。于是"面板写了但没生效"不再只有"回落 .env"那一种情形
+      —— 自动探测赢过面板（面板值被否/为空）时也要报出来。
+      被否掉的档（在 rejected 里）**不重复进 shadowed**：那种情况下真正的原因是
+      "你填的那个不存在"，说成"被更高优先档盖住"会误导。
 
     会顺手把各 resolve_* 触发一遍（它们幂等：只读盘 + 文件系统检查），
     以保证每一项都有记录。
@@ -235,19 +254,32 @@ def resolve_sources() -> dict:
     figures_enabled()
     _resolve_kb_dir()
     _resolve_zotero_data_dir()
+    resolve_mathtype()
     out = {}
     for k in ENV_SOURCE_KEYS:
         src = _RESOLVED_SOURCE.get(k, "")
         env_name = (_SHADOW_KEYS.get(k) or ("", ()))[0]
         dot = SETT.raw(env_name) if env_name else ""
         rt = _runtime_written(k)
+        # 该档写过、但被否掉的值（normcase 后的绝对路径）—— 这些只算 rejected
+        rejected_vals = set()
+        for bad in (_REJECTED.get(k) or []):
+            try:
+                rejected_vals.add(os.path.normcase(_abspath(bad.get("value"))))
+            except Exception:      # noqa: BLE001
+                pass
         shadowed = []
         # .env 里也写了，但最终不是它生效
         if dot and src != SRC_DOTENV:
             shadowed.append({"source": SRC_DOTENV, "value": dot})
-        # 反向：.env 生效，而面板/用户级也写过
-        if rt and src == SRC_DOTENV:
-            shadowed.append({"source": SRC_RUNTIME, "value": rt})
+        # 面板/用户级也写过，但最终不是它生效（排除"写过但不存在"那种）
+        if rt and src != SRC_RUNTIME:
+            try:
+                key = os.path.normcase(_abspath(rt))
+            except Exception:      # noqa: BLE001
+                key = ""
+            if key not in rejected_vals:
+                shadowed.append({"source": SRC_RUNTIME, "value": rt})
         out[k] = {"source": src,
                   "rejected": list(_REJECTED.get(k) or []),
                   "shadowed": shadowed}
@@ -259,7 +291,8 @@ ENV_SOURCE_LABELS = {
     "project_root": "项目目录", "python": "Python 解释器",
     "ollama": "Ollama（可选）", "mineru": "MinerU（可选）",
     "mineru_home": "MinerU HOME", "kb_dir": "知识库位置",
-    "zotero_data_dir": "Zotero 数据目录", "figures": "抽取图注与表格",
+    "zotero_data_dir": "Zotero 数据目录", "mathtype": "MathType（可选）",
+    "figures": "抽取图注与表格",
 }
 
 
@@ -269,6 +302,7 @@ def env_report_lines() -> list:
                  "ollama": resolve_ollama, "mineru": resolve_mineru,
                  "mineru_home": mineru_home, "kb_dir": _resolve_kb_dir,
                  "zotero_data_dir": _resolve_zotero_data_dir,
+                 "mathtype": resolve_mathtype,
                  "figures": figures_enabled}
     src = resolve_sources()
     out = []
@@ -347,13 +381,29 @@ def _read_location_config() -> dict:
     return {}
 
 
-def write_location_config(**kw: Any) -> str:
+def write_location_config(_remove=None, **kw: Any) -> str:
     """更新位置配置（合并写，不覆盖别的键）。
+
+    `_remove` 是**要删掉的键名列表**（支持 `env.python` 这种一段式路径）——
+    用户点「恢复自动」时要真的把键删掉，而不是写一个空串（那会留下残渣、
+    也可能被别的消费者当成"设置过"）。
 
     先写项目根；那里不可写（只读安装、OneDrive 同步冲突等）就退到用户级。
     返回实际写入的文件路径。
     """
     cfg = dict(_read_location_config())
+    # env 段要**深一层复制**：_read_location_config 的结果可能被缓存/共享，
+    # 直接 pop 会把别人的那份也改了（虽然是每次重读，但别赌这个）。
+    if isinstance(cfg.get("env"), dict):
+        cfg["env"] = dict(cfg["env"])
+    for name in (_remove or []):
+        parts = [p for p in str(name).split(".") if p]
+        if len(parts) == 1:
+            cfg.pop(parts[0], None)
+        elif len(parts) == 2 and isinstance(cfg.get(parts[0]), dict):
+            cfg[parts[0]].pop(parts[1], None)
+            if not cfg[parts[0]]:
+                cfg.pop(parts[0], None)
     for k, v in kw.items():
         if v is None:
             continue
@@ -375,51 +425,83 @@ def write_location_config(**kw: Any) -> str:
     raise OSError(f"位置配置写入失败（试过 {targets}）：{last_err}")
 
 
-# ---------------------------------------------------------------- 运行环境三项
+# ---------------------------------------------------------------- 运行环境各项
 #
-# 项目目录 / Python 解释器 / Ollama 程序这三项有两个入口：
-#   · Zotero 插件的设置面板（走 /env-config 端点）
-#   · 管理面板的「运行环境」页（直接调这里，服务没在跑时也能改）
-# 两条通道**必须同一套语义**，否则会漂移成"插件里清空不生效、面板里生效"
-# 这种查不出来的不一致。所以真正的写入逻辑只有下面这一份。
+# 项目目录 / Python / Ollama / MinerU / MinerU HOME / 知识库位置 /
+# Zotero 数据目录 / MathType（可选）这些"位置"只有一个**用户可见的设置面**：
+# 管理面板的「运行环境」页（走宿主半的 `POST /env-save`，直接写 kb-location.json）。
+# 这里这份 `save_env_config` 是**脚本/后备通道**（引擎 `env.save` 用它），语义与
+# 面板那一侧一致：非空 → 校验后写；空串 → **删掉**该项的键（交回自动探测）。
+#
+# ⚠ 2026-10-16：先前"空串 = 写一个空字符串"的写法会在 kb-location.json 里留下
+#   `"python": ""` 这类残渣（每次保存都越积越多）；现在改成真正**删除**键。
 
-ENV_KEYS = ("project_root", "python", "ollama", "mineru")
-# env 段的键 → 老版本用过的**扁平键**（resolve_* 也认它们，写的时候一起清）
+ENV_KEYS = ("project_root", "python", "ollama", "mineru", "mineru_home",
+            "kb_dir", "zotero_data_dir", "mathtype")
+# env 段的键 → 老版本用过的**扁平键**（resolve_* 也认它们，写/删的时候一起动）
 _ENV_FLAT_KEY = {"project_root": "project_root", "python": "python_exe",
-                 "ollama": "ollama_exe", "mineru": "mineru_exe"}
+                 "ollama": "ollama_exe", "mineru": "mineru_exe",
+                 "mineru_home": "mineru_home", "kb_dir": "kb_dir",
+                 "zotero_data_dir": "zotero_data_dir",
+                 "mathtype": "mathtype_exe"}
+# 值该是"目录"还是"文件"（校验口径）
+_ENV_DIR_KEYS = {"project_root", "mineru_home", "kb_dir", "zotero_data_dir"}
+# 允许"还不存在"的目录项（知识库可能还没建；面板也允许先指到将来要用的位置）
+_ENV_MAYBE_MISSING = {"kb_dir"}
+
+
+def _env_value_problem(key: str, val: str) -> str:
+    """这一项的值能不能用？返回 "" 表示可以，否则是一句给用户看的原因。"""
+    if not os.path.exists(val):
+        if key in _ENV_MAYBE_MISSING:
+            return ""
+        return "指向的位置不存在"
+    if key in _ENV_DIR_KEYS:
+        return "" if os.path.isdir(val) else "要是一个目录"
+    return "" if os.path.isfile(val) else "要是一个文件"
 
 
 def save_env_config(values: dict) -> dict:
-    """保存运行环境的三个位置。**只处理传进来的键**。
+    """保存运行环境的各个位置（**只处理传进来的键**）。
 
-    · 传了非空值 → 校验路径存在，写进 `env` 段（同时更新对应的扁平键）；
-    · 传了空串   → 这一项**交回自动探测**（键写成空串；不这么写的话旧值
-      优先级更高，用户就永远回不到"自动找到 .venv"的状态）；
+    · 传了非空值 → 校验路径，写进 `env` 段（同时更新对应的扁平键）；
+    · 传了空串   → **删掉**这一项的键，把它交回自动探测（用户要求：
+      「恢复自动」必须真的回到自动探测，而不是留一个空串值）；
     · 没传的键   → 不动。
 
-    校验不过抛 ValueError（文案是给用户看的）。返回 {"path", "saved"}。
+    校验不过抛 ValueError（文案是给用户看的）。返回 {"path", "saved", "cleared"}。
     """
     env: dict = {}
     flat: dict = {}
+    clear: list[str] = []
+    cleared_keys: list[str] = []
+    touched = False
     for key in ENV_KEYS:
         if key not in values:
             continue
+        touched = True
         val = str(values.get(key) or "").strip().strip('"')
-        if val:
-            val = os.path.abspath(os.path.expanduser(val))
-            if not os.path.exists(val):
-                raise ValueError(f"{key} 指向的位置不存在：{val}")
-            if key == "project_root" and not os.path.isdir(val):
-                raise ValueError(f"项目目录要是一个目录：{val}")
+        if not val:
+            clear.append("env." + key)
+            clear.append(_ENV_FLAT_KEY[key])
+            cleared_keys.append(key)
+            continue
+        val = os.path.abspath(os.path.expanduser(val))
+        why = _env_value_problem(key, val)
+        if why:
+            raise ValueError(f"{ENV_SOURCE_LABELS.get(key, key)}{why}：{val}")
         env[key] = val
         flat[_ENV_FLAT_KEY[key]] = val
-    if not env:
+    if not touched:
         raise ValueError("没有要写入的键")
-    path = write_location_config(env=env, **flat)
-    # 运行时状态（用户级、与项目无关）一起清/写：项目根被改错时，
+    path = write_location_config(_remove=clear, env=env, **flat)
+    # 运行时状态（用户级、与项目无关）一起写：项目根被改错时，
     # 下次也能从这里把 Python 找回来。
-    write_runtime_state(**env)
-    return {"path": path, "saved": env}
+    # ⚠ 被清掉的项**必须一并从 runtime.json 删掉**：不然「恢复自动」之后
+    #   `_auto` 又会从这份缓存里把用户那个值读回来（值没变、只有来源标签变了），
+    #   用户看到的就是"点了恢复自动却没生效"。
+    write_runtime_state(_remove=cleared_keys, **env)
+    return {"path": path, "saved": env, "cleared": clear}
 
 
 def _config_dir() -> str:
@@ -440,13 +522,18 @@ def read_runtime_state() -> dict:
         return {}
 
 
-def write_runtime_state(**kw: Any) -> str:
-    """写运行时状态。
+def write_runtime_state(_remove=None, **kw: Any) -> str:
+    """写运行时状态（支持 `_remove=[键名]` 删掉几项）。
 
     为什么和位置配置分开存：探测到的路径是**这台机器的状态**，不该提交到
     版本库；而 kb-location.json 是用户的**意图**，可能要跟着仓库走。
+
+    `_remove` 的用途：用户「恢复自动」清掉某个面板设置时，这里那份缓存也得清，
+    否则自动探测会从缓存里把同一个值读回来（见 save_env_config 的注释）。
     """
     state = dict(read_runtime_state())
+    for name in (_remove or []):
+        state.pop(str(name), None)
     state.update({k: v for k, v in kw.items() if v is not None})
     path = runtime_state_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -543,13 +630,13 @@ def resolve_python(explicit: str = "") -> str:
     记下来供面板/日志显示）：
       1. `explicit` —— 调用方**明确要求**的，验证存在后采信
       2. 环境变量 `ZOTERO_KB_PYTHON` —— 用户在**外层**写的，一律采信
-      3. 运行时设置（`env.python` / `python_exe`）—— **用户在设置面板里选/写的**
-      4. `.env` 里的 `ZOTERO_KB_PYTHON` —— 用户在项目根手写的覆盖层
-      5. 自动探测：本项目 `.venv` → 运行时状态里的 python（**程序缓存，最可能
+      3. 面板设置（`env.python` / `python_exe`）—— **用户在管理面板里选/写的**
+      4. 自动探测：本项目 `.venv` → 运行时状态里的 python（**程序缓存，最可能
          陈旧，所以排在 .venv 之后**）→ 系统 PATH 上的 python
+      5. `.env` 里的 `ZOTERO_KB_PYTHON` —— 救急层（探测都探不到时才用它）
       6. 当前解释器
 
-    ⚠ 为什么"运行时设置"要分等级：
+    ⚠ 为什么"面板设置"要分等级：
       · `env.python` / `python_exe` 是**用户手动选的** —— 那是明确意图，该尊重；
       · `runtime.json` 是**程序自己写的缓存**（`write_runtime_state`），可能来自
         另一个项目目录。无条件信任它会导致"新目录里的代码去用旧目录的解释器"
@@ -568,7 +655,7 @@ def resolve_python(explicit: str = "") -> str:
             return _remember("python", p, SRC_EXPLICIT)
         _reject("python", SRC_EXPLICIT, p, "文件不存在")
 
-    # 第 5 档的自动探测：项目 .venv → 程序缓存 → 系统 PATH
+    # 第 4 档的自动探测：项目 .venv → 程序缓存 → 系统 PATH
     def _auto() -> str:
         project_cands = _scan_for_python(root)
         if project_cands:
@@ -659,7 +746,7 @@ def resolve_project_root(explicit: str = "") -> str:
             return "不是本项目（offline/schemas.py 不是正在跑的那个文件）"
         return ""
 
-    # 第 5 档的自动探测：向上找带 markers 的目录（从本文件位置起 —— 本文件就在项目里）
+    # 第 4 档的自动探测：向上找带 markers 的目录（从本文件位置起 —— 本文件就在项目里）
     def _auto() -> str:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for _ in range(4):
@@ -686,7 +773,7 @@ def resolve_project_root(explicit: str = "") -> str:
 def resolve_ollama(explicit: str = "") -> str:
     """决定 Ollama 可执行文件路径。找不到返回空串（它是可选组件）。
 
-    优先级：调用方参数 > 环境变量 > 运行时设置（面板） > .env > 自动探测 > 默认
+    优先级：调用方参数 > 环境变量 > 面板设置 > 自动探测 > 救急 .env > 默认
     （唯一一份顺序见 LAYER_ORDER，与 resolve_python 完全一致；来源会记下来
     供面板/日志显示）。
     """
@@ -702,7 +789,7 @@ def resolve_ollama(explicit: str = "") -> str:
             return _remember("ollama", p, SRC_EXPLICIT)
         _reject("ollama", SRC_EXPLICIT, p, "文件不存在")
 
-    # 第 5 档的自动探测：先看程序缓存（runtime.json，上次探测记下来的），
+    # 第 4 档的自动探测：先看程序缓存（runtime.json，上次探测记下来的），
     # 再扫官方默认位置 —— 命中就记回运行时状态，下次 PATH 变了也还找得到。
     def _auto() -> str:
         st = str(state.get("ollama") or "").strip()
@@ -726,8 +813,12 @@ def resolve_ollama(explicit: str = "") -> str:
         _auto, "")
 
 
-def _scan_for_mineru() -> list[str]:
+def _scan_for_mineru(root: str | None = None) -> list[str]:
     """找 `mineru-kit.exe`（MinerU 是**可选组件**，找不到返回空）。
+
+    `root` 为 None 时用 `resolve_project_root()`（正常解析链上的项目根）；
+    「纯自动探测」（`auto_candidates`）会显式传**探测出来的**项目根 —— 那里不能
+    走解析链，否则用户的手填值会污染"自动探测结果"。
 
     候选来源按"最可能是本项目的"排序：
       1. 本项目目录下的 `scripts\\install-mineru.ps1` 装的位置（`.mineru\\.venv`）
@@ -747,10 +838,11 @@ def _scan_for_mineru() -> list[str]:
            r"bin/mineru-kit")
 
     # 1) 项目内的 .mineru
-    try:
-        root = resolve_project_root()
-    except Exception:  # noqa: BLE001
-        root = ""
+    if root is None:
+        try:
+            root = resolve_project_root()
+        except Exception:  # noqa: BLE001
+            root = ""
     if root:
         for r in rel:
             cands.append(os.path.join(root, ".mineru", ".venv", r))
@@ -784,8 +876,8 @@ def resolve_mineru(explicit: str = "") -> str:
     """决定 MinerU 的 `mineru-kit.exe` 路径。找不到返回空串（它是可选组件）。
 
     优先级（唯一一份顺序见 LAYER_ORDER，与 resolve_python / resolve_ollama
-    完全一致）：显式参数 > 环境变量 `ZOTERO_KB_MINERU` > 运行时设置（env.mineru
-    / 扁平键 mineru_exe）> `.env` > 自动扫描（含 runtime.json 缓存）+ 默认。
+    完全一致）：显式参数 > 环境变量 `ZOTERO_KB_MINERU` > 面板设置（env.mineru
+    / 扁平键 mineru_exe）> 自动扫描（含 runtime.json 缓存）> 救急 `.env` > 默认。
     自动扫描命中时会记进运行时状态 —— 下次 PATH 变了也还找得到。
 
     ⚠ 找不到**不是错误**：所有调用方都要按"没有 MinerU"降级
@@ -803,7 +895,7 @@ def resolve_mineru(explicit: str = "") -> str:
             return _remember("mineru", p, SRC_EXPLICIT)
         _reject("mineru", SRC_EXPLICIT, p, "文件不存在")
 
-    # 第 5 档的自动探测：程序缓存 → 扫描
+    # 第 4 档的自动探测：程序缓存 → 扫描
     def _auto() -> str:
         st = str(state.get("mineru") or "").strip()
         if st:
@@ -829,9 +921,9 @@ def resolve_mineru(explicit: str = "") -> str:
 def mineru_home() -> str:
     """MinerU 的 HOME（放 config.yaml 与模型的地方）。
 
-    优先级（LAYER_ORDER）：环境变量 `MINERU_HOME` > 运行时设置（env.mineru_home
-    / 扁平键 mineru_home）> `.env` > 按"装在哪就在哪"推（<mineru-kit 上一级>
-    /home）> 空（让 MinerU 用自己的默认 ~/.mineru）。
+    优先级（LAYER_ORDER）：环境变量 `MINERU_HOME` > 面板设置（env.mineru_home
+    / 扁平键 mineru_home）> 按"装在哪就在哪"推（<mineru-kit 上一级>
+    /home）> 救急 `.env` > 空（让 MinerU 用自己的默认 ~/.mineru）。
     """
     cfg = _read_location_config()
     env_cfg = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
@@ -857,7 +949,8 @@ def figures_enabled(cli_flag: bool | None = None) -> bool:
     """要不要抽图注与表格（三级开关，默认开）。
 
     优先级（LAYER_ORDER）：命令行显式指定 > 环境变量 `ZOTERO_KB_FIGURES` >
-    运行时设置（`kb-location.json` 的 `figures` 字段）> `.env` > 默认 True。
+    面板设置（`kb-location.json` 的 `figures` 字段）> 救急 `.env` > 默认 True。
+    （它的"自动探测"就是默认值 True，所以新顺序对它的实际取值没有影响。）
 
     为什么做成开关而不是一个布尔常量：抽图表要读 PDF，会给构建**多加
     约 60 秒**（101 篇实测）。命令行用于"这一次不要"，环境变量用于脚本，
@@ -930,13 +1023,322 @@ def _resolve_kb_dir() -> str:
 
 
 def _resolve_zotero_data_dir() -> str:
-    """Zotero 数据目录（LAYER_ORDER）：环境变量 > 运行时设置 > .env >
-    从 Zotero prefs 探测 > 空。"""
+    """Zotero 数据目录（LAYER_ORDER）：环境变量 > 面板设置 > 自动探测（Zotero
+    prefs）> `.env` > 空。"""
     cfg = _read_location_config()
     raw = str(cfg.get("zotero_data_dir") or "").strip()
     return _resolve_layered(
         "zotero_data_dir", "ZOTERO_DATA_DIR", (raw,) if raw else (), None,
         lambda p: "", _read_zotero_data_dir, "")
+
+
+# ---------------------------------------------------------------- MathType（可选）
+#
+# 用户 2026-10-16 要求把 MathType 纳入**同一套**环境解析与检测：
+#   · 与其它位置共用 LAYER_ORDER（调用方 > 环境变量 > 面板设置 > 自动探测 >
+#     .env > 默认）；
+#   · 自动探测多两路（注册表 App Paths / 卸载信息的 InstallLocation）+ 两个常见
+#     安装路径；
+#   · 面板「运行环境」页能编辑它，`maintain.py check` 会报它的状态。
+#
+# 环境变量名 `MATHTYPE_EXE`、配置键 `env.mathtype` / `mathtype_exe`（与其它位置同形）。
+
+MATHTYPE_EXE_NAME = "MathType.exe"
+
+
+def _mathtype_from_registry() -> list[str]:
+    """从注册表找 MathType.exe（**只认 Windows**；拿不到返回空列表）。
+
+    两路（用户指定）：
+      ① `App Paths\\MathType.exe` 的默认值 —— 安装器会写，最准；
+      ② 卸载信息的 `InstallLocation` —— 拿不到 ① 时兜底
+         （DisplayName 里含 "MathType" 的那一项）。
+    ⚠ 注册表读不到（非 Windows / 没有那两处键）**不是错误**，静默返回空 ——
+      上层还有环境变量与磁盘扫描两路。
+    """
+    out: list[str] = []
+    try:
+        import winreg          # noqa: PLC0415 —— 只在 Windows 上存在
+    except ImportError:
+        return out
+
+    app_paths = ("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\"
+                 + MATHTYPE_EXE_NAME)
+    uninstall = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall"
+
+    def _default_value(root, sub):
+        try:
+            with winreg.OpenKey(root, sub) as key:
+                val, _ = winreg.QueryValueEx(key, None)      # 默认值
+                return str(val or "").strip()
+        except OSError:
+            return ""
+
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for prefix in ("", "WOW6432Node\\"):
+            sub = prefix + app_paths
+            hit = _default_value(root, sub)
+            if hit:
+                out.append(hit)
+        # ② 卸载信息：枚举子键，找 DisplayName 含 MathType 的
+        for prefix in ("", "WOW6432Node\\"):
+            try:
+                with winreg.OpenKey(root, prefix + uninstall) as base:
+                    n = winreg.QueryInfoKey(base)[0]
+                    for i in range(n):
+                        try:
+                            name = winreg.EnumKey(base, i)
+                            with winreg.OpenKey(base, name) as sub:
+                                disp = ""
+                                try:
+                                    disp = str(winreg.QueryValueEx(
+                                        sub, "DisplayName")[0] or "")
+                                except OSError:
+                                    disp = ""
+                                if "mathtype" not in disp.lower():
+                                    continue
+                                loc = str(winreg.QueryValueEx(
+                                    sub, "InstallLocation")[0] or "").strip()
+                                if loc:
+                                    out.append(os.path.join(loc, MATHTYPE_EXE_NAME))
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+    return out
+
+
+def _scan_for_mathtype() -> list[str]:
+    """找 `MathType.exe`（MathType 是**可选组件**，找不到返回空列表）。
+
+    候选按"最可能"排序：注册表 → Program Files(x86)/Program Files → 两个历史
+    常见落点（安装器默认装到 x86 目录）。找不到**不是错误**：公式就地纠错里
+    「用 MathType 编辑」那个按钮会置灰，手改 LaTeX 照旧可用。
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    cands: list[str] = list(_mathtype_from_registry())
+    for env in ("ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"):
+        base = os.environ.get(env) or ""
+        if base:
+            cands.append(os.path.join(base, "MathType", MATHTYPE_EXE_NAME))
+    # 历史落点（安装器常装到 x86 目录；环境变量拿不到时兜底）
+    cands.append(r"C:\Program Files (x86)\MathType\MathType.exe")
+    cands.append(r"C:\Program Files\MathType\MathType.exe")
+    for p in cands:
+        p = str(p or "").strip()
+        if not p:
+            continue
+        k = os.path.normcase(os.path.abspath(p))
+        if k in seen:
+            continue
+        if os.path.isfile(p):
+            seen.add(k)
+            out.append(os.path.abspath(p))
+    return out
+
+
+def resolve_mathtype(explicit: str = "") -> str:
+    """决定 MathType 可执行文件路径。找不到返回空串（它是可选组件）。
+
+    优先级与其它位置**完全一致**（唯一一份顺序见 LAYER_ORDER）：
+    调用方参数 > 环境变量 `MATHTYPE_EXE` > 面板设置（env.mathtype /
+    mathtype_exe）> 自动探测（注册表 → 安装目录 → 常见落点）> `.env` > 空。
+    自动探测命中时会写进 runtime.json（下次注册表读不到也还找得到）。
+    """
+    cfg = _read_location_config()
+    env_cfg = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    state = read_runtime_state()
+
+    cand = str(explicit or "").strip()
+    if cand:
+        p = os.path.abspath(os.path.expanduser(cand))
+        if _is_executable(p):
+            return _remember("mathtype", p, SRC_EXPLICIT)
+        _reject("mathtype", SRC_EXPLICIT, p, "文件不存在")
+
+    def _auto() -> str:
+        st = str(state.get("mathtype") or "").strip()
+        if st:
+            p = os.path.abspath(os.path.expanduser(st))
+            if _is_executable(p):
+                return p
+        found = _scan_for_mathtype()
+        if found:
+            try:
+                write_runtime_state(mathtype=found[0])
+            except OSError:
+                pass
+            return found[0]
+        return ""
+
+    return _resolve_layered(
+        "mathtype", "MATHTYPE_EXE",
+        (env_cfg.get("mathtype"), cfg.get("mathtype_exe")), None,
+        lambda p: "" if _is_executable(p) else "文件不存在",
+        _auto, "")
+
+
+# ---------------------------------------------------------------- 自动探测"独立跑一遍"
+#
+# 面板「运行环境」页要按用户 2026-10-16 的要求做到：**自动探测到的值也填进输入框**
+# （灰字），用户点「保存」而**没动过**那一项时不把它冻成手填。判据是"框里的值 ==
+# 自动探测结果"。所以引擎必须能给出**各档都不参与**的纯探测值 —— 下面这一份。
+#
+# ⚠ 与 resolve_* 里的 `_auto` 有一处**故意不同**：这里**不读 runtime.json**。
+#   为什么：runtime.json 既存"探测到的"也存"用户保存时一起写进去的"（见
+#   save_env_config 的 write_runtime_state），拿它当"自动探测结果"会把用户的手填值
+#   误判成自动探测（于是被静默清掉）。纯探测只回答"这台机器上有什么"。
+#   代价：runtime.json 里那条路径失效时，面板会把当前值当"手填"存起来 —— 那比
+#   静默丢掉一个能用的路径安全。
+
+
+def _probe_project_root() -> str:
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for _ in range(4):
+        if any(os.path.exists(os.path.join(here, m))
+               for m in (".venv", "offline", "online", "zotero-plugin")):
+            return here
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+    return ""
+
+
+def _probe_python(root: str = "") -> str:
+    for cand in (_scan_for_python(root or None) or []) + _scan_for_python(None):
+        if _is_executable(cand):
+            return cand
+    return ""
+
+
+def _probe_mineru_home(mineru_exe: str) -> str:
+    if not mineru_exe:
+        return ""
+    guess = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(mineru_exe))), "home")
+    return guess if os.path.isdir(guess) else ""
+
+
+def _probe_kb_dir() -> str:
+    zdir = _read_zotero_data_dir()
+    if zdir:
+        return os.path.join(zdir, "zotero-kb")
+    return ""
+
+
+def auto_candidates() -> dict:
+    """每个运行环境项**纯自动探测**的值（面板用来判断"这一项动过没有"）。
+
+    返回 {key: 值}，探测不到的项给空串；探测自己抛错也只让那一项落空
+    （面板的显示不该因为一项探测失败而整页空白）。
+    """
+    out: dict[str, str] = {}
+    try:
+        out["project_root"] = _probe_project_root()
+    except Exception:      # noqa: BLE001
+        out["project_root"] = ""
+    try:
+        out["python"] = _probe_python(out.get("project_root") or "")
+    except Exception:      # noqa: BLE001
+        out["python"] = ""
+    try:
+        found = _scan_for_ollama()
+        out["ollama"] = found[0] if found else ""
+    except Exception:      # noqa: BLE001
+        out["ollama"] = ""
+    try:
+        found = _scan_for_mineru(out.get("project_root") or "")
+        out["mineru"] = found[0] if found else ""
+    except Exception:      # noqa: BLE001
+        out["mineru"] = ""
+    try:
+        out["mineru_home"] = _probe_mineru_home(out.get("mineru") or "")
+    except Exception:      # noqa: BLE001
+        out["mineru_home"] = ""
+    try:
+        out["kb_dir"] = _probe_kb_dir()
+    except Exception:      # noqa: BLE001
+        out["kb_dir"] = ""
+    try:
+        out["zotero_data_dir"] = _read_zotero_data_dir()
+    except Exception:      # noqa: BLE001
+        out["zotero_data_dir"] = ""
+    try:
+        found = _scan_for_mathtype()
+        out["mathtype"] = found[0] if found else ""
+    except Exception:      # noqa: BLE001
+        out["mathtype"] = ""
+    out["figures"] = "1"
+    return out
+
+
+# 八个"位置"行：key -> (kind, 是否可选)。顺序 = 面板「运行环境」页的行序
+# （用户 2026-10-16 指定）。**只在这里定义一次**，面板/截图脚本/自检都读它。
+ENV_ITEM_SPECS = (
+    ("project_root", "dir", False),
+    ("python", "file", False),
+    ("ollama", "file", True),
+    ("mineru", "file", True),
+    ("mineru_home", "dir", True),
+    ("kb_dir", "dir", False),
+    ("zotero_data_dir", "dir", False),
+    ("mathtype", "file", True),
+)
+
+
+def env_source_items(sources: dict | None = None) -> list:
+    """八个位置的可编辑行 —— 面板「运行环境」页与本函数的**唯一**数据来源。
+
+    每项：`{key, name, path, ok, kind, source, auto, optional?, note?}`
+
+    · `path`   当前**生效**的值（面板预填进输入框的就是它）；
+    · `source` 它来自哪一档（见 LAYER_ORDER）；
+    · `auto`   **纯自动探测**结果（`auto_candidates`，不含面板/环境变量/.env）——
+               面板按"框里的值 == auto"判断"用户动过没有"（用户 2026-10-16 的
+               保存语义：与自动探测相同 → 视为未覆盖），所以它必须独立探。
+    """
+    if sources is None:
+        sources = resolve_sources()
+    try:
+        autos = auto_candidates()
+    except Exception:      # noqa: BLE001 —— 探测失败只让 auto 为空，别整页打不开
+        autos = {}
+    resolvers = {
+        "project_root": resolve_project_root,
+        "python": resolve_python,
+        "ollama": resolve_ollama,
+        "mineru": resolve_mineru,
+        "mineru_home": mineru_home,
+        "kb_dir": _resolve_kb_dir,
+        "zotero_data_dir": _resolve_zotero_data_dir,
+        "mathtype": resolve_mathtype,
+    }
+    rows = []
+    for key, kind, optional in ENV_ITEM_SPECS:
+        path = ""
+        try:
+            path = str(resolvers[key]() or "")
+        except Exception:      # noqa: BLE001
+            path = ""
+        if kind == "dir":
+            ok = bool(path) and os.path.isdir(path)
+        else:
+            ok = bool(path) and os.path.isfile(path)
+        row = {"key": key, "name": ENV_SOURCE_LABELS.get(key, key),
+               "path": path, "ok": ok, "kind": kind,
+               "source": (sources.get(key) or {}).get("source", ""),
+               "auto": str(autos.get(key) or "")}
+        if optional:
+            row["optional"] = True
+        if key == "kb_dir" and not ok:
+            # 知识库可能还没建 —— 这一项"找不到"不是故障，面板要能说清
+            row["note"] = "这一项可以指向还不存在的目录（第一次建库会创建它）"
+        if key == "mathtype":
+            row["note"] = "可选：不装也能手改 LaTeX；装了则「用 MathType 编辑」可用"
+        rows.append(row)
+    return rows
 
 
 KB_DIR = _resolve_kb_dir()

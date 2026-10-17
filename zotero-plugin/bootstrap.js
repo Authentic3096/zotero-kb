@@ -114,13 +114,12 @@ var ZoteroKB = {
 
     try {
       // ⚠ 第一件事就是把 ftl 挂到窗口文档上（见 initLocale 的说明）——
-      //   后面的设置面板/内容窗格分区都要靠它把 l10nID 变成文字。
+      //   后面的内容窗格分区都要靠它把 l10nID 变成文字。
       step("initLocale", () => self.initLocale());
       // 注册我们自己的 resource 包：自建列里的 <browser> 必须从 resource:// 加载
       // 才能在父进程里跑、宿主才拿得到 contentWindow（真机实测，见 KB_RES_KEY）。
       step("registerKbResource", () => self.registerKbResource());
       step("registerPrefs", () => self.registerPrefs());
-      step("registerPrefPane", () => self.registerPrefPane());
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
       // 文献列表的另外两列（21-kbcols.js）：与权重列同一套做法 ——
@@ -416,15 +415,12 @@ Object.assign(ZoteroKB, {
   // ================================================================ 首选项
 
   PREFS: {
-    model: "zotero-kb.model",
+    // ⚠ 模型配置（model / provider / apiModel / apiKey / apiBaseUrl）已**退役**：
+    //   唯一权威来源是 `<知识库>\llm-config.json`（见 04-prefs.js 顶部）。
+    //   老 pref 由 migrateLlmPrefs 一次性搬过去并清掉，别再往这里加回来。
     filterBareModels: "zotero-kb.filterBareModels",
     autoProcess: "zotero-kb.autoProcess",
     categories: "zotero-kb.categories",
-    // ---- 模型来源（支持多后端）
-    provider: "zotero-kb.provider",     // ollama | openai
-    apiModel: "zotero-kb.apiModel",     // 如 deepseek-chat
-    apiKey: "zotero-kb.apiKey",
-    apiBaseUrl: "zotero-kb.apiBaseUrl",
     // 从 DSH 导入文献前是否先弹确认框（**默认关**）。
     //
     // ⚠ 这里原来默认是 true，被用户否掉了。用户的原话：
@@ -478,13 +474,13 @@ Object.assign(ZoteroKB, {
   // ================================================================ 路径解析
 
   /**
-   * 知识库目录：优先用服务端告诉我们的（/health 里带 kb_dir），
-   * 其次用上次缓存到 pref 的值，最后才用默认值。
+   * 知识库目录：优先用上次记住的值（它来自**引擎桥** `kb.health` 里的 kb_dir），
+   * 没有才返回空。
    *
-   * 为什么要缓存：插件在服务没起来时也要能工作（比如写启动日志），
-   * 那时拿不到 /health，就用上次记住的。
+   * 为什么要缓存：插件在引擎还没起来时也要能工作（比如写启动日志），
+   * 那时拿不到 `kb.health`，就用上次记住的。
    *
-   * 这样别人装的时候**不用改插件源码** —— 服务端在哪，插件就知道在哪。
+   * 这样别人装的时候**不用改插件源码** —— 引擎在哪，插件就知道在哪。
    */
   kbDir: function () {
     var self = ZoteroKB;
@@ -494,19 +490,20 @@ Object.assign(ZoteroKB, {
     } catch (e) { /* ignore */ }
     // ⚠ 这里**故意不写死绝对路径**（老版本写的是开发机的
     //   D:\DSHplugins\zotero-kb\kb，对别人毫无意义，还会误导排错）。
-    //   知识库位置只有两个正当来源：服务端 /health 的 kb_dir，
-    //   或用户在设置面板里填的。都没有时返回空，让上层报
-    //   "服务没连上，请先在设置里填位置" —— 比指到一个不存在的目录好。
+    //   知识库位置的唯一来源是**引擎桥** `kb.health` 的 kb_dir（healthCheck
+    //   把它记进上面的 pref）；2026-10-16 之前还有"老 HTTP `/health`"这条第二
+    //   来源，8765 退役后已删（插件不再探它）。都没有时返回空，让上层报
+    //   "引擎没连上，请先在「运行环境」页把位置弄对" —— 比指到一个不存在的目录好。
     return "";
   },
 
 
   /**
-   * 记住服务端告诉我们的运行环境（healthCheck 时调用）。
+   * 记住**引擎桥** `kb.health` 告诉我们的运行环境（healthCheck 时调用）。
    *
    * ⚠ 存到**独立于用户设置**的 pref 键里：
-   *   `zotero-kb.projectRoot`     = 用户在设置面板里填的（权威）
-   *   `zotero-kb.serverProjectRoot` = 服务端报的（兜底）
+   *   `zotero-kb.projectRoot`     = 用户在「运行环境」页填的（权威）
+   *   `zotero-kb.serverProjectRoot` = 引擎桥报的（兜底）
    *   老版本把两者写进同一个键，结果是"服务端一报就把用户填的覆盖了"。
    */
   rememberServerInfo: function (info) {
@@ -608,83 +605,10 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /**
-   * 把运行环境配置推给服务端，让它落盘到 <项目>\kb-location.json。
-   *
-   * 为什么必须推：Zotero 的 pref 只有插件自己看得到，而**管理面板是独立的
-   * Python 进程**，它得知道项目在哪、Python 在哪。服务端落盘后
-   * schemas.resolve_* 就能读到，面板启动时自然用对。
-   *
-   * ⚠ **W3 线2.5（2026-10-13）：这一处故意没迁到引擎桥，因为入参/回包形状都对不上**
-   *   （真机取证见开发说明）：
-   *     · 老 HTTP `POST /env-config` 收的是**嵌套** `{env:{project_root,…}}`，
-   *       回包带 **`report`**；
-   *     · 引擎 `env.save` 收的是**扁平**键（`project_root/python/ollama/mineru/figures`），
-   *       回包是 `{saved, check}`、**没有 `report`**。
-   *   实测：把插件现在这个 `{env:{…}}` 体直接过桥 → 引擎回
-   *   `没有要写入的键（project_root / python / ollama / mineru / figures）`。
-   *   要迁得先做两件事：① 这里把 `env` **摊平**再发；② 让 `env.save` 的返回里带上
-   *   `report`（或让设置页接受"另发一次 env-check"）。②动契约，所以排在收工后做。
-   *
-   * 2026-10-14：两件事都已在引擎侧补齐（`env.save` 回包带 **`report`**、
-   * 新增 **`env.checkRaw`**），所以这里改成**桥优先 → 退回老 HTTP**。
-   * **入参必须把 `env` 摊平一层**（老 HTTP 收嵌套 `{env:{…}}`、引擎收扁平
-   * `{project_root,…}`）—— 照抄老写法过桥会当场报「没有要写入的键」，
-   * 这是本处最容易写错的地方（上一轮实测踩过）。
-   */
-  kbPushEnvConfig: async function (env) {
-    var self = ZoteroKB;
-    let r = null;
-    try {
-      // ⚠ 摊平：`Object.assign({}, env || {})` —— 不是 `{ env: env }`
-      r = await self.kbAdminHostRoute("POST", "/env-config",
-                                      Object.assign({}, env || {}));
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥写环境配置失败（退回 HTTP）：" + e);
-    }
-    if (r && r.saved === true) return { ok: true, report: r.report || null };
-    try {
-      const r2 = await self.request("POST", "/env-config", { env: env });
-      return { ok: true, report: (r2 && r2.report) || null };
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-  },
-
-
-  /**
-   * 从服务端取运行环境诊断（设置面板「检测」按钮用）。
-   *
-   * ⚠ **W3 线2.5（2026-10-13）：这一处也故意没迁** —— 两条通道回的**不是同一个形状**：
-   *   · 老 HTTP `GET /env-check` = `env_report()` 原文，含 **`python` / `project_root` /
-   *     `ollama` / `runtime_state` / `user_location_file`**；`settings.js` 的
-   *     `renderReport()` 读的正是 `r.python.runnable` 与 `r.project_root.has_panel`。
-   *   · 引擎 `env.check` 是给**管理面板**重新整形过的：`{ok, items[], sources,
-   *     rejected[], env_file, location_file}` —— **没有 `python` / `project_root`
-   *     这两个顶层键**（实测 `bridgeHas_consumerFields: false`）。
-   *   直接改过去会让设置面板的「检测」报告变空/报错。要迁得先让引擎**多回一份原文**
-   *   （新增 `env.checkRaw`，或给 `env.check` 加一个 `raw` 字段）—— 那是扩契约，
-   *   按纪律排在计费切换点之后做。
-   *
-   * 2026-10-14：引擎已新增 **`env.checkRaw`**，所以这里改成**桥优先 → 退回老 HTTP** ——
-   * 两条通道回的是**同一个形状**（都是 `env_report()` 原文）。
-   * ⚠ 别图省事改成 `env.check`：那个给管理面板用、**没有** `python`/`project_root` 两个顶层键。
-   */
-  kbEnvReport: async function () {
-    var self = ZoteroKB;
-    try {
-      const r = await self.kbAdminHostRoute("GET", "/env-check-raw");
-      if (r && (r.python || r.project_root)) return r;   // 原文形状的自检
-      Zotero.debug("[zotero-kb] 引擎桥的诊断原文形状不对（退回 HTTP）");
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥取诊断失败（退回 HTTP）：" + e);
-    }
-    try {
-      return await self.request("GET", "/env-check");
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-  },
+  // ⓘ 这里原来有 `kbPushEnvConfig(env)` 与 `kbEnvReport()` 两个只给 Zotero 设置
+  //   窗格用的包装。2026-10-17 设置窗格整体下线后它们**都没有调用方了**，一并删掉：
+  //   运行环境只在管理面板改（保存走宿主半 `POST /env-save`），引擎侧的
+  //   `env.checkRaw` 仍留给直接发 RPC 的脚本/测试。
 
 
   /** 记住服务端给的知识库位置（healthCheck 时调用）。 */
@@ -719,7 +643,8 @@ Object.assign(ZoteroKB, {
    *   于是工具栏按钮报"找不到 Python 环境"。
    *   结论：数据位置和代码位置是两个独立的东西，谁也别推谁。
    *
-   * 顺序：用户设置 > 服务端 /health > 向上探测标记 > 环境变量 > 空。
+   * 顺序：用户设置（面板的 pref）> 引擎桥 `kb.health` 报的 > 向上探测标记 >
+   *       环境变量 > 空。
    */
   /** 同步判断路径存在（插件里到处能用，不依赖 async）。 */
   _exists: function (p) {
@@ -899,6 +824,8 @@ Object.assign(ZoteroKB, {
 
   /** 本地服务是否响应（问 /health，不需要 token）。 */
   serverUp: async function () {
+    // ⚠ 这是一次**真连 8765** 的探测。它已**不是任何自动路径的一部分**：
+    //   调用方只有 serverOnStartup（严格 opt-in，见那里），以及手动诊断。
     try {
       const r = await Zotero.HTTP.request(
         "GET", "http://127.0.0.1:8765/health",
@@ -949,29 +876,35 @@ Object.assign(ZoteroKB, {
 
 
   /**
-   * Zotero 启动时：确保本地服务可用（**随用随取**）。
+   * Zotero 启动时：**只在用户显式要求时才**拉起本地服务（严格 opt-in）。
    *
-   * 已经在跑 → 不碰它、不留标记（关 Zotero 时也不动它）。
-   * 没在跑   → 拉起来 + 留标记（关 Zotero 时负责关掉）。
+   * ⚠⚠ 2026-10-16（用户拍板"HTTP 噪音一起清"）：这一整组（serverUp /
+   *   serverStart / serverOnStartup / serverOnShutdown）**保留**，但从"默认自动"
+   *   改成"**只有显式置 `zotero-kb.autoStartService=true` 才走**"。
+   *   为什么保留而不是整组删：它是一条**回退能力**（有人仍需旧 HTTP 通道时，
+   *   手动入口是 `scripts\4-service.vbs`，或把这个 pref 设回 true）；
+   *   为什么默认必须 false：8765 已退役、插件已全部走引擎桥/文件信箱，
+   *   默认 true 会让**每次启动都去探/拉起一个没人用的服务**（就是"HTTP 噪音"）。
    *
-   * 为什么做成"跟随 Zotero"而不是让用户开机自启：
-   *   · 服务只在 Zotero 用得上（插件要它查权重/领任务），不看书时白占内存；
-   *   · 用户不用记着"先开服务再用 Zotero"——本机实测这个坑踩过好几次，
-   *     现象是"分类建议失败""权重列空白"，而真实原因只是服务没跑。
-   *   · 已经装了开机自启的人也不会被影响：那时服务本来就在跑，
-   *     走的是"不碰它"分支。
+   * 判据（pref 为 false 时的**唯一行为**）：立刻返回、**一个网络请求都不发**
+   * —— 这条早退必须在任何 serverUp()/serverStart() 之前（现在就是）。
+   *
+   * 触发者清单（改这里前先看）：
+   *   · `00-core.js` 启动流程 → 调本函数；
+   *   · `01-lifecycle.js` shutdown → 调 `serverOnShutdown()`（它只在自己留过
+   *     标记文件时才发 `/shutdown`，没启动过就纯本地检查、不发请求）；
+   *   · 只有这两个，没有按钮、没有定时器。
    */
   serverOnStartup: async function () {
     var self = ZoteroKB;
     try {
-      // W3 线3（2026-10-14）：**自动拉起本地服务变成一个开关**
-      // （pref `zotero-kb.autoStartService`，默认 true = 老行为）。
-      // 为什么要它：用户拍板停掉 8765 之后，如果这条自动拉起还在，Zotero 一重启
-      // 它就把服务又拉起来了 —— 那样"停服务"是假的。这里只关"自动拉起"这一个动作，
-      // **别的功能一个都不动**（插件此时已全部走引擎桥/文件信箱，不依赖该服务）。
-      if (!self.getPref("zotero-kb.autoStartService", true)) {
-        Zotero.debug("[zotero-kb] 本地服务自动拉起已关闭"
-                     + "（pref zotero-kb.autoStartService=false）—— 不再启动 8765");
+      // W3 线3（2026-10-14）：自动拉起本地服务是一个开关。
+      // ⚠ 2026-10-16 起**默认值改成 false**（原为 true）：不开这个开关时，
+      //   启动流程**完全不碰 8765**。用户手动起服务用 scripts\4-service.vbs。
+      if (!self.getPref("zotero-kb.autoStartService", false)) {
+        Zotero.debug("[zotero-kb] 本地服务自动拉起未开启"
+                     + "（pref zotero-kb.autoStartService 默认 false）"
+                     + "—— 不碰 8765；要旧 HTTP 通道请手动跑 scripts\\4-service.vbs");
         self.serverStartedByMe = false;
         self.writeStatusFile({ serverStartedByMe: false, serverAutoStart: false });
         return;
@@ -1010,6 +943,10 @@ Object.assign(ZoteroKB, {
 
   /**
    * Zotero 关闭时：**只关自己启动的那个**（随弃随关）。
+   *
+   * ⚠ 2026-10-16：`autoStartService` 默认 false 之后，插件平时**不会**启动服务，
+   *   也就不会留下标记文件 —— 所以这里通常**第一句就 return**（无网络请求）。
+   *   只有当初真的走 serverOnStartup 拉起过（用户显式开了那个 pref）才会有标记。
    *
    * 关法是 `POST /shutdown` 让服务自己退出，**不是** taskkill ——
    * 服务跑在 pythonw.exe 里，而 pythonw 是极常见的进程名，
@@ -1195,6 +1132,22 @@ Object.assign(ZoteroKB, {
 /**
  * 04-prefs.js —— 首选项：默认值、读取、变更监听
  *
+ * ## 配置的权威来源（2026-10-17 定稿，别再开第二份）
+ *
+ *   · **模型配置**：`<知识库>\llm-config.json`（`offline/judge.py` 读写，管理面板
+ *     「运行环境」页编辑）。插件里的 `zotero-kb.model / provider / apiModel /
+ *     apiKey / apiBaseUrl` 五个 pref 已**退役**：启动时一次性搬进 llm-config.json
+ *     （见 migrateLlmPrefs），搬完就清掉。插件自己（分类建议、右键菜单状态）也读
+ *     这个文件，不再读 pref —— 否则"面板里改了、插件还是旧的"。
+ *   · **运行环境**：项目的 `kb-location.json`（宿主半的 `POST /env-save` 直接写，
+ *     面板「运行环境」页编辑）。插件起引擎时读的 `projectRoot / pythonExe /
+ *     ollamaExe` 三个 pref 只是它的**写穿镜像**（见 23-admin.js::KB_ADMIN_ENV_PREFS），
+ *     不是设置面。老用户 profile 里的这三个 pref 会一次性补进 kb-location.json
+ *     （见 migratePathPrefs），免得出现"插件用 pref、Python 用自动探测"的分叉。
+ *   · **插件行为开关**（自动处理 / 分类列表 / 侧栏显示 / 同步 / 任务通道）仍然
+ *     是 Zotero pref —— 它们在 Zotero 进程内直接生效，没有第二个副本。管理面板
+ *     的「偏好设置」页通过宿主路由 `GET|POST /plugin-prefs` 读写它们。
+ *
  * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
  *   bootstrap.js（xpi 里装的是那个生成物）。
  */
@@ -1204,7 +1157,6 @@ Object.assign(ZoteroKB, {
     // 默认值可以在这里设，也可以走 prefs.js 前缀注册。
     // 这里用 Zotero.Prefs.set 兜底（只在未设置时写），避免依赖 defaults 文件。
     const defaults = {};
-    defaults[this.PREFS.model] = "";
     defaults[this.PREFS.autoProcess] = true;
     defaults[this.PREFS.categories] = "";   // 空=用知识库现有的
     defaults[this.PREFS.acquireConfirm] = false;
@@ -1220,6 +1172,9 @@ Object.assign(ZoteroKB, {
         }
       } catch (e) { /* 个别键可能未被允许，忽略 */ }
     }
+    // 老配置的迁移（幂等；拿不到知识库目录时下次启动再试）
+    try { this.migrateLlmPrefs(); } catch (e) { /* 迁移失败不挡启动 */ }
+    try { this.migratePathPrefs(); } catch (e) { /* 同上 */ }
   },
 
 
@@ -1230,6 +1185,150 @@ Object.assign(ZoteroKB, {
     } catch (e) {
       return fallback;
     }
+  },
+
+
+  // ================================================================ 模型配置
+
+  /** `<知识库>\llm-config.json` 的路径（拿不到知识库目录时返回空串）。 */
+  llmConfigPath: function () {
+    var self = ZoteroKB;
+    try {
+      const dir = String(self.kbDir() || "").replace(/[\\/]+$/, "");
+      return dir ? (dir + "\\llm-config.json") : "";
+    } catch (e) {
+      return "";
+    }
+  },
+
+
+  /**
+   * 读模型配置（**同步**，每次现读 —— 面板改完立即生效，不用重启）。
+   *
+   * 返回 `{provider, model, base_url, api_key, ollama_host}`；文件不存在 / 损坏
+   * 都返回 `{}`（调用方按"没配"处理，不要抛）。
+   */
+  llmConfig: function () {
+    var self = ZoteroKB;
+    const p = self.llmConfigPath();
+    if (!p) return {};
+    try {
+      const f = Zotero.File.pathToFile(p);
+      if (!f.exists()) return {};
+      const data = JSON.parse(String(Zotero.File.getContents(f) || "{}"));
+      return (data && typeof data === "object" && !Array.isArray(data)) ? data : {};
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 读 llm-config.json 失败（当作没配）：" + e);
+      return {};
+    }
+  },
+
+
+  /**
+   * 把老版本的模型 pref 一次性搬进 `llm-config.json`，成功后清掉 pref。
+   *
+   * 为什么必须搬：老用户的 `zotero-kb.model` 是**唯一**记着他选了哪个模型的地方；
+   * 新面板只认 llm-config.json。不搬的话升级后模型选择会静默变回"自动挑"。
+   * 为什么搬完要清：两个地方都存 = 必然会漂移（本项目吃过太多次）。清之前先确认
+   * 文件写成功；写不进去（知识库目录还不存在等）就保留 pref，下次启动再试。
+   */
+  migrateLlmPrefs: function () {
+    var self = ZoteroKB;
+    const get = (k) => {
+      try { return String(Zotero.Prefs.get("zotero-kb." + k) || "").trim(); }
+      catch (e) { return ""; }
+    };
+    const old = { provider: get("provider"), model: get("model"),
+                  apiModel: get("apiModel"), apiKey: get("apiKey"),
+                  apiBaseUrl: get("apiBaseUrl") };
+    const anyOld = !!(old.provider || old.model || old.apiModel
+                      || old.apiKey || old.apiBaseUrl);
+    const p = self.llmConfigPath();
+    if (!p) return false;                     // 知识库目录还不知道 → 下次再试
+    const cur = self.llmConfig();
+    // 新用户（没有旧 pref、也没有配置文件）：不凭空造一个文件
+    if (!anyOld && !Object.keys(cur).length) return false;
+    const useApi = String(cur.provider || old.provider || "ollama") === "openai";
+    const out = {
+      provider: String(cur.provider || old.provider || "ollama"),
+      model: String(cur.model || (useApi ? old.apiModel : old.model) || ""),
+      base_url: String(cur.base_url || (useApi ? old.apiBaseUrl : "") || ""),
+      api_key: String(cur.api_key || (useApi ? old.apiKey : "") || ""),
+      ollama_host: String(cur.ollama_host || ""),
+    };
+    const changed = ["provider", "model", "base_url", "api_key", "ollama_host"]
+      .some((k) => String(cur[k] == null ? "" : cur[k]) !== out[k]);
+    if (changed) {
+      const err = self.kbAdminWriteJsonFile
+        ? self.kbAdminWriteJsonFile(p, out)
+        : "写配置的宿主函数不可用";
+      if (err) {
+        Zotero.debug("[zotero-kb] 迁移模型配置失败（保留旧 pref）：" + err);
+        return false;
+      }
+    }
+    if (!anyOld) return !!changed;
+    // 写成功（或没有需要写的）→ 清掉退役的 pref
+    for (const k of ["model", "provider", "apiModel", "apiKey", "apiBaseUrl"]) {
+      try { Zotero.Prefs.clear("zotero-kb." + k); }
+      catch (e) {
+        try { Zotero.Prefs.set("zotero-kb." + k, ""); } catch (e2) { /* ignore */ }
+      }
+    }
+    Zotero.debug("[zotero-kb] 模型 pref 已迁移到 " + p);
+    return true;
+  },
+
+
+  // ================================================================ 运行环境
+
+  /**
+   * 把老用户 profile 里的三个路径 pref 一次性补进 `kb-location.json`。
+   *
+   * 三个 pref（projectRoot / pythonExe / ollamaExe）是老设置页的输入框写的；
+   * 现在**权威来源**是 kb-location.json，pref 只是写穿镜像。老 profile 里可能只有
+   * pref、没有 kb-location.json 的对应键 —— 那样插件起引擎用 pref，而 Python 那边
+   * 按自动探测/别的档位算，两个进程对"项目在哪"可能给出不同答案。
+   *
+   * 只补**文件里还没有的**键，绝不覆盖（面板里明确设过的值优先）。
+   */
+  migratePathPrefs: function () {
+    var self = ZoteroKB;
+    const root = (() => {
+      try { return String(Zotero.Prefs.get("zotero-kb.projectRoot") || "").trim(); }
+      catch (e) { return ""; }
+    })();
+    if (!root || !self._looksLikeProjectRoot(root)) return false;
+    const file = root.replace(/[\\/]+$/, "") + "\\kb-location.json";
+    const cfg = self.kbAdminReadJsonFile ? self.kbAdminReadJsonFile(file) : {};
+    const env = (cfg.env && typeof cfg.env === "object" && !Array.isArray(cfg.env))
+      ? Object.assign({}, cfg.env) : {};
+    const pairs = [
+      ["project_root", "project_root", root],
+      ["python", "python_exe",
+       (() => { try { return String(Zotero.Prefs.get("zotero-kb.pythonExe") || "").trim(); } catch (e) { return ""; } })()],
+      ["ollama", "ollama_exe",
+       (() => { try { return String(Zotero.Prefs.get("zotero-kb.ollamaExe") || "").trim(); } catch (e) { return ""; } })()],
+    ];
+    let changed = false;
+    for (const [key, flat, val] of pairs) {
+      if (!val) continue;
+      if (cfg[flat] || env[key]) continue;     // 已有值 → 不动
+      cfg[flat] = val;
+      env[key] = val;
+      changed = true;
+    }
+    if (!changed) return false;
+    cfg.env = env;
+    const err = self.kbAdminWriteJsonFile
+      ? self.kbAdminWriteJsonFile(file, cfg)
+      : "写配置的宿主函数不可用";
+    if (err) {
+      Zotero.debug("[zotero-kb] 迁移路径 pref 失败：" + err);
+      return false;
+    }
+    Zotero.debug("[zotero-kb] 路径 pref 已补进 " + file);
+    return true;
   },
 
 });
@@ -1384,10 +1483,15 @@ Object.assign(ZoteroKB, {
   /**
    * 插件/引擎是否活着（问引擎桥的 `kb.health`，**不碰 8765**）。
    *
-   * 判据是 `kb.health`：它给 kb_dir / project_root / python / ollama，够定位知识库
-   * 与运行环境（stdio 通道没有"浏览器偷 token"这回事，所以它本来就不含 token）。
-   * 引擎桥拿不到时，仍会退回老 HTTP `/health` —— 那只在有人手动起了 8765 才会成功，
-   * 属于回退路径，不是常态。
+   * 判据是引擎桥给的 `kb.health`：它给 kb_dir / project_root / python / ollama，
+   * 够定位知识库与运行环境（stdio 通道没有"浏览器偷 token"这回事，所以它本来
+   * 就不含 token）。
+   *
+   * ⚠ 2026-10-16：**删掉了"老 HTTP `/health` 兜底"**。那段兜底打的是
+   *   127.0.0.1:8765 —— 服务早就退役了，所以它每次启动/每次体检**必然失败**，
+   *   唯一的产出就是 `plugin-status.json` 里的 `lastRequestError`（用户看到的
+   *   "HTTP 噪音"）。现在判定只有一条：**桥给到 info = 在线，桥拿不到 = 离线**。
+   *   非要把老服务起起来的人另有入口（`scripts\4-service.vbs`），但插件不再探它。
    */
   healthCheck: async function () {
     var self = ZoteroKB;
@@ -1401,27 +1505,18 @@ Object.assign(ZoteroKB, {
       this.serverOk = true;
       this.serverInfo = engineInfo;
       this.rememberServerInfo(engineInfo);
+      // 拿到 kb_dir 后补一次老配置迁移（启动时 kb_dir 可能还不知道；
+      // 迁移本身幂等，成功过就什么都不做）。
+      try { this.migrateLlmPrefs(); } catch (e) { /* 不挡启动 */ }
+      try { this.migratePathPrefs(); } catch (e2) { /* 同上 */ }
       this.serverKbDir = engineInfo.kb_dir || this.serverKbDir || "";
       this.serverProjectRoot = engineInfo.project_root || this.serverProjectRoot || "";
       Zotero.debug("[zotero-kb] 引擎桥在线（kb_dir=" + this.serverKbDir + "）");
-    }
-    // 桥不可用时，老 HTTP 仍是兜底（8765 平时是停的，所以这条路通常直接失败）
-    try {
-      const info = await this.request("GET", "/health");
-      if (!engineInfo) {
-        this.serverOk = !!(info && info.ok);
-        this.serverInfo = info;
-        this.rememberServerInfo(info);
-        this.serverKbDir = (info && info.kb_dir) || "";
-        this.serverProjectRoot = (info && info.project_root) || "";
-        Zotero.debug("[zotero-kb] 老 HTTP 服务在线（桥不可用，用它兜底）");
-      }
-    } catch (e) {
-      if (!engineInfo) {
-        this.serverOk = false;
-        this.serverInfo = null;
-      }
-      Zotero.debug("[zotero-kb] 老 HTTP /health 不在（过渡期正常）：" + e);
+    } else {
+      // 桥也拿不到 → 离线。**不**再去问老 HTTP（8765 已退役，问了只会失败）。
+      this.serverOk = false;
+      this.serverInfo = null;
+      Zotero.debug("[zotero-kb] 引擎桥不可用：判为离线");
     }
     return this.serverOk;
   },
@@ -1638,19 +1733,17 @@ Object.assign(ZoteroKB, {
   classifyOnly: async function (item, feedback, previous) {
     const meta = this.buildMeta(item);
     if (!meta.title && !meta.abstract) return null;
-    // 把模型配置一起发过去 —— 这样"配置在插件设置里"对服务端也成立。
-    // 服务端会落盘（下次就按这套走），所以管理面板等入口也自动用同一套。
-    // 注意按 provider 挑 model：ollama 用 model，API 用 apiModel。
-    const isApi = (this.getPref(this.PREFS.provider, "ollama") === "openai");
+    // 模型配置的**唯一权威来源**是 `<知识库>\llm-config.json`（面板「运行环境」页
+    // 编辑）。这里把它随请求带上：classify.item 收的是"还没入库"的新文献，
+    // 元数据只能在这边现取；带上配置可以保证用的就是用户此刻选的那套。
+    const cfg = this.llmConfig() || {};
     const payload = {
       item: meta,
       categories: this.configuredCategories(),
-      model: isApi ? this.getPref(this.PREFS.apiModel, "")
-                   : this.getPref(this.PREFS.model, ""),
-      provider: this.getPref(this.PREFS.provider, "ollama"),
-      base_url: isApi ? this.getPref(this.PREFS.apiBaseUrl, "") : "",
-      api_key: isApi ? this.getPref(this.PREFS.apiKey, "") : "",
     };
+    for (const k of ["provider", "model", "base_url", "api_key"]) {
+      if (cfg[k]) payload[k] = String(cfg[k]);
+    }
     // "跟模型对话调整"：把上一轮结论和用户的意见一起带回去。
     // ⚠ 只带上一轮的 category/reason/round，不带 tags —— 免得模型
     //   把上一轮的标签原样抄回来，看着像"没听懂调整"。
@@ -1675,13 +1768,13 @@ Object.assign(ZoteroKB, {
       //   不用像 `/env-config` 那样再摊平一层。
       let res = null;
       try {
-        res = await self.kbAdminHostRoute("POST", "/classify-item", payload);
+        res = await this.kbAdminHostRoute("POST", "/classify-item", payload);
       } catch (e) {
         Zotero.debug("[zotero-kb] 引擎桥分类失败（退回 HTTP）：" + e);
       }
       if (!res || res.error) {
         try {
-          res = await self.request("POST", "/classify", payload);
+          res = await this.request("POST", "/classify", payload);
         } catch (e) {
           Zotero.debug("[zotero-kb] 分类请求失败：" + e);
           return null;
@@ -1724,7 +1817,7 @@ Object.assign(ZoteroKB, {
     const list = (pairs || []).filter((x) => x && x.item);
     if (!list.length) return { applied: 0, skipped: 0, done: true };
 
-    const lines = ["本地模型给这 " + list.length + " 篇的建议：", ""];
+    const lines = ["模型给这 " + list.length + " 篇的建议：", ""];
     list.forEach((x, i) => {
       const title = (x.item.getField("title") || "(无标题)").slice(0, 48);
       if (!x.sug) {
@@ -3870,7 +3963,7 @@ Object.assign(ZoteroKB, {
       win, "从 DSH 导入文献",
       lines.join("\n"), flags,
       "添加到 Zotero", "取消", null,
-      "以后不再询问，直接入库（可在插件设置里重新打开）", checkbox
+      "以后不再询问，直接入库（可在管理面板「偏好设置」里重新打开）", checkbox
     );
     return { go: choice === 0, remember: choice === 0 && !!checkbox.value };
   },
@@ -4156,8 +4249,13 @@ Object.assign(ZoteroKB, {
 
       const keys = items.map((it) => it.key);
       let info = {};
-      // 知识库根路径从本地服务取，而不是写死 —— 这样知识库以后
+      // 知识库根路径从**引擎桥**取，而不是写死 —— 这样知识库以后
       // 迁到别处（比如 Zotero 数据目录）这里不用改。
+      // ⚠ 2026-10-16：原来这里发的是老 HTTP `GET /health`（127.0.0.1:8765）。
+      //   8765 已退役，那条请求平时必然失败（正是 plugin-status.json 里
+      //   `lastRequestError` 的来源）。现在改走**引擎桥的同名接口**
+      //   （`kb.health`，与 healthCheck 取的是同一份数据），拿不到就用
+      //   `self.kbDir()` 这个缓存值兜底（下面 kbDir 初值就是它）。
       let kbDir = self.kbDir();      // 缓存值兜底，下面再用 /health 校正
       try {
         // W3 线2.5：走**共用**的 kbItemInfo（桥优先、退回 HTTP；见 05-server.js）。
@@ -4165,7 +4263,7 @@ Object.assign(ZoteroKB, {
         //   下面的 `info[k]` 查不到就落到「这篇还没进知识库」那句，行为可接受。
         const r = await self.kbItemInfo(keys);
         for (const x of (r && r.items) || []) info[x.key] = x;
-        const st = await self.request("GET", "/health");
+        const st = await self.kbAdminHostRoute("GET", "/health");
         if (st && st.kb_dir) kbDir = String(st.kb_dir).replace(/[\\/]+$/, "");
       } catch (e) {
         Zotero.debug("[zotero-kb] 取知识库信息失败（用默认路径）：" + e);
@@ -4348,7 +4446,7 @@ Object.assign(ZoteroKB, {
    *
    * 为什么写成链式而不是挑一个：沙箱里能用的 API 随 Zotero 版本变，而这些
    * 入口的可用性没法静态确认。链式的好处是**最坏情况仍然有确定可用的兜底**
-   * （`reveal()` 已在 settings.js 用过；再往前还有"交给面板的 Python 调
+   * （`reveal()` 在管理面板的「打开目录」里也用过；再往前还有"交给面板的 Python 调
    * os.startfile"，那条是本机面板一直在用的）。用哪一条会写进 debug 日志。
    */
   openKbPath: function (path, what) {
@@ -4629,7 +4727,7 @@ Object.assign(ZoteroKB, {
     const py = self.pythonConsoleExe();
     const root = self.projectRoot();
     if (!py) {
-      return { code: -1, out: "找不到 Python（见 设置 → 文献知识库 → 运行环境）" };
+      return { code: -1, out: "找不到 Python（见 管理面板 →「运行环境」页）" };
     }
     if (!root) return { code: -1, out: "找不到项目目录" };
     const { Subprocess } = ChromeUtils.importESModule(
@@ -5067,8 +5165,8 @@ Object.assign(ZoteroKB, {
    * 这里改成打开 **Zotero 内的新面板**（`23-admin.js::kbAdminOpen`；工具菜单里那个
    * 「知识库管理…」走的是同一个入口）。
    *
-   * 为什么保留这个函数名：工具栏按钮、条目右键「打开知识库管理面板」、设置页
-   * **三处都调它** —— 一处改，三处都不再有死按钮（点了没反应比没有更糟）。
+   * 为什么保留这个函数名：工具栏按钮、条目右键「打开知识库管理面板」两处都调它
+   * —— 一处改，两处都不再有死按钮（点了没反应比没有更糟）。
    * 之所以不连这三处入口一起删：它们对用户是有用的（"打开管理面板"这件事没变，
    * 只是面板换了实现），删了反而少一个正经入口。
    */
@@ -5662,79 +5760,17 @@ Object.assign(ZoteroKB, {
 
 // ===== src/15-prefpane.js =====
 /**
- * 15-prefpane.js —— 设置面板注册与运行状态文件（排错靠它）
+ * 15-prefpane.js —— 运行状态文件（排错靠它）
+ *
+ * ⚠ 2026-10-17：原来的「Zotero 设置 → 文献知识库」偏好窗格**已整体下线**，
+ *   设置项都搬进了管理面板（`content/admin-pages/prefs.js`）。所以这个文件
+ *   里不再有 `registerPrefPane`，只剩 `writeStatusFile`；文件名保留是为了
+ *   不打乱 build_bootstrap 的编号顺序。
  *
  * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
  *   bootstrap.js（xpi 里装的是那个生成物）。
  */
 Object.assign(ZoteroKB, {
-
-  // ================================================================ 设置面板
-
-  /**
-   * 注册设置面板。用 Zotero 官方的 PreferencePanes（Zotero 7+）。
-   *
-   * 为什么不用之前那套：旧实现去 `document.getElementById("zotero-prefpane-advanced")`
-   * 注入 DOM，而 Zotero 7+ 的设置窗口根本不是那个结构 —— 那个元素不存在，
-   * 而且 `addToWindow` 也不在 Zotero 的插件生命周期里、压根不会被调用。
-   * 结果就是插件装上了却没有可用的设置界面（用户没法填项目目录/解释器）。
-   *
-   * 现在把 settings.xhtml 交给 Zotero 自己渲染，交互逻辑放在 settings.js 里
-   * （通过 scripts 选项加载，避免内联脚本被 CSP 拦掉）。
-   *
-   * ⚠ 三个必须遵守的点（都踩过或读源码确认过）：
-   *
-   * 1. `register()` 返回 **Promise**，不 await 的话注册失败会被完全吞掉 ——
-   *    表现就是"设置里看不到这个面板"而没有任何提示。所以这里接住它。
-   *
-   * 2. 参数名是 `label`，**没有 `rawLabel`** —— 看 Zotero 的
-   *    preferencePanes.js：`rawLabel: options.label || (await getName(...))`。
-   *    传 rawLabel 是无效的（旧代码传了，无害但误导）。
-   *
-   * 3. `src` 指向的 XHTML **不能带 `<?xml ...?>` 声明**。
-   *    Zotero 是把文件内容当字符串嵌进 `<div>` 再解析的
-   *    （preferences.js 的 _parseXHTMLToFragment），声明在 <div> 内部
-   *    就是非法 XML → 整个面板点进去一片空白。
-   *    工具：`python tools\check_prefpane.py` 专门回归这一条。
-   */
-  registerPrefPane: function () {
-    var self = ZoteroKB;
-    try {
-      if (!Zotero.PreferencePanes || !Zotero.PreferencePanes.register) {
-        Zotero.debug("[zotero-kb] 这个 Zotero 版本没有 PreferencePanes，跳过设置面板");
-        return;
-      }
-      // 幂等：Zotero 会在插件 shutdown 时自动注销本插件的 pane，但运行中
-      // 被重载时可能残留，重复 register 同一个 id 会抛错（下面接住即可）。
-      const src = self.rootURI + "settings.xhtml";
-      const p = Zotero.PreferencePanes.register({
-        pluginID: self.id,
-        id: "zotero-kb-prefpane",
-        label: "文献知识库",
-        image: self.rootURI + "icon.svg",
-        src: src,
-        scripts: [self.rootURI + "settings.js"],
-      });
-      // register 是 async 的：成功 resolve 面板 id，失败 reject。
-      if (p && typeof p.then === "function") {
-        p.then((id) => {
-          Zotero.debug("[zotero-kb] 设置面板已注册，id=" + id);
-        }).catch((e) => {
-          // "already registered" 是重启/重载时的正常情况，其余要报出来
-          const msg = String((e && e.message) || e);
-          if (msg.includes("already registered")) {
-            Zotero.debug("[zotero-kb] 设置面板已存在（重载时正常）：" + msg);
-          } else {
-            Zotero.logError(new Error("[zotero-kb] 注册设置面板失败：" + msg));
-          }
-        });
-      }
-      Zotero.debug("[zotero-kb] 设置面板注册请求已发出：" + src);
-    } catch (e) {
-      Zotero.logError(new Error("[zotero-kb] 注册设置面板抛错：" + e));
-    }
-  },
-
 
   /** 把运行状态写到文件，方便从 Python 侧和排障时查看。
    *
@@ -5754,7 +5790,7 @@ Object.assign(ZoteroKB, {
         pluginVersion: self.version,
         zoteroVersion: Zotero.version,
         platformVersion: Services.appinfo.platformVersion,
-        model: self.getPref(self.PREFS.model, ""),
+        model: (self.llmConfig() || {}).model || "",
         autoProcess: !!self.getPref(self.PREFS.autoProcess, true),
         serverOk: self.serverOk,
         serverInfo: self.serverInfo,
@@ -6302,12 +6338,13 @@ Object.assign(ZoteroKB, {
    * 原本只能"打开 运行JavaScript 窗口 → 复制 → 粘贴 → Ctrl+R"，一次几十秒。
    * 有了轮询，Python 侧派任务、插件执行、结果回传，全自动。
    *
-   * ⚠ **两条队列都消费**（2026-10-13 W3 线2）：
-   *   ① **文件信箱**（`<知识库>\mailbox`，新的、首选）—— 不需要服务在跑；
-   *   ② **老的 HTTP 队列**（`GET /task`）—— 保留为兜底，直到确认没有调用方。
-   *   同一个任务**只会被写进其中一处**，所以不存在双执行；先看信箱、信箱空
-   *   再看 HTTP，两处都空就是没事做。想停掉 HTTP 那条就把 prefs 里的
-   *   `zotero-kb.taskPollHttp` 设为 false。
+   * ⚠ 两条队列：**文件信箱**（`<知识库>\mailbox`，新的、正路）与**老的 HTTP 队列**
+   *   （`GET /task`，兜底）。2026-10-13 W3 线2 第一条就位之后，第二条一直是
+   *   "过渡期留着"；2026-10-16（用户拍板"HTTP 噪音一起清"）它**默认关闭**
+   *   （`zotero-kb.taskPollHttp` 默认 false）—— 因为它是**每 2 秒一次**的定时请求，
+   *   而 8765 已退役，每次必然失败，正是状态文件里那堆连接错误的来源。
+   *   要旧通道就把那个 pref 显式设回 true（并且 `scripts\4-service.vbs` 起服务）。
+   *   同一个任务只会被写进其中一处，所以不存在双执行；先看信箱、要开 HTTP 才看它。
    *
    * 安全：老通道走服务 token；新通道只认本机文件系统里的那个目录（没有端口）。
    * 不想开这个能力就把 prefs 里的 autoTaskPoll 设为 false。
@@ -6444,8 +6481,9 @@ Object.assign(ZoteroKB, {
         } catch (e) {
           Zotero.debug("[zotero-kb] 任务信箱轮询失败：" + e);
         }
-        // ② 老通道：HTTP 队列（兜底；没有调用方了就把它关掉）。
-        if (!task && self.getPref("zotero-kb.taskPollHttp", true)) {
+        // ② 老通道：HTTP 队列（**默认关闭**，见 startTaskPolling 的说明）。
+        //    开着时才发 GET /task —— 8765 退役后这是纯噪音，所以默认不走。
+        if (!task && self.getPref("zotero-kb.taskPollHttp", false)) {
           try {
             const res = await self.request("GET", "/task");
             if (res && res.task) { task = res.task; task.__via = "http"; }
@@ -6671,11 +6709,13 @@ Object.assign(ZoteroKB, {
       return Promise.resolve(self.caps);
     }
     self.caps.at = now;
-    // ⚠ 先刷一次 /health：`probeLocalModel` 读的是 `serverInfo`，而它只在
-    //   startup（以及权重列 401 重试）时取过 —— 不在这里刷新的话，
-    //   「先开 Zotero、再开 Ollama」永远等不到状态变对（本机 2026-10-10
-    //   实测：caps.localWhy 一直停在"没找到 Ollama"）。/health 是本机一次
-    //   HTTP，很便宜；失败也不抛（healthCheck 自己 try/catch）。
+    // ⚠ 先刷一次 healthCheck（引擎桥 `kb.health`）：`probeLocalModel` 读的是
+    //   `serverInfo`，而它只在 startup（以及权重列 401 重试）时取过 —— 不在这里
+    //   刷新的话，「先开 Zotero、再开 Ollama」永远等不到状态变对（本机 2026-10-10
+    //   实测：caps.localWhy 一直停在"没找到 Ollama"）。走引擎桥，很便宜；
+    //   失败也不抛（healthCheck 自己 try/catch）。
+    //   ⚠ 2026-10-16：这里不再牵涉老 HTTP `/health`（8765 退役，healthCheck 已
+    //   删掉那条兜底）。
     return Promise.resolve(
       self.healthCheck ? self.healthCheck() : null
     ).catch(function () { return null; }).then(function () {
@@ -6760,28 +6800,31 @@ Object.assign(ZoteroKB, {
    * 本地模型可用不可用。返回 `true` / `false` / `null`（未知）。
    *
    * 判据用**已经拿到的**信息，不再发新请求：
-   *   · 插件 pref 里选了 `openai` → 有 apiKey（和 baseUrl）就算可用；
-   *   · 选了 `ollama` → 看 `serverInfo.ollama`（`/health` 报的：文件在不在 +
-   *     API 通不通 + 有哪些模型）→ `api_up && models.length` 才算可用；
-   *   · 拿不到 `/health` 的结果 → `null`（未知），界面上写"检测中"。
+   *   · `llm-config.json` 里 provider=openai → 有 apiKey（和 baseUrl）就算可用；
+   *   · provider=ollama（默认）→ 看 `serverInfo.ollama`（**引擎桥 `kb.health`**
+   *     报的：文件在不在 + API 通不通 + 有哪些模型）→ `api_up && models.length`
+   *     才算可用；
+   *   · 拿不到 `kb.health` 的结果 → `null`（未知），界面上写"检测中"。
+   *
+   * ⚠ 2026-10-17：模型配置改从 `<知识库>\llm-config.json` 读（不再读退役的
+   *   provider / apiKey / apiBaseUrl pref）—— 面板与插件必须看同一份。
    */
   probeLocalModel: function () {
     var self = ZoteroKB;
-    let provider = "";
-    try {
-      provider = String(self.getPref(self.PREFS.provider, "") || "").trim();
-    } catch (e) { provider = ""; }
+    let cfg = {};
+    try { cfg = self.llmConfig() || {}; } catch (e) { cfg = {}; }
+    let provider = String(cfg.provider || "").trim();
     if (!provider) provider = "ollama";
     if (provider === "openai") {
-      const key = String(self.getPref(self.PREFS.apiKey, "") || "").trim();
-      const base = String(self.getPref(self.PREFS.apiBaseUrl, "") || "").trim();
-      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境 → 模型配置）";
+      const key = String(cfg.api_key || "").trim();
+      const base = String(cfg.base_url || "").trim();
+      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（面板「运行环境」→ 模型配置）";
       return !!key && !!base;
     }
     let info = null;
     try {
       // ⚠ 优先读**结构化**的 `ollama_info`（服务端 2026-10-10 新增）。
-      //   在那之前 `/health` 只回报 `ollama`（一个**路径字符串**），
+      //   在那之前 `kb.health` 只回报 `ollama`（一个**路径字符串**），
       //   而下面的判据按 `info.exists / info.api_up` 读 —— 于是 `info.exists`
       //   恒为 undefined、永远走"没找到 Ollama"：明明连上了也显示「未连接」
       //   （用户 2026-10-10 报的正是这个）。
@@ -6901,16 +6944,18 @@ Object.assign(ZoteroKB, {
  * （见 scripts/install-mineru.ps1）；Ollama 的默认位置是
  * `%LOCALAPPDATA%\Programs\Ollama\ollama.exe`。这两个判断**不需要服务在跑**，
  * 一次 `exists` 就够，成本最低、也最不容易误报"没装"。
- * 但也可能装在别处（PATH 上、或用户自定义路径），那只有服务端知道：
- * MinerU 走 `/mineru-check`（`schemas.resolve_mineru()` 六级优先级），
- * Ollama 走 `/health`（里面带 `ollama` 字段，同样是 `resolve_ollama()`）。
- * 服务没起来就按"本地看到什么算什么"处理。
+ * 但也可能装在别处（PATH 上、或用户自定义路径），那只有引擎知道：
+ * MinerU 走引擎桥的 `/mineru-check`（`schemas.resolve_mineru()` 六级优先级），
+ * Ollama 走引擎桥的 `/health`（里面带 `ollama` 字段，同样是 `resolve_ollama()`）。
+ * 引擎没起来就按"本地看到什么算什么"处理。
+ * ⚠ 2026-10-16：这两条原来各有一条"老 HTTP（8765）兜底"，已删 —— 这段代码跑在
+ *   启动流程里，而 8765 已退役，兜底必然失败、只剩噪音。
  *
  * ## 本文件只做"首启引导"
  *
  * 早期那套图形化安装向导（说明代价 → 体检 → 后台安装）随旧的 Tk 面板一起退役，
  * 那时它是 `tools/panels/*_guide.py`。现在**没有任何一键安装按钮**：面板的
- * 「运行环境」页看四个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
+ * 「运行环境」页看八个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
  * 所以这里**不许**再把用户指向"面板里的安装向导"。
  */
 Object.assign(ZoteroKB, {
@@ -6942,7 +6987,8 @@ Object.assign(ZoteroKB, {
    * 排一次首启引导检查。
    *
    * 延迟 8 秒：① 让主窗口、设置面板先就绪（首屏别抢时间）；
-   * ② 让本地服务有机会起来（`/health` 那次探测在 startup 里）。
+   * ② 让引擎有机会起来（healthCheck 那次引擎桥探测在 startup 里 ——
+   *    2026-10-16 起它**不碰老 HTTP 8765**，这里也不再等那个服务）。
    * 用 `setTimeout` 而不是窗口钩子 —— 本机实测 `onMainWindowLoad` 在
    * **Zotero 启动时已存在的那个窗口**上不会被调用（见 00-core.js 的说明）。
    */
@@ -6964,37 +7010,32 @@ Object.assign(ZoteroKB, {
         || self.getPref(self.PREFS.mineruGuideDone, false)) return;
 
     const missing = [];
-    // ① MinerU：先看本地文件，再问服务
+    // ① MinerU：先看本地文件，再问引擎桥
     const kit = self.mineruKitPath();
     if (!(kit && self._exists && self._exists(kit))) {
       let seen = false;
-      // W3 线2.5（2026-10-14）：桥优先（`mineru.checkRaw` = `mineru.probe()` **原文**，
-      // 与 HTTP `/mineru-check` 同一份），拿不到再退回老 HTTP。
+      // ⚠ 2026-10-16（用户拍板"HTTP 噪音一起清"）：**删掉老 HTTP `/mineru-check`
+      //   兜底**。这条探测跑在**启动流程**里，而 8765 已退役 —— 兜底必然失败，
+      //   只剩"每次启动多一次连接错误"。桥（`mineru.checkRaw` = `mineru.probe()`
+      //   原文）拿不到就算没看到，不再去够老服务。
       try {
-        let info = null;
-        try { info = await self.kbAdminHostRoute("GET", "/mineru-check"); }
-        catch (e0) {
-          Zotero.debug("[zotero-kb] 引擎桥查 MinerU 失败（退回 HTTP）：" + e0);
-          info = await self.request("GET", "/mineru-check");
-        }
+        const info = await self.kbAdminHostRoute("GET", "/mineru-check");
         seen = !!(info && info.ok);
       } catch (e) {
-        Zotero.debug("[zotero-kb] 查 MinerU 不可用（引擎与老服务都没起来？）：" + e);
+        Zotero.debug("[zotero-kb] 引擎桥查 MinerU 不可用：" + e);
       }
       if (!seen) missing.push("mineru");
     }
-    // ② Ollama：先看本地文件，再问 /health
+    // ② Ollama：先看本地文件，再问引擎桥的 /health
     const ol = self.ollamaExePath();
     if (!(ol && self._exists && self._exists(ol))) {
       let seen = false;
       try {
-        // W3 线2.5：桥优先（`kb.health` 里带 ollama 路径），退回老 HTTP。
-        let info = null;
-        try { info = await self.kbAdminHostRoute("GET", "/health"); }
-        catch (e0) { info = await self.request("GET", "/health"); }
+        // ⚠ 2026-10-16：同 ①，**删掉老 HTTP /health 兜底**（启动路径不许碰 8765）。
+        const info = await self.kbAdminHostRoute("GET", "/health");
         seen = !!(info && info.ollama);
       } catch (e) {
-        Zotero.debug("[zotero-kb] /health 不可用（服务没起来？）：" + e);
+        Zotero.debug("[zotero-kb] 引擎桥 /health 不可用：" + e);
       }
       if (!seen) missing.push("ollama");
     }
@@ -7465,21 +7506,18 @@ Object.assign(ZoteroKB, {
       Zotero.debug("[zotero-kb] 阅读器那列没装成（不影响条目库）：" + e2);
     }
     if (!host.onMessage) self.kbviewOnWindowMessage(win);
-    // 阅读器侧的两个全局东西（幂等；放在这里 = 有主窗口就一定装上）：
-    //   · Notifier 的 pageChange —— 翻页时立刻把右边滚到同一页（见 kbviewOnNotify）
-    //   · 阅读器工具栏的「对照」按钮（见 kbviewRegisterReaderToolbar）
+    // 阅读器侧的全局东西（幂等；放在这里 = 有主窗口就一定装上）：
+    //   · Notifier（tab 事件）—— 见 kbviewOnNotify：按页跟随早就删了，
+    //     原来剩下的唯一用途是"补挂阅读器工具栏的「对照」按钮"；
+    //     那个按钮 2026-10-16 已按用户要求删除，所以它现在是一条**保留的钩子**
+    //     （派发包 §一 明确要求别把 Notifier 整体删掉，将来真要做
+    //     「跳到这一页」还要用它）。不再有"注册工具栏按钮"这一步。
     try { self.kbviewRegisterNotifier(); }
     catch (e3) { Zotero.debug("[zotero-kb] 注册侧栏 Notifier 失败：" + e3); }
-    try { self.kbviewRegisterReaderToolbar(); }
-    catch (e4) { Zotero.debug("[zotero-kb] 注册阅读器工具栏按钮失败：" + e4); }
     // 阅读器右键菜单的「知识库：修正公式」（22-formula.js）。同样幂等，
     // 失败只写状态文件，不影响别的功能。
     try { self.kbFormulaInit(); }
     catch (e4b) { Zotero.debug("[zotero-kb] 注册阅读器右键菜单失败：" + e4b); }
-    // ⚠ 会话恢复出来的阅读器**早于**我们注册 renderToolbar，收不到那个一次性
-    //   事件 —— 所以注册完再"补注入"一次（见 kbviewInjectToolbarButton）。
-    try { self.kbviewLateDispatch(function () { self.kbviewEnsureReaderToolbar(); }, 1500); }
-    catch (e5) { /* ignore */ }
     // 那份页面**不在启动期加载**（实测 863ms，见 kbviewEnsurePage 的说明）：
     // 等窗口起来、空闲下来再挂。用户要是此刻就点开，kbviewOpen 里会立刻挂上。
     try {
@@ -8540,8 +8578,9 @@ Object.assign(ZoteroKB, {
     }
     self._kbvNotifierID = null;
     try {
-      // ⚠ 只要 tab（选中/新开标签 → 补阅读器工具栏的「对照」按钮）。
-      //   file 原来是给 pageChange（按页跟随）用的，2026-10-11 去跟随之后不再需要。
+      // ⚠ 只要 tab。file 原来是给 pageChange（按页跟随）用的，2026-10-11 去掉；
+      //   tab 原来是为了补挂阅读器工具栏的「对照」按钮，那个按钮 2026-10-16
+      //   删除后它是一条**保留的钩子**（派发包 §一：别把 Notifier 整体删掉）。
       self._kbvNotifierID = Zotero.Notifier.registerObserver({
         notify: function (event, type, ids) {
           try { ZoteroKB.kbviewOnNotify(event, type, ids); }
@@ -8565,12 +8604,12 @@ Object.assign(ZoteroKB, {
   kbviewOnNotify: function (event, type, ids) {
     var self = ZoteroKB;
     // ⚠ 这里**不再**处理 file/pageChange：按页跟随已去掉（2026-10-11 用户拍板），
-    //   翻页时右边那一列不再重推、不再重渲染。留下的只有「补工具栏按钮」一条 ——
-    //   会话恢复出来的阅读器是在我们注册 renderToolbar **之前** mount 的，
-    //   那个一次性事件不会再发，只能靠标签事件补挂（见 kbviewInjectToolbarButton）。
-    if (type === "tab" && (event === "select" || event === "add")) {
-      self.kbviewEnsureReaderToolbar();
-    }
+    //   翻页时右边那一列不再重推、不再重渲染。
+    // ⚠ 原来还剩一条「补阅读器工具栏的『对照』按钮」—— 那个按钮 2026-10-16
+    //   按用户要求删除（入口精简：rail 那一列就够了），所以这里不再需要补挂。
+    //   函数与 Notifier 注册**保留**（派发包 §一 明确要求别整体删掉；
+    //   将来真要做「跳到这一页」还要用这个 tab 事件钩子）。
+    return null;
   },
 
   /**
@@ -8599,126 +8638,6 @@ Object.assign(ZoteroKB, {
         self.kbviewSend(dock, { type: "page", page: info.page });
       } catch (e2) { /* 一个窗口出错不影响别的 */ }
     }
-  },
-
-  // ================================================================ 阅读器工具栏的「对照」按钮
-
-  /**
-   * 注册阅读器工具栏的「对照」按钮（**一键进入/退出对照模式**，派发包 §二）。
-   *
-   * Zotero.Reader.registerEventListener('renderToolbar', handler, pluginID)：
-   * 阅读器每次渲染工具栏都会发这个事件，handler 拿到
-   * {type, doc, params, append, reader}，**必须同步** append。
-   * pluginID 传了之后，插件停用时 Zotero 会自己把它摘掉（不用手动反注册）。
-   */
-  kbviewRegisterReaderToolbar: function () {
-    var self = ZoteroKB;
-    if (self._kbvReaderToolbar) return true;
-    if (!Zotero.Reader || typeof Zotero.Reader.registerEventListener !== "function") {
-      return false;
-    }
-    self._kbvReaderToolbar = function (event) {
-      try { ZoteroKB.kbviewAddToolbarButton(event); }
-      catch (e) { Zotero.debug("[zotero-kb] 加阅读器「对照」按钮失败：" + e); }
-    };
-    try {
-      Zotero.Reader.registerEventListener("renderToolbar", self._kbvReaderToolbar, self.id);
-      self.writeStatusFile({ kbViewReaderToolbar: "ok" });
-      return true;
-    } catch (e) {
-      self._kbvReaderToolbar = null;
-      self.writeStatusFile({ kbViewReaderToolbar: "FAIL: " + e });
-      return false;
-    }
-  },
-
-  /**
-   * 事件回调里往阅读器工具栏塞按钮。
-   *
-   * ⚠ **必须同步创建并 append**：阅读器那边 append 之后再调用就会抛
-   *   "Append must be called directly and synchronously in the event"
-   *   （见 resource/reader/reader.js 的 CustomSections）。
-   * ⚠ 每次渲染事件都会来、工具栏的 custom-sections 每次都被 replaceChildren 清空，
-   *   所以这里**每次都新建**一个（不是「已存在就跳过」）。
-   */
-  kbviewAddToolbarButton: function (event) {
-    var self = ZoteroKB;
-    const doc = event && event.doc;
-    if (!doc || !doc.createElement || typeof event.append !== "function") return false;
-    let win = null;
-    try { win = Zotero.getMainWindow(); } catch (e) { win = null; }
-    const btn = doc.createElement("button");
-    btn.setAttribute("id", "zotero-kb-kbview-toolbar-button");
-    btn.setAttribute("class", "toolbar-button");
-    btn.setAttribute("title", "对照：右侧显示这一页的知识库正文（一键开 / 关）");
-    btn.textContent = "对照";
-    if (win && self.kbviewIsOpen(win, "reader")) {
-      btn.setAttribute("aria-pressed", "true");
-      btn.setAttribute("data-kbview-open", "true");
-    }
-    btn.addEventListener("click", function () {
-      try {
-        let w = null;
-        try { w = Zotero.getMainWindow(); } catch (e2) { w = null; }
-        self.kbviewToggle(w || win, "reader");
-      } catch (e3) { Zotero.debug("[zotero-kb] 「对照」按钮出错：" + e3); }
-    });
-    event.append(btn);
-    return true;
-  },
-
-  /**
-   * 直接往阅读器工具栏**注入**一个「对照」按钮（幂等）。
-   *
-   * ⚠ 为什么需要它（真机实测，2026-10-11）：renderToolbar 是**一次性**的
-   *   （React 那个 CustomSections 只在 mount 时发一次），而 Zotero 会**在启动时
-   *   恢复会话里的阅读器标签** —— 那些阅读器可能在插件注册监听之前就挂好了，
-   *   于是我们永远收不到事件，工具栏上就没有按钮（现象：阅读器右侧那一列只能
-   *   靠 rail 图标开，工具栏上找不到入口）。
-   *   这里绕过事件、直接把按钮塞进 React 那个 .custom-sections 容器；
-   *   下次阅读器重渲染时会清掉，但那一刻 renderToolbar 会来，又会补上。
-   */
-  kbviewInjectToolbarButton: function (reader) {
-    var self = ZoteroKB;
-    const w = reader && reader._iframeWindow;
-    if (!w) return false;
-    let doc = null;
-    try { doc = w.document; } catch (e) { return false; }
-    if (!doc) return false;
-    if (doc.getElementById("zotero-kb-kbview-toolbar-button")) return true;
-    const host = doc.querySelector(".custom-sections");
-    if (!host) return false;                 // 工具栏还没渲染 → 等下一次
-    const btn = doc.createElement("button");
-    btn.setAttribute("id", "zotero-kb-kbview-toolbar-button");
-    btn.setAttribute("class", "toolbar-button");
-    btn.setAttribute("title", "对照：右侧显示这一页的知识库正文（一键开 / 关）");
-    btn.textContent = "对照";
-    if (self.kbviewIsOpen(Zotero.getMainWindow(), "reader")) {
-      btn.setAttribute("aria-pressed", "true");
-    }
-    btn.addEventListener("click", function () {
-      try { self.kbviewToggle(Zotero.getMainWindow(), "reader"); }
-      catch (e3) { Zotero.debug("[zotero-kb] 「对照」按钮出错：" + e3); }
-    });
-    const section = doc.createElement("div");
-    section.setAttribute("class", "section");
-    section.appendChild(btn);
-    try { host.appendChild(section); } catch (e4) { return false; }
-    return true;
-  },
-
-  /** 把「对照」按钮补到**所有已经挂好的**阅读器工具栏上（幂等）。 */
-  kbviewEnsureReaderToolbar: function () {
-    var self = ZoteroKB;
-    let n = 0;
-    try {
-      const rs = (Zotero.Reader && Zotero.Reader._readers) || [];
-      for (const r of rs) {
-        try { if (self.kbviewInjectToolbarButton(r)) n++; }
-        catch (e) { /* 单个阅读器失败不影响别的 */ }
-      }
-    } catch (e2) { /* ignore */ }
-    return n;
   },
 
   // ================================================================ 图片与分块（纯函数）
@@ -9497,7 +9416,7 @@ ZoteroKB.kbFormulaSendWhenReady = function (win, payload, tries) {
   }
   if (tries > 40) {
     self.kbFormulaAlert("阅读器那一列没能就绪，没打开编辑区。\n"
-      + "可以先在阅读器工具栏点一下「对照」，再右键公式。");
+      + "先在阅读器右侧打开知识库那一列（rail 上的图标），再右键公式。");
     return;
   }
   try {
@@ -9791,9 +9710,8 @@ Object.assign(ZoteroKB, {
     "POST /typefix-scan": { method: "meta.typeScan", from: "body" },
     // 运行环境（/health 复用上面那条）
     "GET /env-check": { method: "env.check", from: "query" },
-    // W3 线2.5（2026-10-14）：插件设置面板要的是**诊断原文**（= env_report() 那个形状，
-    // 带 python / project_root / runtime_state 顶层键）；管理面板仍用上面那个重整形过的。
-    "GET /env-check-raw": { method: "env.checkRaw", from: "query" },
+    // 注：`env.checkRaw`（诊断原文）仍留在引擎里给脚本/测试直接调；
+    // 设置窗格下线后，插件的页面不再需要这条桥（`kbEnvReport` 已删）。
     // W3 线2.5：**内联元数据**的分类建议（新文献还没入库时用）。
     // ⚠ 与 `POST /classify`（→ ai.classify，认 key）是**两个能力**，并存不冲突。
     "POST /classify-item": { method: "classify.item", from: "body" },
@@ -9807,6 +9725,8 @@ Object.assign(ZoteroKB, {
     // 「模型目录」三层兜底：本机 /api/tags、外部 /models、失败回落内置候选。
     // 引擎侧自己只等 12s（`discover_llm` 的 timeout 参数），这里给 30s。
     "POST /llm-discover": { method: "llm.discover", from: "body" },
+    // ⚠ 这条映射**现在不会被用到**：`KB_ADMIN_HOST_ROUTES` 里同路径的宿主路由
+    //   先命中（真的停掉引擎）。保留它只是给"直接发 RPC 的脚本"一个一致的路径名。
     "POST /service/restart": { method: "service.restart", from: "body" },
     // 提示词
     "GET /prompts": { method: "prompts.list", from: "query" },
@@ -9825,6 +9745,8 @@ Object.assign(ZoteroKB, {
     "POST /classify": { method: "ai.classify", from: "body" },
     "POST /apply-suggestion": { method: "ai.apply", from: "body" },
     "POST /maintain": { method: "maintain.run", from: "body" },
+    // 「偏好设置」页的「立即同步一次」（引擎复用 localserver 的同步实现）。
+    "POST /kb-sync": { method: "kb.sync", from: "body" },
     // PDF 解析
     "GET /mineru-status": { method: "mineru.status", from: "query" },
     // W3 线2.5（2026-10-14）：安装引导要的**原文**（带 exe/version/vlm_engine/cuda/gpu…），
@@ -10396,7 +10318,462 @@ Object.assign(ZoteroKB, {
   //   那条路径 2026-10-13 已删除（engine.py 从来没有 `--once`），临时目录也就
   //   没有使用方了 —— 一并删掉，不留没人调的成员。
 
+  // ================================================================ 宿主路由（不走引擎）
+  //
+  // 「运行环境」页的**保存**与**浏览…**必须是**宿主半自己**干的两件事，原因：
+  //
+  //   · 保存走引擎的代价 —— 用户最需要改这些路径的时刻，恰恰是"引擎起不来"
+  //     （找不到 python / 项目目录填错了）。那时请求根本到不了引擎，面板就
+  //     **永远改不回来**了。所以宿主半直接读写 `kb-location.json`。
+  //   · 「浏览…」要弹系统文件/目录选择框 —— 那只有 chrome 作用域能做。
+  //
+  // 这两条不进 `KB_ADMIN_ROUTES`（那张表是"页面路径 → 引擎方法"），而是
+  // 单独一张 `KB_ADMIN_HOST_ROUTES`：**在派发时先看它**，命中就直接在本进程里
+  // 执行，不碰引擎。表里存的是"处理函数名"（成员引用检查能扫到它）。
+  KB_ADMIN_HOST_ROUTES: {
+    "POST /env-save": "kbAdminHostEnvSave",
+    "POST /env-pick": "kbAdminHostEnvPick",
+    // 2026-10-17：设置页下线后，「偏好设置」页读写插件 pref（白名单见下）。
+    "GET /plugin-prefs": "kbAdminHostPrefsGet",
+    "POST /plugin-prefs": "kbAdminHostPrefsSet",
+    // 打开知识库目录（面板里只有宿主能碰文件系统）。
+    "POST /open-path": "kbAdminHostOpenPath",
+    // 「重启引擎」真的停掉子进程（不再走引擎的占位方法）。
+    "POST /service/restart": "kbAdminHostServiceRestart",
+  },
+
+  /**
+   * 可写进 `kb-location.json` 的键 + 它们的形状（与 `offline/schemas.py` 的
+   * `ENV_KEYS` / `_ENV_DIR_KEYS` / `_ENV_MAYBE_MISSING` 一一对应）。
+   *
+   * ⚠ 这是**第二份**形状定义（Python 那份才是权威）。两边漂移的后果是
+   *   "面板存得进、引擎读不到"或反过来。改键名时**两处一起改**。
+   *   `flat` 是"老版本用过的扁平键"，resolve_* 也认它 —— 写/删都要带上，
+   *   否则删了 `env.python` 却留着 `python_exe`，那一项还是被手填值盖着。
+   */
+  KB_ADMIN_ENV_KEYS: {
+    project_root: { dir: true, flat: "project_root" },
+    python: { flat: "python_exe" },
+    ollama: { flat: "ollama_exe" },
+    mineru: { flat: "mineru_exe" },
+    mineru_home: { dir: true, flat: "mineru_home" },
+    // 知识库可能还没建 —— 允许指向一个还不存在的目录（第一次建库会创建它）
+    kb_dir: { dir: true, maybeMissing: true, flat: "kb_dir" },
+    zotero_data_dir: { dir: true, flat: "zotero_data_dir" },
+    mathtype: { flat: "mathtype_exe" },
+  },
+
+  /** 面板那几项里，哪些要顺手镜像进插件自己的 pref（插件启动引擎时读它们）。 */
+  KB_ADMIN_ENV_PREFS: {
+    project_root: "zotero-kb.projectRoot",
+    python: "zotero-kb.pythonExe",
+    ollama: "zotero-kb.ollamaExe",
+  },
+
+  /** 项目根的 `kb-location.json`（与 offline/schemas.py 的 LOCATION_FILE 同一处）。 */
+  kbAdminLocationFile: function (root) {
+    const r = String(root || "").replace(/[\\/]+$/, "");
+    return r ? (r + "\\kb-location.json") : "";
+  },
+
+  /** 用户级 `location.json`（项目被挪走时的后备；与 schemas.USER_LOCATION_FILE 同一处）。 */
+  kbAdminUserLocationFile: function () {
+    // ⚠ 先问 `Services.env`（一定拿得到 %APPDATA%），dirsvc 只作后备 ——
+    //   "AppData" 这个 dirsvc 键在个别 Zotero/Gecko 版本上未必注册。
+    let base = "";
+    try {
+      base = Services.env.get("APPDATA") || "";
+    } catch (e) { base = ""; }
+    if (!base) {
+      try {
+        base = Services.dirsvc.get("AppData",
+                                   Components.interfaces.nsIFile).path;
+      } catch (e2) { base = ""; }
+    }
+    return base ? (base + "\\zotero-kb\\location.json") : "";
+  },
+
+  /** 读一个 JSON 文件（不存在 / 读不动 / 不是对象都返回 {}）。 */
+  kbAdminReadJsonFile: function (path) {
+    var self = ZoteroKB;
+    if (!path) return {};
+    try {
+      const f = Zotero.File.pathToFile(path);
+      if (!f.exists()) return {};
+      const text = String(Zotero.File.getContents(f) || "");
+      const data = JSON.parse(text);
+      return (data && typeof data === "object" && !Array.isArray(data)) ? data : {};
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 读配置失败（当作空）：" + path + " —— " + e);
+      return {};
+    }
+  },
+
+  /**
+   * 原子写一个 JSON 文件（先写 `.tmp`，再顶掉目标）。
+   *
+   * ⚠ 不直接覆盖原文件：写到一半（崩溃/断电）会留下半截 JSON，那份配置
+   *   以后**谁都读不出来**（Python 的 json.load 直接抛，面板整页空白）。
+   *   Python 侧的 write_location_config 也是 tmp + os.replace，口径一致。
+   * 返回 "" 表示成功，否则是一句原因。
+   */
+  kbAdminWriteJsonFile: function (path, data) {
+    if (!path) return "没有目标路径";
+    let text = "";
+    try {
+      text = JSON.stringify(data, null, 2) + "\n";
+    } catch (e) { return "序列化失败：" + e; }
+    try {
+      const dest = Zotero.File.pathToFile(path);
+      const dir = dest.parent;
+      if (dir && !dir.exists()) dir.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+    } catch (e2) { /* 目录建不出来时下面会报 */ }
+    const tmpPath = path + ".tmp";
+    try {
+      Zotero.File.putContents(Zotero.File.pathToFile(tmpPath), text);
+    } catch (e3) {
+      return "写临时文件失败：" + e3;
+    }
+    try {
+      const tmp = Zotero.File.pathToFile(tmpPath);
+      const dest = Zotero.File.pathToFile(path);
+      if (dest.exists()) dest.remove(false);
+      tmp.moveTo(dest.parent, dest.leafName);
+      return "";
+    } catch (e4) {
+      try { Zotero.File.pathToFile(tmpPath).remove(false); } catch (e5) { /* ignore */ }
+      return "替换目标文件失败：" + e4;
+    }
+  },
+
+  /** 这个值能不能用（与 Python `_env_value_problem` 同一套判据）。 */
+  kbAdminEnvValueOk: function (val, spec) {
+    var self = ZoteroKB;
+    try {
+      const f = Zotero.File.pathToFile(val);
+      if (!f.exists()) return !!spec.maybeMissing;
+      return spec.dir ? f.isDirectory() : f.isFile();
+    } catch (e) {
+      return false;
+    }
+  },
+
+  /** 从 runtime.json 里删掉几个键（「恢复自动」时用，见 Python 侧同名注释）。 */
+  kbAdminClearRuntimeKeys: function (keys) {
+    var self = ZoteroKB;
+    const list = (keys || []).filter(Boolean);
+    if (!list.length) return;
+    let userFile = "";
+    try { userFile = self.kbAdminUserLocationFile(); } catch (e) { userFile = ""; }
+    if (!userFile) return;
+    const dir = userFile.replace(/[\\/][^\\/]+$/, "");
+    const rtPath = dir + "\\runtime.json";
+    const state = self.kbAdminReadJsonFile(rtPath);
+    let hit = false;
+    for (const k of list) {
+      if (Object.prototype.hasOwnProperty.call(state, k)) {
+        delete state[k];
+        hit = true;
+      }
+    }
+    if (hit) self.kbAdminWriteJsonFile(rtPath, state);
+  },
+
+  /**
+   * `POST /env-save` —— **运行环境页的保存**（宿主半直接写 kb-location.json）。
+   *
+   * 请求体就是 `{项目键: 值, ...}`（只带**要动的**键；空串 = 恢复自动）。
+   * 语义与 `schemas.save_env_config` 一致：非空 → 校验后写进 `env` 段 +
+   * 扁平键；空串 → **删键**（不是写空字符串，那会留残渣）。
+   *
+   * 写哪儿：优先写**有效项目根**下的 `kb-location.json`（project_root 这一项
+   * 本身被改时写**新目录**下）；那里写不进去（只读/OneDrive 占用）就退到
+   * 用户级 `location.json` —— 与 Python `write_location_config` 同一套退路。
+   *
+   * ⚠ 顺手把 project_root / python / ollama 镜像进插件 pref：插件自己起引擎时
+   *   读的是 pref（`projectRoot()` / `pythonExe()` / `ollamaPaths()`），不镜像的话
+   *   "面板里改完，插件还是用旧的" —— 而插件那三个 pref 从此不再是用户设置面。
+   */
+  kbAdminHostEnvSave: function (body) {
+    var self = ZoteroKB;
+    const params = (body && typeof body === "object") ? body : {};
+    const keys = self.KB_ADMIN_ENV_KEYS;
+    let touched = false;
+    const cleared = [];
+
+    // 先定目标目录（看 project_root 这一项有没有被改成另一个目录）
+    let targetRoot = "";
+    if (Object.prototype.hasOwnProperty.call(params, "project_root")) {
+      const v = String(params.project_root || "").trim();
+      if (v) {
+        try {
+          const f = Zotero.File.pathToFile(v);
+          if (f.exists() && f.isDirectory()) targetRoot = v;
+        } catch (e) { /* 用当前项目根 */ }
+      }
+    }
+    if (!targetRoot) targetRoot = self.projectRoot();
+
+    let filePath = self.kbAdminLocationFile(targetRoot);
+    if (!filePath) filePath = self.kbAdminUserLocationFile();
+    const cfg = self.kbAdminReadJsonFile(filePath);
+    if (cfg.env && typeof cfg.env === "object" && !Array.isArray(cfg.env)) {
+      cfg.env = Object.assign({}, cfg.env);
+    } else {
+      cfg.env = {};
+    }
+
+    for (const key of Object.keys(keys)) {
+      if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+      touched = true;
+      const spec = keys[key];
+      const val = String(params[key] == null ? "" : params[key]).trim();
+      const wasSet = Object.prototype.hasOwnProperty.call(cfg, spec.flat)
+        || Object.prototype.hasOwnProperty.call(cfg.env, key);
+      if (!val) {
+        delete cfg.env[key];
+        if (spec.flat) delete cfg[spec.flat];
+        if (wasSet) cleared.push(key);
+        continue;
+      }
+      if (!self.kbAdminEnvValueOk(val, spec)) {
+        const what = spec.dir ? "要是一个存在的目录" : "要是一个存在的文件";
+        throw new Error((spec.flat || key) + " " + what + "：" + val);
+      }
+      cfg.env[key] = val;
+      if (spec.flat) cfg[spec.flat] = val;
+    }
+    if (!touched) throw new Error("没有要写入的键");
+    if (cfg.env && !Object.keys(cfg.env).length) delete cfg.env;
+
+    let path = filePath;
+    let err = self.kbAdminWriteJsonFile(path, cfg);
+    if (err) {
+      // 项目根写不进去（只读安装等）→ 退到用户级配置，与 Python 侧同一套退路
+      const userPath = self.kbAdminUserLocationFile();
+      if (userPath && userPath !== path) {
+        const cfg2 = self.kbAdminReadJsonFile(userPath);
+        if (cfg2.env && typeof cfg2.env === "object" && !Array.isArray(cfg2.env)) {
+          cfg2.env = Object.assign({}, cfg2.env);
+        } else {
+          cfg2.env = {};
+        }
+        for (const key of Object.keys(keys)) {
+          if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+          const spec = keys[key];
+          const val = String(params[key] == null ? "" : params[key]).trim();
+          if (!val) { delete cfg2.env[key]; delete cfg2[spec.flat]; continue; }
+          cfg2.env[key] = val;
+          if (spec.flat) cfg2[spec.flat] = val;
+        }
+        if (cfg2.env && !Object.keys(cfg2.env).length) delete cfg2.env;
+        err = self.kbAdminWriteJsonFile(userPath, cfg2);
+        if (!err) path = userPath;
+      }
+    }
+    if (err) throw new Error("写运行环境配置失败：" + err);
+
+    // 镜像 pref（插件起引擎时读它们）
+    for (const key of Object.keys(self.KB_ADMIN_ENV_PREFS)) {
+      if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+      try {
+        const val = String(params[key] == null ? "" : params[key]).trim();
+        Zotero.Prefs.set(self.KB_ADMIN_ENV_PREFS[key], val);
+      } catch (e2) { Zotero.debug("[zotero-kb] 镜像 pref 失败：" + key + " —— " + e2); }
+    }
+    // 清掉被"恢复自动"的项在 runtime.json 里的缓存（不然会被读回来）
+    try { self.kbAdminClearRuntimeKeys(cleared); } catch (e3) { /* 清不掉不影响主流程 */ }
+
+    try { self.writeStatusFile({ kbEnvSaved: path + " (" + cleared.length + " 项恢复自动)" }); }
+    catch (e4) { /* ignore */ }
+    return { ok: true, path: path, cleared: cleared };
+  },
+
+  /** `POST /env-pick` —— 弹系统文件/目录选择框（页面「浏览…」用）。 */
+  kbAdminHostEnvPick: async function (body) {
+    var self = ZoteroKB;
+    const params = (body && typeof body === "object") ? body : {};
+    const kind = String(params.kind || "file");
+    const title = String(params.title || (kind === "dir" ? "选择目录" : "选择文件"));
+    if (kind === "dir") {
+      const p = await self.pickFolder(title);
+      return { path: p || "", cancelled: !p };
+    }
+    let p = "";
+    try {
+      p = await self.pickFile(title, "程序", "*.exe");
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 选文件失败：" + e);
+    }
+    return { path: p || "", cancelled: !p };
+  },
+
+  // ================================================================ 面板「偏好设置」页
+  //
+  // 2026-10-17：Zotero 设置里的「文献知识库」偏好窗格整体下线，设置项搬进面板。
+  // 插件行为开关仍然是 Zotero pref（在 Zotero 进程内直接生效、没有第二份副本），
+  // 但**只有面板这一个 UI**读写它们 —— 页面拿不到 Zotero.Prefs，所以走宿主路由。
+  //
+  // 模型配置**不在**这里：唯一权威来源是 <知识库>\llm-config.json（见 04-prefs.js）。
+
+  /** 面板能读写的 pref（名字 → 键 + 类型）。**白名单**，别让页面乱写别的键。 */
+  KB_ADMIN_PREF_KEYS: {
+    autoProcess: { key: "zotero-kb.autoProcess", type: "bool" },
+    acquireConfirm: { key: "zotero-kb.acquireConfirm", type: "bool" },
+    acquireAutoClassify: { key: "zotero-kb.acquireAutoClassify", type: "bool" },
+    categories: { key: "zotero-kb.categories", type: "string" },
+    createMissing: { key: "zotero-kb.createMissing", type: "bool" },
+    filterBareModels: { key: "zotero-kb.filterBareModels", type: "bool" },
+    kbviewLevel: { key: "zotero-kb.kbviewLevel", type: "string" },
+    kbviewFont: { key: "zotero-kb.kbviewFont", type: "int", min: 10, max: 24 },
+    syncEnabled: { key: "zotero-kb.syncEnabled", type: "bool" },
+    syncMode: { key: "zotero-kb.syncMode", type: "string" },
+    syncTarget: { key: "zotero-kb.syncTarget", type: "string" },
+    autoTaskPoll: { key: "zotero-kb.autoTaskPoll", type: "bool" },
+    taskPollHttp: { key: "zotero-kb.taskPollHttp", type: "bool" },
+    autoStartService: { key: "zotero-kb.autoStartService", type: "bool" },
+    mailboxDir: { key: "zotero-kb.mailboxDir", type: "string" },
+  },
+
+  /** `GET /plugin-prefs` —— 面板「偏好设置」页读当前值。 */
+  kbAdminHostPrefsGet: function () {
+    var self = ZoteroKB;
+    const values = {};
+    for (const name of Object.keys(self.KB_ADMIN_PREF_KEYS)) {
+      const spec = self.KB_ADMIN_PREF_KEYS[name];
+      try {
+        const v = Zotero.Prefs.get(spec.key);
+        values[name] = (v === undefined) ? null : v;
+      } catch (e) {
+        values[name] = null;
+      }
+    }
+    return { ok: true, values: values, version: self.version || "",
+             zoteroVersion: (typeof Zotero !== "undefined" && Zotero.version)
+                            ? String(Zotero.version) : "",
+             // 侧栏能显示哪几级：唯一事实来源是 src/13-kbopen.js::KB_LEVELS
+             // （与 offline/kbviews.py 的 LEVELS 由 check_kb_levels.py 盯着）。
+             // 页面别自己再抄一份 id/标签。
+             levels: (self.KB_LEVELS || []).map(function (lv) {
+               return { value: lv.id, text: lv.label };
+             }) };
+  },
+
+  /**
+   * `POST /plugin-prefs` —— 写一项或几项；`{resetGuides:true}` 重置安装引导标记。
+   *
+   * 每次只改传进来的键（其余不动），类型按白名单强制。写失败如实抛错（页面会显示）。
+   */
+  kbAdminHostPrefsSet: function (body) {
+    var self = ZoteroKB;
+    const params = (body && typeof body === "object") ? body : {};
+    if (params.resetGuides === true) {
+      const keys = ["zotero-kb.mineruGuideDone", "zotero-kb.optionalGuideDone"];
+      for (const k of keys) {
+        try { Zotero.Prefs.set(k, false); } catch (e) { throw new Error("写 " + k + " 失败：" + e); }
+      }
+      return { ok: true, resetGuides: true };
+    }
+    let touched = 0;
+    for (const name of Object.keys(params)) {
+      const spec = self.KB_ADMIN_PREF_KEYS[name];
+      if (!spec) continue;                     // 白名单外：静默忽略
+      let val = params[name];
+      if (spec.type === "bool") {
+        val = (val === true || val === "true" || val === 1 || val === "1");
+      } else if (spec.type === "int") {
+        val = parseInt(val, 10);
+        if (!isFinite(val)) continue;
+        if (spec.min != null && val < spec.min) val = spec.min;
+        if (spec.max != null && val > spec.max) val = spec.max;
+      } else {
+        val = String(val == null ? "" : val).trim();
+        if (name === "kbviewLevel" && ["tldr", "outline", "card", "fulltext",
+                                       "figures", "weight"].indexOf(val) < 0) {
+          continue;
+        }
+        if (name === "syncMode" && ["none", "folder", "command"].indexOf(val) < 0) {
+          continue;
+        }
+      }
+      try {
+        Zotero.Prefs.set(spec.key, val);
+        touched++;
+      } catch (e) {
+        throw new Error("写 " + spec.key + " 失败：" + e);
+      }
+    }
+    if (!touched) throw new Error("没有可写入的偏好项");
+    return { ok: true, touched: touched };
+  },
+
+  /** `POST /open-path` —— 在系统文件管理器里显示一个路径（「打开目录」用）。 */
+  kbAdminHostOpenPath: function (body) {
+    var self = ZoteroKB;
+    const p = String((body && body.path) || "").trim();
+    if (!p) throw new Error("需要 path");
+    const f = Zotero.File.pathToFile(p);
+    if (!f.exists()) throw new Error("路径不存在：" + p);
+    f.reveal();
+    return { ok: true, path: p };
+  },
+
+  /**
+   * `POST /service/restart` —— **真的重启引擎**（宿主半自己动手）。
+   *
+   * 引擎是宿主的子进程，自己重启自己等于杀掉正在处理请求的进程；所以这条
+   * 走宿主路由：先停掉子进程（`kbAdminStop`），下一次请求会自动重新拉起。
+   *
+   * ⚠ 正在跑任务时**不硬杀**：任务可能已经跑了几十分钟（纲要 / 重解析），
+   *   杀掉就白跑了。判据两条：① 还有引擎 RPC 在途；② 引擎的 jobs 里有
+   *   pending/running 的。任一为真就如实回 `{ok:false, busy:true}`。
+   */
+  kbAdminHostServiceRestart: async function () {
+    var self = ZoteroKB;
+    const st = self.kbAdminEngineState();
+    if (st.starting) {
+      return { ok: false, busy: true, stopped: false,
+               note: "引擎正在启动，稍后再试" };
+    }
+    if (st.pending && st.pending.size) {
+      return { ok: false, busy: true, stopped: false,
+               note: "引擎正忙（还有 " + st.pending.size + " 个请求在跑），稍后再试" };
+    }
+    if (st.proc && !st.dead) {
+      try {
+        const r = await self.kbAdminRpc("jobs.list", {});
+        const jobs = (r && Array.isArray(r.jobs)) ? r.jobs : [];
+        const running = jobs.filter(function (j) {
+          const s = String((j && j.state) || "");
+          return s === "running" || s === "pending";
+        });
+        if (running.length) {
+          return { ok: false, busy: true, stopped: false,
+                   note: "引擎在跑任务（" + running.length + " 个），等它跑完再重启" };
+        }
+      } catch (e) {
+        // 问不到任务列表：引擎可能已经不正常了 —— 这时"停掉重来"正是要做的
+        Zotero.debug("[zotero-kb] 重启前查任务列表失败（照常停）：" + e);
+      }
+    }
+    const stopped = self.kbAdminStop();
+    return { ok: true, started: true, stopped: !!stopped,
+             note: stopped ? "引擎已停掉，下一次请求会重新拉起"
+                           : "引擎本来就没在跑；下一次请求会重新拉起" };
+  },
+
   // ================================================================ 路由与派发
+
+  /** 这条 HTTP 语义的路径是不是**宿主路由**；是就返回处理函数名。 */
+  kbAdminHostRouteOf: function (method, path) {
+    var self = ZoteroKB;
+    const m = String(method || "GET").toUpperCase();
+    const raw = String(path == null ? "" : path);
+    const qi = raw.indexOf("?");
+    let only = qi < 0 ? raw : raw.slice(0, qi);
+    if (only && only.charAt(0) !== "/") only = "/" + only;
+    return self.KB_ADMIN_HOST_ROUTES[m + " " + only] || "";
+  },
 
   /** `a=1&b=2` → `{a:"1", b:"2"}`（自己写：沙箱里 URLSearchParams 不保证有）。 */
   kbAdminParseQuery: function (query) {
@@ -10460,13 +10837,28 @@ Object.assign(ZoteroKB, {
     return null;
   },
 
-  /** 页面的一条 `op:"http"` 请求 → `{ok, data|error}`。 */
+  /**
+   * 页面的一条 `op:"http"` 请求 → `{ok, data|error}`。
+   *
+   * ⚠ **先看宿主路由**（`KB_ADMIN_HOST_ROUTES`：保存运行环境、浏览…）——
+   *   那两条故意不走引擎（理由见文件里"宿主路由"一节）。命中就在本进程执行。
+   */
   kbAdminHandleRequest: async function (browser, msg) {
     var self = ZoteroKB;
     if (msg.op !== "http") {
       return { ok: false, error: "宿主半不认识这个 op：" + String(msg.op) };
     }
     const args = msg.args || {};
+    const hostHandler = self.kbAdminHostRouteOf(args.method, args.path);
+    if (hostHandler) {
+      try {
+        const fn = self[hostHandler];
+        const data = await fn.call(self, args.body || {});
+        return { ok: true, data: data };
+      } catch (e0) {
+        return { ok: false, error: String((e0 && e0.message) || e0) };
+      }
+    }
     const route = self.kbAdminMapRoute(args.method, args.path, args.body);
     if (!route) {
       return { ok: false,
@@ -11176,6 +11568,14 @@ Object.assign(ZoteroKB, {
 
   kbAdminHostRoute: function (method, path, body) {
     var self = ZoteroKB;
+    // ⚠ **先看宿主路由**：`POST /env-save`、`POST /env-pick` 是宿主半自己做的
+    //   两件事（不走引擎），映射表在 KB_ADMIN_HOST_ROUTES。
+    const hostHandler = self.kbAdminHostRouteOf(method, path);
+    if (hostHandler) {
+      return Promise.resolve().then(function () {
+        return self[hostHandler].call(self, body || {});
+      });
+    }
     const route = self.kbAdminMapRoute(method, path, body);
     if (!route) {
       return Promise.reject(new Error(

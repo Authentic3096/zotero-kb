@@ -147,10 +147,15 @@ Object.assign(ZoteroKB, {
   /**
    * 插件/引擎是否活着（问引擎桥的 `kb.health`，**不碰 8765**）。
    *
-   * 判据是 `kb.health`：它给 kb_dir / project_root / python / ollama，够定位知识库
-   * 与运行环境（stdio 通道没有"浏览器偷 token"这回事，所以它本来就不含 token）。
-   * 引擎桥拿不到时，仍会退回老 HTTP `/health` —— 那只在有人手动起了 8765 才会成功，
-   * 属于回退路径，不是常态。
+   * 判据是引擎桥给的 `kb.health`：它给 kb_dir / project_root / python / ollama，
+   * 够定位知识库与运行环境（stdio 通道没有"浏览器偷 token"这回事，所以它本来
+   * 就不含 token）。
+   *
+   * ⚠ 2026-10-16：**删掉了"老 HTTP `/health` 兜底"**。那段兜底打的是
+   *   127.0.0.1:8765 —— 服务早就退役了，所以它每次启动/每次体检**必然失败**，
+   *   唯一的产出就是 `plugin-status.json` 里的 `lastRequestError`（用户看到的
+   *   "HTTP 噪音"）。现在判定只有一条：**桥给到 info = 在线，桥拿不到 = 离线**。
+   *   非要把老服务起起来的人另有入口（`scripts\4-service.vbs`），但插件不再探它。
    */
   healthCheck: async function () {
     var self = ZoteroKB;
@@ -164,27 +169,18 @@ Object.assign(ZoteroKB, {
       this.serverOk = true;
       this.serverInfo = engineInfo;
       this.rememberServerInfo(engineInfo);
+      // 拿到 kb_dir 后补一次老配置迁移（启动时 kb_dir 可能还不知道；
+      // 迁移本身幂等，成功过就什么都不做）。
+      try { this.migrateLlmPrefs(); } catch (e) { /* 不挡启动 */ }
+      try { this.migratePathPrefs(); } catch (e2) { /* 同上 */ }
       this.serverKbDir = engineInfo.kb_dir || this.serverKbDir || "";
       this.serverProjectRoot = engineInfo.project_root || this.serverProjectRoot || "";
       Zotero.debug("[zotero-kb] 引擎桥在线（kb_dir=" + this.serverKbDir + "）");
-    }
-    // 桥不可用时，老 HTTP 仍是兜底（8765 平时是停的，所以这条路通常直接失败）
-    try {
-      const info = await this.request("GET", "/health");
-      if (!engineInfo) {
-        this.serverOk = !!(info && info.ok);
-        this.serverInfo = info;
-        this.rememberServerInfo(info);
-        this.serverKbDir = (info && info.kb_dir) || "";
-        this.serverProjectRoot = (info && info.project_root) || "";
-        Zotero.debug("[zotero-kb] 老 HTTP 服务在线（桥不可用，用它兜底）");
-      }
-    } catch (e) {
-      if (!engineInfo) {
-        this.serverOk = false;
-        this.serverInfo = null;
-      }
-      Zotero.debug("[zotero-kb] 老 HTTP /health 不在（过渡期正常）：" + e);
+    } else {
+      // 桥也拿不到 → 离线。**不**再去问老 HTTP（8765 已退役，问了只会失败）。
+      this.serverOk = false;
+      this.serverInfo = null;
+      Zotero.debug("[zotero-kb] 引擎桥不可用：判为离线");
     }
     return this.serverOk;
   },

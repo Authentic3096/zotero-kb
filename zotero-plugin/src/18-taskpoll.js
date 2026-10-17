@@ -155,12 +155,13 @@ Object.assign(ZoteroKB, {
    * 原本只能"打开 运行JavaScript 窗口 → 复制 → 粘贴 → Ctrl+R"，一次几十秒。
    * 有了轮询，Python 侧派任务、插件执行、结果回传，全自动。
    *
-   * ⚠ **两条队列都消费**（2026-10-13 W3 线2）：
-   *   ① **文件信箱**（`<知识库>\mailbox`，新的、首选）—— 不需要服务在跑；
-   *   ② **老的 HTTP 队列**（`GET /task`）—— 保留为兜底，直到确认没有调用方。
-   *   同一个任务**只会被写进其中一处**，所以不存在双执行；先看信箱、信箱空
-   *   再看 HTTP，两处都空就是没事做。想停掉 HTTP 那条就把 prefs 里的
-   *   `zotero-kb.taskPollHttp` 设为 false。
+   * ⚠ 两条队列：**文件信箱**（`<知识库>\mailbox`，新的、正路）与**老的 HTTP 队列**
+   *   （`GET /task`，兜底）。2026-10-13 W3 线2 第一条就位之后，第二条一直是
+   *   "过渡期留着"；2026-10-16（用户拍板"HTTP 噪音一起清"）它**默认关闭**
+   *   （`zotero-kb.taskPollHttp` 默认 false）—— 因为它是**每 2 秒一次**的定时请求，
+   *   而 8765 已退役，每次必然失败，正是状态文件里那堆连接错误的来源。
+   *   要旧通道就把那个 pref 显式设回 true（并且 `scripts\4-service.vbs` 起服务）。
+   *   同一个任务只会被写进其中一处，所以不存在双执行；先看信箱、要开 HTTP 才看它。
    *
    * 安全：老通道走服务 token；新通道只认本机文件系统里的那个目录（没有端口）。
    * 不想开这个能力就把 prefs 里的 autoTaskPoll 设为 false。
@@ -297,8 +298,9 @@ Object.assign(ZoteroKB, {
         } catch (e) {
           Zotero.debug("[zotero-kb] 任务信箱轮询失败：" + e);
         }
-        // ② 老通道：HTTP 队列（兜底；没有调用方了就把它关掉）。
-        if (!task && self.getPref("zotero-kb.taskPollHttp", true)) {
+        // ② 老通道：HTTP 队列（**默认关闭**，见 startTaskPolling 的说明）。
+        //    开着时才发 GET /task —— 8765 退役后这是纯噪音，所以默认不走。
+        if (!task && self.getPref("zotero-kb.taskPollHttp", false)) {
           try {
             const res = await self.request("GET", "/task");
             if (res && res.task) { task = res.task; task.__via = "http"; }

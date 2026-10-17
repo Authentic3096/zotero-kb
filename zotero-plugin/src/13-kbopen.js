@@ -80,7 +80,7 @@ Object.assign(ZoteroKB, {
    *
    * 为什么写成链式而不是挑一个：沙箱里能用的 API 随 Zotero 版本变，而这些
    * 入口的可用性没法静态确认。链式的好处是**最坏情况仍然有确定可用的兜底**
-   * （`reveal()` 已在 settings.js 用过；再往前还有"交给面板的 Python 调
+   * （`reveal()` 在管理面板的「打开目录」里也用过；再往前还有"交给面板的 Python 调
    * os.startfile"，那条是本机面板一直在用的）。用哪一条会写进 debug 日志。
    */
   openKbPath: function (path, what) {

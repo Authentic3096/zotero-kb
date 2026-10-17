@@ -352,7 +352,7 @@ def main() -> int:
             problems.append(f"缺 {fn}")
 
     internal = ["handleNewItem", "askApply", "applySuggestion", "ensureCollection",
-                "request", "healthCheck", "registerNotifier", "registerPrefPane",
+                "request", "healthCheck", "registerNotifier",
                 "writeStatusFile", "onNotify", "waitJob", "suggestFor", "buildMeta",
                 "notify", "registerWeightColumn", "refreshWeights",
                 "unregisterWeightColumn", "startTaskPolling", "stopTaskPolling",
@@ -760,19 +760,8 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
 
-    # 设置面板能不能被 Zotero 加载 —— 用户报过"设置里点击文献知识库没有反应"，
-    # 根因是 settings.xhtml 头部带了 <?xml?> 声明（Zotero 把内容嵌进 <div>
-    # 再解析，声明在中间就是非法 XML）。这种错误静态看不出，只能专门回归。
-    print("\n[设置面板可加载性]")
-    try:
-        sys.path.insert(0, HERE)
-        import importlib
-        import check_prefpane
-        importlib.reload(check_prefpane)
-        if check_prefpane.main() != 0:
-            problems.append("settings.xhtml 不能被 Zotero 正常加载（见上）")
-    except Exception as exc:  # noqa: BLE001
-        print(f"  [!!] 这项检查没跑成：{type(exc).__name__}: {exc}")
+    # 设置窗格已于 2026-10-17 整体下线（设置项搬进管理面板的「偏好设置」页），
+    # 所以这里不再回归 settings.xhtml 的可加载性。
 
     # 外接 API 的服务商地址在插件和服务端各存一份，不一致就会出现
     # "设置界面显示一个地址、实际请求打到另一个"这种最难查的问题。

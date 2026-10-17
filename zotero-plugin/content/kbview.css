@@ -19,6 +19,11 @@
      量起的，滚动口有 padding-top 时不抵消就会在条上方留一条同宽的缝，
      正文会从缝里透出来（真人 2026-10-11 截图里就是一行被切掉一半的字）。 */
   --kbv-view-pad: 6px;
+  /* 吸顶页头的高度（上内边距 + 一行 + 下内边距 4 + 边框 1 ≈ 28px）。
+     **只给分块编辑器那一行用**：让编辑条 sticky 到页头下沿，别被页头压住
+     （2026-10-16 截公式/分块编辑器时发现页头会盖住编辑条）。
+     ⚠ 页头是 1.08em 且允许换行：字号调大或那一列很窄时会变高，这个值要跟着调。 */
+  --kbv-head-h: 28px;
   --kbv-line: rgba(127, 127, 127, 0.35);
   --kbv-soft: rgba(127, 127, 127, 0.12);
   --kbv-fg: #1b1b1b;
@@ -364,6 +369,14 @@ button, select { font: inherit; color: inherit; }
   gap: 6px;
   flex-wrap: wrap;
   margin-bottom: 5px;
+  /* 页头是 sticky 的（页头在上面吸住），编辑条原来跟着正文往上滚 → 被页头压住。
+     这里让编辑条也 sticky、停在页头**下沿**；z-index 低于页头的 3，绝不反过来盖页头。
+     背景必须不透明：下面正文滚过去会透出来。 */
+  position: sticky;
+  top: calc(var(--kbv-head-h) - var(--kbv-view-pad));
+  z-index: 2;
+  background: var(--kbv-soft);
+  padding-bottom: 4px;
 }
 .kbv-mode.kbv-mode-on {
   border-color: var(--kbv-accent);
@@ -468,6 +481,10 @@ button, select { font: inherit; color: inherit; }
 }
 .kbv-fml-empty { color: GrayText; }
 .kbv-fml-cands { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* ⚠ 必须显式写这条：`display:flex` 会盖掉 `hidden` 属性自带的效果，
+   于是 `[hidden]` 形同虚设 —— 只有一条候选公式时那一行仍然可见，
+   看起来像个空下拉框（2026-10-16 截公式编辑区时当场发现）。 */
+.kbv-fml-cands[hidden] { display: none; }
 .kbv-fml-msg { color: GrayText; min-height: 1em; }
 .kbv-fml-msg.kbv-fml-err { color: #c0392b; }
 .kbv-fml-msg.kbv-fml-ok { color: #1e8449; }

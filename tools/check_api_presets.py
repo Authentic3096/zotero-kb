@@ -1,12 +1,17 @@
-"""检查插件设置面板里的「服务商预设」和服务端认的地址是否一致。
+"""检查插件的「服务商预设」和服务端认的地址是否一致。
 
     python tools/check_api_presets.py
 
-为什么需要：外接 API 这件事有**两处**在记服务商地址 ——
+为什么需要：外接 API 这件事原来有**两处**在记服务商地址 ——
     · `zotero-plugin/settings.js` 的 `KB_API_PRESETS`（选服务商时自动填的地址）
     · `offline/judge.py` 的 `KNOWN_BASE_URLS`（按模型名推断时用的地址）
 两处一旦不一致，就会出现最难查的一类问题：**设置界面显示一个地址、
 实际请求打到另一个地址** —— 用户看到的和实际发生的不符，报错也看不懂。
+
+2026-10-17：Zotero 设置窗格整体下线，模型配置搬到管理面板，服务商预设的
+唯一来源就是引擎给的 `judge.KNOWN_BASE_URLS`（面板从 `llm.config` 读它）。
+`settings.js` 已删，所以本脚本通常只核对服务端一侧；将来若再出现第二个
+预设来源，把下面的解析恢复即可。
 
 本机就吃过这个亏的同类问题：知识库位置在插件和服务端各算一遍，
 搬目录后两边不一致，面板报"找不到 Python 环境"。
@@ -39,8 +44,8 @@ def presets_from_js() -> dict[str, str]:
     """
     try:
         src = open(SETTINGS_JS, encoding="utf-8").read()
-    except OSError as exc:
-        print(f"  [XX] 读不到 settings.js：{exc}")
+    except OSError:
+        # 设置窗格已下线（2026-10-17）—— 插件侧没有预设，属正常，不是错误
         return {}
     m = re.search(r"const KB_API_PRESETS\s*=\s*\{(.*?)\n\};", src, re.S)
     if not m:
@@ -68,9 +73,9 @@ def main() -> int:
     py = dict(J.KNOWN_BASE_URLS or {})
 
     if not js:
-        # 插件侧没有预设（UI 已移除）—— 只核对服务端一侧的完整性
-        print("  插件设置面板**没有**外接 API 预设"
-              "（按用户要求移除了这块 UI，属正常）")
+        # 插件侧没有预设（设置窗格已下线）—— 只核对服务端一侧的完整性
+        print("  插件侧**没有**外接 API 预设"
+              "（设置窗格已下线，模型配置统一在管理面板，属正常）")
         print(f"  服务端仍保留 {len(py)} 个服务商地址（能力没删，随时可开回）：")
         for k in sorted(py):
             print(f"    {k:14} {py[k]}")

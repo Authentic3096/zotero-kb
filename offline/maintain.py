@@ -218,6 +218,30 @@ def check() -> int:
     else:
         print(f"{WARN}没装 Ollama（不影响检索，只影响打标签/摘要/抽经验）")
 
+    # 5b. MathType（可选；公式就地纠错的「用 MathType 编辑」用它）
+    #
+    # 用户 2026-10-16 要求把 MathType 纳入同一套环境解析与检测。它**可选**：
+    # 不装照样能手改 LaTeX，所以这一节不进 problems、不影响退出码。
+    # 三种状态要分清楚（这是这一行存在的唯一理由）：
+    #   · 装了          → 报路径
+    #   · 手填了找不到  → 报路径 + 来源（用户手填错了，不是"没装"）
+    #   · 没装          → 明说可选
+    print("\n[5b] MathType（可选，公式就地纠错用）")
+    try:
+        mt = S.resolve_mathtype()
+        mt_src = S._RESOLVED_SOURCE.get("mathtype") or ""
+    except Exception as exc:      # noqa: BLE001 —— 探测失败不该让自检崩掉
+        mt, mt_src = "", ""
+        print(f"{WARN}探测 MathType 时出错：{exc}")
+    mt_suffix = f"（来源：{mt_src}）" if mt_src else ""
+    if mt and os.path.isfile(mt):
+        print(f"{OK}MathType（可选）：装了 {mt}{mt_suffix}")
+    elif mt:
+        print(f"{WARN}MathType（可选）：手填了但找不到 {mt}{mt_suffix}")
+        print("       到管理面板「运行环境」页改这一项，或点「恢复自动」。")
+    else:
+        print(f"{WARN}MathType（可选）：没装（不影响手改 LaTeX）")
+
     # 6. DSH 接入
     print("\n[6] DSH 接入")
     prof_dir = os.path.join(os.path.expanduser("~"), ".dsh", "profiles", "desktop")

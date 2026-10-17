@@ -22,6 +22,8 @@ Object.assign(ZoteroKB, {
 
   /** 本地服务是否响应（问 /health，不需要 token）。 */
   serverUp: async function () {
+    // ⚠ 这是一次**真连 8765** 的探测。它已**不是任何自动路径的一部分**：
+    //   调用方只有 serverOnStartup（严格 opt-in，见那里），以及手动诊断。
     try {
       const r = await Zotero.HTTP.request(
         "GET", "http://127.0.0.1:8765/health",
@@ -72,29 +74,35 @@ Object.assign(ZoteroKB, {
 
 
   /**
-   * Zotero 启动时：确保本地服务可用（**随用随取**）。
+   * Zotero 启动时：**只在用户显式要求时才**拉起本地服务（严格 opt-in）。
    *
-   * 已经在跑 → 不碰它、不留标记（关 Zotero 时也不动它）。
-   * 没在跑   → 拉起来 + 留标记（关 Zotero 时负责关掉）。
+   * ⚠⚠ 2026-10-16（用户拍板"HTTP 噪音一起清"）：这一整组（serverUp /
+   *   serverStart / serverOnStartup / serverOnShutdown）**保留**，但从"默认自动"
+   *   改成"**只有显式置 `zotero-kb.autoStartService=true` 才走**"。
+   *   为什么保留而不是整组删：它是一条**回退能力**（有人仍需旧 HTTP 通道时，
+   *   手动入口是 `scripts\4-service.vbs`，或把这个 pref 设回 true）；
+   *   为什么默认必须 false：8765 已退役、插件已全部走引擎桥/文件信箱，
+   *   默认 true 会让**每次启动都去探/拉起一个没人用的服务**（就是"HTTP 噪音"）。
    *
-   * 为什么做成"跟随 Zotero"而不是让用户开机自启：
-   *   · 服务只在 Zotero 用得上（插件要它查权重/领任务），不看书时白占内存；
-   *   · 用户不用记着"先开服务再用 Zotero"——本机实测这个坑踩过好几次，
-   *     现象是"分类建议失败""权重列空白"，而真实原因只是服务没跑。
-   *   · 已经装了开机自启的人也不会被影响：那时服务本来就在跑，
-   *     走的是"不碰它"分支。
+   * 判据（pref 为 false 时的**唯一行为**）：立刻返回、**一个网络请求都不发**
+   * —— 这条早退必须在任何 serverUp()/serverStart() 之前（现在就是）。
+   *
+   * 触发者清单（改这里前先看）：
+   *   · `00-core.js` 启动流程 → 调本函数；
+   *   · `01-lifecycle.js` shutdown → 调 `serverOnShutdown()`（它只在自己留过
+   *     标记文件时才发 `/shutdown`，没启动过就纯本地检查、不发请求）；
+   *   · 只有这两个，没有按钮、没有定时器。
    */
   serverOnStartup: async function () {
     var self = ZoteroKB;
     try {
-      // W3 线3（2026-10-14）：**自动拉起本地服务变成一个开关**
-      // （pref `zotero-kb.autoStartService`，默认 true = 老行为）。
-      // 为什么要它：用户拍板停掉 8765 之后，如果这条自动拉起还在，Zotero 一重启
-      // 它就把服务又拉起来了 —— 那样"停服务"是假的。这里只关"自动拉起"这一个动作，
-      // **别的功能一个都不动**（插件此时已全部走引擎桥/文件信箱，不依赖该服务）。
-      if (!self.getPref("zotero-kb.autoStartService", true)) {
-        Zotero.debug("[zotero-kb] 本地服务自动拉起已关闭"
-                     + "（pref zotero-kb.autoStartService=false）—— 不再启动 8765");
+      // W3 线3（2026-10-14）：自动拉起本地服务是一个开关。
+      // ⚠ 2026-10-16 起**默认值改成 false**（原为 true）：不开这个开关时，
+      //   启动流程**完全不碰 8765**。用户手动起服务用 scripts\4-service.vbs。
+      if (!self.getPref("zotero-kb.autoStartService", false)) {
+        Zotero.debug("[zotero-kb] 本地服务自动拉起未开启"
+                     + "（pref zotero-kb.autoStartService 默认 false）"
+                     + "—— 不碰 8765；要旧 HTTP 通道请手动跑 scripts\\4-service.vbs");
         self.serverStartedByMe = false;
         self.writeStatusFile({ serverStartedByMe: false, serverAutoStart: false });
         return;
@@ -133,6 +141,10 @@ Object.assign(ZoteroKB, {
 
   /**
    * Zotero 关闭时：**只关自己启动的那个**（随弃随关）。
+   *
+   * ⚠ 2026-10-16：`autoStartService` 默认 false 之后，插件平时**不会**启动服务，
+   *   也就不会留下标记文件 —— 所以这里通常**第一句就 return**（无网络请求）。
+   *   只有当初真的走 serverOnStartup 拉起过（用户显式开了那个 pref）才会有标记。
    *
    * 关法是 `POST /shutdown` 让服务自己退出，**不是** taskkill ——
    * 服务跑在 pythonw.exe 里，而 pythonw 是极常见的进程名，

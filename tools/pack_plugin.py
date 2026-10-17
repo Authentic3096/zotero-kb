@@ -72,7 +72,7 @@ EXCLUDE_SCRIPTS = {
     "diag-settings.js",
 }
 # 优先顺序：先 manifest，再代码，再资源
-ORDER = ["manifest.json", "bootstrap.js", "prefs.js", "settings.xhtml", "settings.js"]
+ORDER = ["manifest.json", "bootstrap.js", "prefs.js"]
 
 
 def collect_entries() -> list[str]:

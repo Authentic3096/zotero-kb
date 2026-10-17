@@ -107,13 +107,12 @@ var ZoteroKB = {
 
     try {
       // ⚠ 第一件事就是把 ftl 挂到窗口文档上（见 initLocale 的说明）——
-      //   后面的设置面板/内容窗格分区都要靠它把 l10nID 变成文字。
+      //   后面的内容窗格分区都要靠它把 l10nID 变成文字。
       step("initLocale", () => self.initLocale());
       // 注册我们自己的 resource 包：自建列里的 <browser> 必须从 resource:// 加载
       // 才能在父进程里跑、宿主才拿得到 contentWindow（真机实测，见 KB_RES_KEY）。
       step("registerKbResource", () => self.registerKbResource());
       step("registerPrefs", () => self.registerPrefs());
-      step("registerPrefPane", () => self.registerPrefPane());
       step("registerNotifier", () => self.registerNotifier());
       step("registerWeightColumn", () => self.registerWeightColumn());
       // 文献列表的另外两列（21-kbcols.js）：与权重列同一套做法 ——

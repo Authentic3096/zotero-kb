@@ -171,7 +171,7 @@ Object.assign(ZoteroKB, {
     const py = self.pythonConsoleExe();
     const root = self.projectRoot();
     if (!py) {
-      return { code: -1, out: "找不到 Python（见 设置 → 文献知识库 → 运行环境）" };
+      return { code: -1, out: "找不到 Python（见 管理面板 →「运行环境」页）" };
     }
     if (!root) return { code: -1, out: "找不到项目目录" };
     const { Subprocess } = ChromeUtils.importESModule(
@@ -609,8 +609,8 @@ Object.assign(ZoteroKB, {
    * 这里改成打开 **Zotero 内的新面板**（`23-admin.js::kbAdminOpen`；工具菜单里那个
    * 「知识库管理…」走的是同一个入口）。
    *
-   * 为什么保留这个函数名：工具栏按钮、条目右键「打开知识库管理面板」、设置页
-   * **三处都调它** —— 一处改，三处都不再有死按钮（点了没反应比没有更糟）。
+   * 为什么保留这个函数名：工具栏按钮、条目右键「打开知识库管理面板」两处都调它
+   * —— 一处改，两处都不再有死按钮（点了没反应比没有更糟）。
    * 之所以不连这三处入口一起删：它们对用户是有用的（"打开管理面板"这件事没变，
    * 只是面板换了实现），删了反而少一个正经入口。
    */

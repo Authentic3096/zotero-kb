@@ -9,13 +9,13 @@ Object.assign(ZoteroKB, {
   // ================================================================ 路径解析
 
   /**
-   * 知识库目录：优先用服务端告诉我们的（/health 里带 kb_dir），
-   * 其次用上次缓存到 pref 的值，最后才用默认值。
+   * 知识库目录：优先用上次记住的值（它来自**引擎桥** `kb.health` 里的 kb_dir），
+   * 没有才返回空。
    *
-   * 为什么要缓存：插件在服务没起来时也要能工作（比如写启动日志），
-   * 那时拿不到 /health，就用上次记住的。
+   * 为什么要缓存：插件在引擎还没起来时也要能工作（比如写启动日志），
+   * 那时拿不到 `kb.health`，就用上次记住的。
    *
-   * 这样别人装的时候**不用改插件源码** —— 服务端在哪，插件就知道在哪。
+   * 这样别人装的时候**不用改插件源码** —— 引擎在哪，插件就知道在哪。
    */
   kbDir: function () {
     var self = ZoteroKB;
@@ -25,19 +25,20 @@ Object.assign(ZoteroKB, {
     } catch (e) { /* ignore */ }
     // ⚠ 这里**故意不写死绝对路径**（老版本写的是开发机的
     //   D:\DSHplugins\zotero-kb\kb，对别人毫无意义，还会误导排错）。
-    //   知识库位置只有两个正当来源：服务端 /health 的 kb_dir，
-    //   或用户在设置面板里填的。都没有时返回空，让上层报
-    //   "服务没连上，请先在设置里填位置" —— 比指到一个不存在的目录好。
+    //   知识库位置的唯一来源是**引擎桥** `kb.health` 的 kb_dir（healthCheck
+    //   把它记进上面的 pref）；2026-10-16 之前还有"老 HTTP `/health`"这条第二
+    //   来源，8765 退役后已删（插件不再探它）。都没有时返回空，让上层报
+    //   "引擎没连上，请先在「运行环境」页把位置弄对" —— 比指到一个不存在的目录好。
     return "";
   },
 
 
   /**
-   * 记住服务端告诉我们的运行环境（healthCheck 时调用）。
+   * 记住**引擎桥** `kb.health` 告诉我们的运行环境（healthCheck 时调用）。
    *
    * ⚠ 存到**独立于用户设置**的 pref 键里：
-   *   `zotero-kb.projectRoot`     = 用户在设置面板里填的（权威）
-   *   `zotero-kb.serverProjectRoot` = 服务端报的（兜底）
+   *   `zotero-kb.projectRoot`     = 用户在「运行环境」页填的（权威）
+   *   `zotero-kb.serverProjectRoot` = 引擎桥报的（兜底）
    *   老版本把两者写进同一个键，结果是"服务端一报就把用户填的覆盖了"。
    */
   rememberServerInfo: function (info) {
@@ -139,83 +140,10 @@ Object.assign(ZoteroKB, {
   },
 
 
-  /**
-   * 把运行环境配置推给服务端，让它落盘到 <项目>\kb-location.json。
-   *
-   * 为什么必须推：Zotero 的 pref 只有插件自己看得到，而**管理面板是独立的
-   * Python 进程**，它得知道项目在哪、Python 在哪。服务端落盘后
-   * schemas.resolve_* 就能读到，面板启动时自然用对。
-   *
-   * ⚠ **W3 线2.5（2026-10-13）：这一处故意没迁到引擎桥，因为入参/回包形状都对不上**
-   *   （真机取证见开发说明）：
-   *     · 老 HTTP `POST /env-config` 收的是**嵌套** `{env:{project_root,…}}`，
-   *       回包带 **`report`**；
-   *     · 引擎 `env.save` 收的是**扁平**键（`project_root/python/ollama/mineru/figures`），
-   *       回包是 `{saved, check}`、**没有 `report`**。
-   *   实测：把插件现在这个 `{env:{…}}` 体直接过桥 → 引擎回
-   *   `没有要写入的键（project_root / python / ollama / mineru / figures）`。
-   *   要迁得先做两件事：① 这里把 `env` **摊平**再发；② 让 `env.save` 的返回里带上
-   *   `report`（或让设置页接受"另发一次 env-check"）。②动契约，所以排在收工后做。
-   *
-   * 2026-10-14：两件事都已在引擎侧补齐（`env.save` 回包带 **`report`**、
-   * 新增 **`env.checkRaw`**），所以这里改成**桥优先 → 退回老 HTTP**。
-   * **入参必须把 `env` 摊平一层**（老 HTTP 收嵌套 `{env:{…}}`、引擎收扁平
-   * `{project_root,…}`）—— 照抄老写法过桥会当场报「没有要写入的键」，
-   * 这是本处最容易写错的地方（上一轮实测踩过）。
-   */
-  kbPushEnvConfig: async function (env) {
-    var self = ZoteroKB;
-    let r = null;
-    try {
-      // ⚠ 摊平：`Object.assign({}, env || {})` —— 不是 `{ env: env }`
-      r = await self.kbAdminHostRoute("POST", "/env-config",
-                                      Object.assign({}, env || {}));
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥写环境配置失败（退回 HTTP）：" + e);
-    }
-    if (r && r.saved === true) return { ok: true, report: r.report || null };
-    try {
-      const r2 = await self.request("POST", "/env-config", { env: env });
-      return { ok: true, report: (r2 && r2.report) || null };
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-  },
-
-
-  /**
-   * 从服务端取运行环境诊断（设置面板「检测」按钮用）。
-   *
-   * ⚠ **W3 线2.5（2026-10-13）：这一处也故意没迁** —— 两条通道回的**不是同一个形状**：
-   *   · 老 HTTP `GET /env-check` = `env_report()` 原文，含 **`python` / `project_root` /
-   *     `ollama` / `runtime_state` / `user_location_file`**；`settings.js` 的
-   *     `renderReport()` 读的正是 `r.python.runnable` 与 `r.project_root.has_panel`。
-   *   · 引擎 `env.check` 是给**管理面板**重新整形过的：`{ok, items[], sources,
-   *     rejected[], env_file, location_file}` —— **没有 `python` / `project_root`
-   *     这两个顶层键**（实测 `bridgeHas_consumerFields: false`）。
-   *   直接改过去会让设置面板的「检测」报告变空/报错。要迁得先让引擎**多回一份原文**
-   *   （新增 `env.checkRaw`，或给 `env.check` 加一个 `raw` 字段）—— 那是扩契约，
-   *   按纪律排在计费切换点之后做。
-   *
-   * 2026-10-14：引擎已新增 **`env.checkRaw`**，所以这里改成**桥优先 → 退回老 HTTP** ——
-   * 两条通道回的是**同一个形状**（都是 `env_report()` 原文）。
-   * ⚠ 别图省事改成 `env.check`：那个给管理面板用、**没有** `python`/`project_root` 两个顶层键。
-   */
-  kbEnvReport: async function () {
-    var self = ZoteroKB;
-    try {
-      const r = await self.kbAdminHostRoute("GET", "/env-check-raw");
-      if (r && (r.python || r.project_root)) return r;   // 原文形状的自检
-      Zotero.debug("[zotero-kb] 引擎桥的诊断原文形状不对（退回 HTTP）");
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥取诊断失败（退回 HTTP）：" + e);
-    }
-    try {
-      return await self.request("GET", "/env-check");
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e) };
-    }
-  },
+  // ⓘ 这里原来有 `kbPushEnvConfig(env)` 与 `kbEnvReport()` 两个只给 Zotero 设置
+  //   窗格用的包装。2026-10-17 设置窗格整体下线后它们**都没有调用方了**，一并删掉：
+  //   运行环境只在管理面板改（保存走宿主半 `POST /env-save`），引擎侧的
+  //   `env.checkRaw` 仍留给直接发 RPC 的脚本/测试。
 
 
   /** 记住服务端给的知识库位置（healthCheck 时调用）。 */
@@ -250,7 +178,8 @@ Object.assign(ZoteroKB, {
    *   于是工具栏按钮报"找不到 Python 环境"。
    *   结论：数据位置和代码位置是两个独立的东西，谁也别推谁。
    *
-   * 顺序：用户设置 > 服务端 /health > 向上探测标记 > 环境变量 > 空。
+   * 顺序：用户设置（面板的 pref）> 引擎桥 `kb.health` 报的 > 向上探测标记 >
+   *       环境变量 > 空。
    */
   /** 同步判断路径存在（插件里到处能用，不依赖 async）。 */
   _exists: function (p) {

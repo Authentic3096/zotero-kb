@@ -477,7 +477,7 @@ Object.assign(ZoteroKB, {
       win, "从 DSH 导入文献",
       lines.join("\n"), flags,
       "添加到 Zotero", "取消", null,
-      "以后不再询问，直接入库（可在插件设置里重新打开）", checkbox
+      "以后不再询问，直接入库（可在管理面板「偏好设置」里重新打开）", checkbox
     );
     return { go: choice === 0, remember: choice === 0 && !!checkbox.value };
   },

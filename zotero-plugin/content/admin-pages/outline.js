@@ -8,7 +8,7 @@
  *   · **没选中时按钮置灰**，原因写在 `title` 里（照 experience.js::updateActions 的写法）。
  * 页面上再没有原生 `<select>`：状态筛选是 btn-group，分类筛选是自绘下拉（见 admin.js）。
  *
- * 数据来源见开发说明（批次 A / B）（页面只说 HTTP 语义，路径由宿主半
+ * 数据来源见开发说明（批次 A / B）（页面只按路径与方法说事，路径由宿主半
  * src/23-admin.js 的映射表翻成引擎方法）：
  *   GET  /outline-list?filter=all|missing|orphan[&collection=<分类名>]
  *        → outline.list → {rows:[{key,title,year,sections,has_file,orphan,built_at,
@@ -26,7 +26,7 @@
  * `KBAdmin.multiSelect`（定义在 suggest.js；admin-pages 之间不能 import，所以挂在壳上）。
  *
  * ⚠ 引擎的 `outline.list` 只认**一个** `collection` 参数（精确匹配 items.collections
- *   里的一个名字，见 online/engine.py::_m_outline_list），而服务端那一侧这次不动
+ *   里的一个名字，见 online/engine.py::_m_outline_list），而引擎那一侧这次不动
  *   （本次任务范围只有 content/），所以**并集在客户端做**：
  *     ① 请求只带 `filter`（不带 collection）→ 拿到该状态下的**全部**行；
  *     ② 按勾中的分类做并集过滤（一篇归到多个分类时只算一行）。
@@ -480,7 +480,7 @@
        *
        * 一篇归到多个分类时只算一行（filter 天然不会重复）；分类名精确匹配
        * `collections[]` 里的一个名字 —— 与引擎 `_m_outline_list` 的口径一致
-       * （服务端是 `coll in r["collections"]`）。
+       * （引擎是 `coll in r["collections"]`）。
        */
       function filterByCats(rows) {
         if (!state.collections.length) return rows.slice();

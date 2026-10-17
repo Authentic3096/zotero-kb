@@ -491,3 +491,50 @@ dialog[open] > :not(h2):not(.actions) {
    （2026-10-15 第一版就是这样：图上只看见"关联文献只有 1 篇"后面一点点笔画）。
    掐断发生在 `.clip` 自己身上，省略号才画得出来。 */
 .exptab table.grid td:nth-child(7) .clip { max-width: 7.2em; }
+
+/* ---- 偏好设置页（2026-10-17 设置窗格搬进面板）---------------------------
+   只是一组表单行，没有新widget：勾选行用 .pref-line，文本框给个上限，
+   长路径用 .prefs-path（单行省略，全文在 title）。 */
+.pref-list { display: flex; flex-direction: column; gap: 6px; }
+.pref-line { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.pref-line input[type="checkbox"] { margin: 0; }
+.prefs-text { flex: 1 1 20em; min-width: 12em; max-width: 46em; }
+.prefs-num { width: 5em; }
+.prefs-path {
+  display: block; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- 运行环境页：八行路径纵向对齐（用户 2026-10-17 报"非常乱"）--------
+   原来每行是 .row（flex + wrap），长路径把来源/状态/按钮挤到不同位置，
+   右边缘自然参差。这里改成定宽网格：
+     名字 9.5em | 路径 剩余 | 来源 7.2em 右对齐 | 状态 4.8em 右对齐 | 按钮
+   路径格子里是"省略显示的 span + 真正的输入框"：默认显示中段省略的版本，
+   点一下才出现输入框（截图里那一列就整齐了，长路径也不会把行撑开）。 */
+.env-row {
+  display: grid;
+  grid-template-columns: 9.5em minmax(0, 1fr) 7.2em 4.8em auto auto;
+  gap: var(--sp-s) var(--sp-m);
+  align-items: center;
+}
+.env-row > .env-name { font-weight: 600; overflow: hidden;
+                       text-overflow: ellipsis; white-space: nowrap; }
+.env-path-cell { display: flex; align-items: center; min-width: 0; }
+.env-path { display: block; min-width: 0; width: 100%; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap; cursor: text;
+            font-family: Consolas, "Cascadia Mono", monospace;
+            font-size: var(--fs-mono); }
+.env-input { width: 100%; min-width: 0; font-family: Consolas,
+             "Cascadia Mono", monospace; font-size: var(--fs-mono); }
+.env-src { justify-self: end; width: 7.2em; text-align: right;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.env-st { justify-self: end; width: 4.8em; text-align: right;
+          white-space: nowrap; }
+.env-row .btn { white-space: nowrap; }
+.env-item + .env-item { margin-top: 4px; }
+.env-note { grid-column: 1 / -1; color: var(--faint); font-size: var(--fs-small); }
+
+/* 下拉在 .row 里**别被压缩**：flex 子项默认可收缩，按钮一窄，标签
+   「显示层级：」就会折成两行（2026-10-17 偏好设置页截图抓到）。 */
+.row > .sel { flex: 0 0 auto; }
+.sel-cap { white-space: nowrap; }

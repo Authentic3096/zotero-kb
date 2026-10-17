@@ -14,7 +14,7 @@
 > |---|---|---|
 > | `<项目目录>` | 你解压这个项目的目录 | 你自己放的地方 |
 > | `<Zotero 数据目录>` | Zotero 存数据的地方 | Zotero → 编辑 → 设置 → 高级 → 文件和文件夹 |
-> | `<知识库>` | 知识库目录，默认是 `<Zotero 数据目录>\zotero-kb` | 设置 →「文献知识库」→「知识库位置」 |
+> | `<知识库>` | 知识库目录，默认是 `<Zotero 数据目录>\zotero-kb` | 管理面板 →「偏好设置」→「知识库位置」 |
 > | `<KEY>` | 某篇文献在 Zotero 里的 8 位条目 key | 右键条目 → 显示条目 key（或看 `INDEX.md`） |
 
 ## 一、一句话架构
@@ -627,7 +627,8 @@ raw = 年份基础分
 后端两类（`offline/judge.py:36-63`）：本机 Ollama，或任何 **OpenAI 兼容**的
 `/chat/completions`（deepseek / openai / dashscope / moonshot / zhipu / groq…）。
 配置优先级"调用时传参 > `<知识库>\llm-config.json` > 环境变量 > 默认值"，
-传参优先是为了让设置面板说了算（`judge.py:45-47`）。
+传参优先是为了让管理面板说了算（`judge.py:45-47`；面板把配置写进
+`<知识库>\llm-config.json`，插件与引擎都读这一份）。
 
 **换后端不难，因为主流服务用的是同一套协议** —— 区别只是
 **服务地址 + 模型名 + Key** 三样，代码一行不用改：
@@ -637,9 +638,10 @@ raw = 年份基础分
 | **Ollama**（默认） | 完全离线、不花钱、数据不出本机 | 装 Ollama + `ollama pull qwen3:4b-instruct` |
 | **外接 API** | 不想本地部署；或机器跑不动；想用更强的模型 | 一个 API Key（可能还要充值） |
 
-地址**不填也能推断**（填了模型名就够；这张表在两处有副本，
-`offline/judge.py` 的 `KNOWN_BASE_URLS` 与 `zotero-plugin/settings.js` 的
-`KB_API_PRESETS`，`tools/check_api_presets.py` 盯着两边一致）：
+地址**不填也能推断**（填了模型名就够）：唯一事实来源是 `offline/judge.py` 的
+`KNOWN_BASE_URLS`；管理面板从引擎的 `llm.config.services` 读这张表，
+设置窗格里那份副本随窗格一起删了（`tools/check_api_presets.py` 仍盯着
+"插件侧若再出现第二份预设"的情况）：
 
 ```
 deepseek-chat      → https://api.deepseek.com/v1
@@ -689,6 +691,15 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 > `localserver.py` 里的业务实现仍是引擎与 MCP 的复用来源，
 > 而 `localserver.py --test`（115 项）自带**进程内**测试服务、不需要 8765 在监听。
 > 需要时可以用 `scripts\4-service.vbs` 把它起回来。
+>
+> **2026-10-16（用户拍板"HTTP 噪音一起清"）：插件在正常运行下不再碰 8765。**
+> 具体：① `05-server.js::healthCheck` 删掉"老 HTTP `/health` 兜底"（那是
+> `plugin-status.json.lastRequestError` 的来源）；② `12-dsh.js` 与
+> `19-mineruguide.js` 里几处启动/派活路径的 `/health`·`/mineru-check` 改成只走
+> 引擎桥；③ `prefs.js` 的 `autoStartService` 与 `taskPollHttp` 默认改成 **false**
+> （8765 的"自动拉起"与"每 2 秒轮询 /task"变成**显式 opt-in**，手动入口仍是
+> `scripts\4-service.vbs`）。剩下的 `self.request(...)` 都是**按需的"桥失败才
+> 兜底"**（不是定时/启动路径），见 `05-server.js::request` 的说明。
 
 **token 机制**：优先环境变量 `KB_SERVICE_TOKEN`，否则读 `<知识库>\service-token.txt`，
 文件不存在就生成并写入磁盘；按文件 mtime 缓存，**换了 token 不必重启服务**
@@ -728,10 +739,10 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 原因见「五、目录与归属」里那一段。
 
 **启动是"分步执行 + 逐步记录"**：`registerPrefs → registerPrefObserver →
-registerPrefPane → registerNotifier → registerWeightColumn → registerKbColumns →
-startTaskPolling`，
+registerNotifier → registerWeightColumn → registerKbColumns → startTaskPolling`，
 每步成败进 `steps` 并写进状态文件 —— 因为 Zotero 的调试日志重启即失
-（`src/00-core.js` 的 `startup`）。
+（`src/00-core.js` 的 `startup`）。设置窗格的 `registerPrefPane` 步骤随
+2026-10-17 的窗格下线一起删了（设置只剩管理面板）。
 
 > 工具栏按钮与右键菜单**在 `startup` 里也要注册一次**：实测 `onMainWindowLoad`
 > 在 Zotero 启动时**从未被调用**（那时主窗口已存在），该钩子只对"插件启动后新开的窗口"
@@ -973,18 +984,19 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
 - 「改这一页 / 恢复原版 / 导出草稿」仍是原逻辑，只换了传输层；`md2html()` 与
   `kbviewSplitMd()` 仍是纯函数（桩测试盯着）。
 
-**阅读器对照列的三处新增**（随 **v1.11.0** 发布；不做独立窗口、不做 `/doc-pdf`）：
+**阅读器对照列的两处新增**（随 **v1.11.0** 发布；不做独立窗口、不做 `/doc-pdf`）：
 
 - ① **阅读器那一列**（`kbviewRoots(win, "reader")` → `#zotero-context-pane` /
   `-inner` / `-sidenav`）：与条目窗格那一列**共用同一个页面**（`content/kbview.html`），
   只是宿主落点不同；打开时把 `#zotero-context-pane-inner` 临时 `hidden`。
   **左 PDF 右正文、同一个窗口**，零 PDF 渲染成本；关闭时逐项还原。
-- ② **一键对照**：`Zotero.Reader.registerEventListener("renderToolbar", …)` 往阅读器工具栏
-  塞一个「对照」按钮。这个事件是**一次性**的（React 那个 `CustomSections` 只在 mount 时发一次），
-  而 Zotero 会**在启动时恢复会话里的阅读器** —— 那些阅读器早于本插件注册监听，于是永远收不到事件。
-  所以另有一条**直接注入**（`kbviewInjectToolbarButton`，往 `.custom-sections` 里 append）
-  兜底，并在 Notifier 的 `tab` select/add 时补一次。
-- ③ **停在正在读的那一页（只在打开时定位一次）**：打开阅读器那一列时取当前页
+  **入口只有 rail 上的图标**（主窗口与阅读器是同一套 rail）。
+  ⚠ 2026-10-16（用户要求）：原来还有 ② 一键对照 —— `renderToolbar` 往阅读器工具栏
+  塞一个「对照」按钮（外加"会话恢复的注入兜底"与 Notifier 的 tab 补挂）。
+  它与 rail 是**同一个动作的重复入口**，用户拍板"不需要了"，整条链（注册 /
+  注入 / 补挂 / 状态字段 `kbViewReaderToolbar`）已删除，`verify_bootstrap` 反向钉住
+  （不许再出现 `renderToolbar` / 那批函数名）。
+- ② **停在正在读的那一页（只在打开时定位一次）**：打开阅读器那一列时取当前页
   （`kbviewReaderPage` / `kbviewReaderInfo`）作**初始页**，页面滚过去并高亮。
   当前页优先取 `reader._state.primaryViewState.pageIndex`（实时），读不到才退回
   `items` 表的「最后阅读页」—— 后者会留着"上次退出时的页码"，先问它会拿到陈旧的页。
@@ -992,6 +1004,9 @@ f-string 解析炸掉），已抽成纯函数 `llm_sync_js()` 并交给 `node --
   代价是明显的渲染负担，而手动翻找并不麻烦 —— 所以只在打开时定位一次。
   函数 `kbviewFanoutPage`（一次性把当前页推给已打开的列）保留着，
   条目窗格那一列与将来的「跳到这一页」可以直接调它。
+  ⚠ Notifier（`kbviewRegisterNotifier` / `kbviewOnNotify`）也**保留**：按页跟随与
+  工具栏补挂虽然都没了，但派发包 §一 明确要求别把它整体删掉（将来真做
+  「跳到这一页」还要用这个 tab 事件钩子）。
 
 **正文与公式在页面里渲染**：用 vendored 的
 `content/vendor/{markdown-it,katex}`（markdown-it 14.1.0 / KaTeX 0.16.11，都是 MIT，
@@ -1135,20 +1150,41 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 > **还没做**：relink（把图谱 / 引文表里指向被并项的行走改指保留项）与权重合并。
 > 它们要等分类树那批把 `kg_*` 表建出来；而且现在库里没有数据挂在被并 key 上，**暂时不痛**。
 
-#### B22. 路径从哪来：`.env` 覆盖层与"来源可见"
+#### B22. 路径从哪来：唯一的设置面与"来源可见"
 
 所有路径类配置都走 `offline/schemas.py` 的 `resolve_*()`，优先级**只有一份定义**（`LAYER_ORDER`）：
 
 ```
-调用方指定 > 进程环境变量 > 运行时设置（面板写的 kb-location.json）> .env > 自动探测 > 默认
+调用方指定 > 进程环境变量 > 面板设置（kb-location.json）> 自动探测 > 救急 .env > 默认
 ```
 
 - **面板设置赢过 `.env`**：早期是反的，结果"面板里改完却不生效"（`.env` 里一个旧值一直赢）。
-  现在 `.env` 退回"面板起不来时的救急层"—— 那个场景天然成立，因为那时运行时设置本来就是空的。
+- **自动探测也赢过 `.env`**（2026-10-16，用户要求）：能探测对的时候 `.env` 不该偷偷
+  盖住它。`.env` 从此只排"探测也探不到"之后 —— 它是"面板起不来时唯一的入口"，
+  但那不等于它优先于机器上的事实。
+- **设置面只有一个：管理面板「运行环境」页**（`content/admin-pages/env.js`）。
+  它是这八项（项目目录 / Python / Ollama / MinerU / MinerU HOME / 知识库位置 /
+  Zotero 数据目录 / MathType）的唯一编辑入口：自动探测优先、可手填、可「恢复自动」。
+  输入框里**永远填当前生效值**（灰字 = 自动探测，黑字 = 用户设过），改动只在
+  「保存并重新检测」时落盘。
+- **保存不走引擎**：宿主半的 `23-admin.js::kbAdminHostEnvSave` 直接读写项目的
+  `kb-location.json`（`KB_ADMIN_HOST_ROUTES` 里的 `POST /env-save`）。
+  为什么：用户最需要改这些路径的时刻恰恰是"引擎起不来（找不到 python）"——
+  依赖引擎等于永远改不回来。「浏览…」（`POST /env-pick`）同理走宿主半的 `nsIFilePicker`。
+  引擎侧的 `env.save`（`schemas.save_env_config`）**保留**，给脚本/后备通道用。
+- **保存语义（别改）**：框里的值 == 自动探测结果 → 视为"未覆盖"，保存时**删掉**该项的键；
+  没动过且当前来源不是"面板设置" → 根本不提交。否则自动探测的值会被冻死。
+  「恢复自动」= 删掉 `env.<key>` 与扁平键，并清 `runtime.json` 里同名缓存。
+- **Zotero 设置里的偏好窗格已下线**（2026-10-17，`settings.xhtml` / `settings.js`
+  已删）：设置只留管理面板 —— 「运行环境」页管路径与模型配置（宿主半直接写
+  `kb-location.json` / 引擎写 `llm-config.json`），「偏好设置」页通过宿主路由
+  `GET|POST /plugin-prefs` 读写插件行为开关（白名单）。
+  `migrateLlmPrefs` / `migratePathPrefs` 在启动时把老 pref 一次性搬进配置文件。
 - **`.env` 只放路径与参数，不放密钥**（密钥仍在 `<知识库>\llm-config.json` 这类运行时文件里）；
   模板是仓库里的 `.env.example`。
-- **每一档都会记下来源**：面板「运行环境」页逐项显示（含"被谁盖住了"和"填的值不存在"），
-  所以"改了不生效"能一眼看出是谁在起作用。
+- **每一档都会记下来源**：`schemas.env_source_items()` 是"八个位置一行一项"的**唯一实现**
+  （面板表格与 `env_report()` 共用），逐项给出 值 / 来源 / 是否存在 / **纯自动探测值**；
+  `resolve_sources()` 另给"被谁盖住"与"填的值不存在"。
 
 #### B23. 公式就地纠错：右键 → 定位 → 编辑 → 回写
 
@@ -1165,7 +1201,7 @@ Zotero 里的"删除"其实分两段：先进回收站（可还原），再彻�
 | 定位 | `GET /formula-target?key&page&rects` → `offline/formula.py`：左下原点的 PDF 点换算成左上原点归一化 rect，再匹配该页的 equation 块 |
 | 预览 | 优先用 MinerU 自己那块裁剪图（`image_source`），没有才按 rect 从 PDF 裁 |
 | 编辑 | 阅读器那一列弹出模态框：原文裁剪图 + 可编辑 LaTeX + **KaTeX 实时预览**；一页多条公式可下拉挑 |
-| MathType | `POST /formula-mathtype`：**服务端**把 LaTeX 放进剪贴板并启动 MathType（插件沙箱里没有稳定的起进程/写剪贴板能力）。**未装 MathType 时按钮只置灰、不隐藏** |
+| MathType | `POST /formula-mathtype`：**服务端**把 LaTeX 放进剪贴板并启动 MathType（插件沙箱里没有稳定的起进程/写剪贴板能力）。**未装 MathType 时按钮只置灰、不隐藏**。路径与其它运行环境项同一套解析器（`schemas.resolve_mathtype`：注册表 → 安装目录 → 常见落点），可在管理面板「运行环境」页手填；`maintain.py check` 会报 `装了 / 没装 / 手填了但找不到` |
 | 回写 | `POST /formula-apply` → `replace_nth_formula()` 换掉该页第 n 条 `$$…$$`（新 LaTeX 没写 `\\tag` 时沿用旧编号）→ 交给**既有唯一写路径** `POST /doc-edit`（修订层 + 重切重向量） |
 
 **为什么不做本地公式识别（OCR）模型**：做过一轮选型（393 条矩阵公式做基准，脚本与结果
@@ -1220,7 +1256,7 @@ kb_acquire(dois="...", dry_run=True)                   # 只解析元数据，�
 
 **插件侧的行为**：默认**不弹确认框**（搜索、列候选、挑选都在对话里做完了，
 再弹一个 Zotero 模态框会把连贯的对话中断成两个界面；想要"写入磁盘前再看一眼"
-就在插件设置「从 DSH 导入文献」里把勾打开）；落库后走一遍本地模型的分类建议，
+就在管理面板「偏好设置 → 知识库行为」里把勾打开）；落库后走一遍本地模型的分类建议，
 **一个汇总框一次问完**（全部应用 / 逐篇确认… / 跳过）；只**新建**条目，
 **绝不改**你已有的条目（唯一例外是会跳过库里已有的 DOI）。
 
@@ -1243,7 +1279,7 @@ kb_acquire(dois="...", dry_run=True)                   # 只解析元数据，�
 默认位置：**`<Zotero 数据目录>\zotero-kb\`**。Zotero 数据目录是从它的
 prefs.js 读出来的，所以你改过也没关系。
 
-在 Zotero 设置 →「文献知识库」→「知识库位置」里能看当前在哪、也能
+在管理面板 →「偏好设置」→「知识库位置」里能看当前在哪、也能
 **迁移到 Zotero 数据目录**。迁移做四件事：**先备份 → 复制（不是移动，旧目录保留）
 → 校验**（条目 / 切片 / 向量 / 经验数必须一致）**→ 写 `kb-location.json`**；
 校验不过会中止，不会让你丢数据。命令行等价操作是
@@ -1253,7 +1289,8 @@ prefs.js 读出来的，所以你改过也没关系。
 Zotero key 命名，路径由知识库目录推算出来）。
 
 **把知识库同步到别的机器**：Zotero 自带的同步做不到（它的文件同步只覆盖
-"数据库里有附件条目的文件"）。两个能用的替代方案（默认关闭，在设置里配）：
+"数据库里有附件条目的文件"）。两个能用的替代方案（默认关闭，在管理面板
+「偏好设置 → 知识库同步」里配）：
 **同步到指定目录**（交给坚果云 / OneDrive 客户端去同步那个文件夹），或者
 **用命令同步**（rclone / robocopy，输出会显示出来）。两者都是"复制 + 覆盖"，
 不做镜像删除 —— 万一目标目录里有别的东西，`robocopy /MIR` 会把它删掉，
@@ -1418,7 +1455,7 @@ AI 的产出（摘要、纲要、建议）只落在知识库目录或会话目�
 | MCP 接入 | **13 工具 + 4 资源** | AI 里 `kb_search` 等可直接调用 |
 | Zotero 插件 | 自动入库 + 分类建议 + 元数据补全 + 生成纲要 + 列表两列 | 右键菜单与列表列 |
 | 「知识库」侧栏 | 自建一列独占条目窗格（rail 最下面一个图标 → 开/关） | 打开条目右侧栏看 |
-| 阅读器对照列 | 左 PDF 右正文、同一个窗口；工具栏「对照」按钮；停在正在读的那一页（翻页**不**跟随）；KaTeX 排版；按块编辑 | 打开 PDF 点「对照」 |
+| 阅读器对照列 | 左 PDF 右正文、同一个窗口；**入口只有 rail 图标**（工具栏那个重复的「对照」按钮 2026-10-16 已删）；停在正在读的那一页（翻页**不**跟随）；KaTeX 排版；按块编辑 | 打开 PDF → 从右侧 rail 打开知识库列 |
 | 公式就地纠错 | 右键公式 → 编辑区 → 应用（只改这一条并重切重向量） | 打开 PDF 右键一块公式 |
 | 管理面板 | Zotero 内一个窗口，10 页；与引擎之间**无端口、无 token、不常驻** | 工具菜单 →「知识库管理…」逐页走 |
 | 条目生命周期 | 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `offline\maintain.py reconcile` |
@@ -1462,7 +1499,7 @@ AI 的产出（摘要、纲要、建议）只落在知识库目录或会话目�
 | `node tools\verify_bootstrap.js` | 用桩 `Zotero` 跑真机 `bootstrap.js`，盯"字段名写错但没报错"这类问题 |
 | `node tools\verify_kbview_md.js` | 页面里的 markdown 管线（vendored markdown-it + KaTeX + 本项目规则）真跑一遍，判据是**渲染质量**而不是"没抛异常" |
 | `python tools\check_kb_levels.py` | 分级清单在 Python（`offline\kbviews.py`）与 JS（`src\13-kbopen.js`）两侧一致 |
-| `python tools\check_api_presets.py` | 服务商地址表在 `judge.py` 与 `settings.js` 两处一致 |
+| `python tools\check_api_presets.py` | 服务商地址表的唯一来源（`judge.py`）；设置窗格下线后它退化成"只核对服务端" |
 | `python tools\make_updates_json.py --check` | `updates.json` 与 manifest 版本一致 |
 | `python online\localserver.py --test` | 旧 HTTP 服务端点自检（自带进程内服务，不需要 8765 在监听） |
 

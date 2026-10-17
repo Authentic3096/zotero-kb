@@ -43,19 +43,17 @@ Object.assign(ZoteroKB, {
   classifyOnly: async function (item, feedback, previous) {
     const meta = this.buildMeta(item);
     if (!meta.title && !meta.abstract) return null;
-    // 把模型配置一起发过去 —— 这样"配置在插件设置里"对服务端也成立。
-    // 服务端会落盘（下次就按这套走），所以管理面板等入口也自动用同一套。
-    // 注意按 provider 挑 model：ollama 用 model，API 用 apiModel。
-    const isApi = (this.getPref(this.PREFS.provider, "ollama") === "openai");
+    // 模型配置的**唯一权威来源**是 `<知识库>\llm-config.json`（面板「运行环境」页
+    // 编辑）。这里把它随请求带上：classify.item 收的是"还没入库"的新文献，
+    // 元数据只能在这边现取；带上配置可以保证用的就是用户此刻选的那套。
+    const cfg = this.llmConfig() || {};
     const payload = {
       item: meta,
       categories: this.configuredCategories(),
-      model: isApi ? this.getPref(this.PREFS.apiModel, "")
-                   : this.getPref(this.PREFS.model, ""),
-      provider: this.getPref(this.PREFS.provider, "ollama"),
-      base_url: isApi ? this.getPref(this.PREFS.apiBaseUrl, "") : "",
-      api_key: isApi ? this.getPref(this.PREFS.apiKey, "") : "",
     };
+    for (const k of ["provider", "model", "base_url", "api_key"]) {
+      if (cfg[k]) payload[k] = String(cfg[k]);
+    }
     // "跟模型对话调整"：把上一轮结论和用户的意见一起带回去。
     // ⚠ 只带上一轮的 category/reason/round，不带 tags —— 免得模型
     //   把上一轮的标签原样抄回来，看着像"没听懂调整"。
@@ -80,13 +78,13 @@ Object.assign(ZoteroKB, {
       //   不用像 `/env-config` 那样再摊平一层。
       let res = null;
       try {
-        res = await self.kbAdminHostRoute("POST", "/classify-item", payload);
+        res = await this.kbAdminHostRoute("POST", "/classify-item", payload);
       } catch (e) {
         Zotero.debug("[zotero-kb] 引擎桥分类失败（退回 HTTP）：" + e);
       }
       if (!res || res.error) {
         try {
-          res = await self.request("POST", "/classify", payload);
+          res = await this.request("POST", "/classify", payload);
         } catch (e) {
           Zotero.debug("[zotero-kb] 分类请求失败：" + e);
           return null;
@@ -129,7 +127,7 @@ Object.assign(ZoteroKB, {
     const list = (pairs || []).filter((x) => x && x.item);
     if (!list.length) return { applied: 0, skipped: 0, done: true };
 
-    const lines = ["本地模型给这 " + list.length + " 篇的建议：", ""];
+    const lines = ["模型给这 " + list.length + " 篇的建议：", ""];
     list.forEach((x, i) => {
       const title = (x.item.getField("title") || "(无标题)").slice(0, 48);
       if (!x.sug) {

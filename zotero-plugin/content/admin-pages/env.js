@@ -1,22 +1,24 @@
 /* ============================================================================
- * admin-pages/env.js —— 「运行环境」页（四个位置从哪来、服务在不在、模型怎么配）
+ * admin-pages/env.js —— 「运行环境」页（八个位置唯一设置面 + 引擎在不在 + 模型怎么配）
  *
- * 对应**已退役（2026-10-14）**的 Tk 面板 tools/panels/tab_env.py（已退役 2026-10-14）。那一页最花力气的是两件事：
- *   ①「项目目录 / Python / Ollama / MinerU」这四个位置**值从哪来、谁覆盖了谁**；
+ * 对应**已退役（2026-10-14）**的 Tk 面板 tools/panels/tab_env.py。那一页最花力气的是两件事：
+ *   ①「项目目录 / Python / Ollama / MinerU / …」这些位置**值从哪来、谁覆盖了谁**；
  *   ②「模型接入」表单（provider / model / base_url / api_key）。
  * 这里照它的口径重画，取数改成问宿主半 → 引擎（字段见开发说明）：
- *   GET  /env-check    四个位置 + 来源 + 被否掉的高优先档
- *   GET  /health       服务与各位置（顶部那句话与「本机服务」块复用）
+ *   GET  /env-check    八个位置 + 来源 + 被否掉的高优先档 + **纯自动探测结果**
+ *   GET  /health       引擎与各位置（顶部那句话与「本机引擎」块复用）
  *   GET  /models       Ollama 本机模型列表
  *   GET  /llm-config   当前模型配置（api_key 只回 has_key / key_tail）
  *   POST /llm-config   保存模型配置（api_key 留空 = 不改）
+ *   POST /env-save     **保存运行环境**（宿主半直接写 kb-location.json，不走引擎）
+ *   POST /env-pick     **浏览…**（宿主半 nsIFilePicker）
  *   POST /service/restart
  *
- * 与 Tk 版的取舍（为什么少了几样东西）：
- *   · 不做"浏览… / 保存并重新检测"：改这四个位置仍在 Zotero 插件的设置面板里
- *     （两边写的是同一份 kb-location.json）。这一页只负责把它**说清楚**；
- *   · 「重启服务」如实说明：契约里 POST /service/restart 本轮是**占位**返回
- *     （HTTP 服务退场后由宿主半管理生命周期），页面把引擎原话照抄，不假装成功。
+ * ⚠ 2026-10-16（用户要求）这一页从"只读展示"变成**唯一设置面**：
+ *   Zotero 插件设置页那三行路径输入框已删、`.env` 降级成"救急层"。所以这里
+ *   每一项都能改、能浏览、能「恢复自动」，保存**不经过 Python 引擎**——
+ *   理由见 kb-location.json 的致命场景：引擎起不来时恰恰最需要能改这些路径。
+ *   保存语义（值与自动探测结果相同 → 视为未覆盖）见 collectEnvBody() 的注释。
  *
  * 页面约定照抄 admin.js 顶部三条与 structure.js 的写法：只用 admin.css 的类、
  * 数据一律 KBAdmin.get/post、一页一文件、注释说清为什么。
@@ -24,17 +26,36 @@
 (function () {
   "use strict";
 
-  // 四个位置在引擎里的键 → 中文名。契约里 items 已带 name，这里只是**兜底**
-  // （口径与 offline/schemas.py::ENV_SOURCE_LABELS 同一份）。
+  // 八个位置在引擎里的键 → 中文名。契约里 items 已带 name，这里只是**兜底**
+  // （口径与 offline/schemas.py::ENV_SOURCE_LABELS 同一份）。顺序 = 引擎给的顺序。
   const ENV_LABELS = {
     project_root: "项目目录",
     python: "Python 解释器",
     ollama: "Ollama（可选）",
     mineru: "MinerU（可选）",
+    mineru_home: "MinerU HOME",
+    kb_dir: "知识库位置",
+    zotero_data_dir: "Zotero 数据目录",
+    mathtype: "MathType（可选）",
   };
 
   // 可选组件：找不到也不影响别的功能，状态列要区别对待（别吓唬用户）。
-  const OPTIONAL_KEYS = { ollama: 1, mineru: 1 };
+  const OPTIONAL_KEYS = { ollama: 1, mineru: 1, mineru_home: 1, mathtype: 1 };
+
+  // 「自动探测 / 默认」是**机器事实**（灰字）；其余（面板设置 / 环境变量 /
+  // 救急 .env / 调用方指定）都是**用户明确设过的**（黑字）。
+  const AUTO_SOURCES = { "自动探测": 1, "默认": 1 };
+  function isUserSet(source) {
+    const s = String(source == null ? "" : source).trim();
+    return !!s && !AUTO_SOURCES[s];
+  }
+
+  // 每项的"浏览…"按钮文案（跟着 kind 走）
+  function pickTitle(it) {
+    const name = ENV_LABELS[it.key] || it.key;
+    return it.kind === "dir" ? ("选择" + name + "（目录）")
+                             : ("选择" + name + "（程序）");
+  }
 
   function msgOf(e) {
     return (e && e.message) ? e.message : String(e);
@@ -48,41 +69,65 @@
     async render(host, ctx) {
       const el = ctx.el;
 
-      // ------------------------------------------------------ 卡片 1：四个位置
+      // ------------------------------------------------------ 卡片 1：八个位置（可编辑）
+      //
+      // 设计（用户 2026-10-16 两轮要求）：
+      //   · **唯一设置面就是这里**：Zotero 插件设置页那三个输入框已删，`.env` 降级
+      //     成"救急层"。所以每一项都必须能改、能浏览、能恢复自动。
+      //   · **输入框永远显示"当前生效的值"**：没手填时填的就是**自动探测结果**
+      //     （灰字，提示"这是自动探测到的"）；手填过/环境变量设过 → 黑字。
+      //   · 旁边标出来源（自动探测 / 面板设置 / 环境变量 / 救急 .env）。
+      //   · ⚠ **保存语义（关键）**：框里的值已经预填成自动探测结果，如果用户点
+      //     「保存」却没动过这一项，**不能**把它存成手填 —— 否则自动探测的值被
+      //     冻死，换机器/换路径就不跟着变了。判据：**值与自动探测结果相同 →
+      //     视为未覆盖（清掉手填项）**；不同 → 存成手填。见 collectEnvBody()。
       const posHost = el("div", null,
-                         [el("div", { class: "note note-warn", text: "正在检测四个位置…" })]);
+                         [el("div", { class: "note note-warn", text: "正在检测八个位置…" })]);
       const srcNote = el("div", { class: "faint", text: "" });
+      const envFlash = el("div", { class: "faint", text: "" });
       const redetectBtn = el("button", {
         class: "btn btn-subtle", text: "重新检测",
         on: { click: function () { refreshAll(); } },
       });
+      const saveEnvBtn = el("button", {
+        class: "btn btn-primary", text: "保存并重新检测",
+        title: "把改动写进 kb-location.json（宿主半直接写，不依赖引擎）；"
+             + "没动过的那几项不会被存成手填",
+        on: { click: function () { saveEnv(); } },
+      });
       host.appendChild(el("div", { class: "card" }, [
         el("div", { class: "row" }, [
-          el("strong", { text: "四个位置" }),
-          el("span", { class: "faint", text: "值从哪来、在不在（路径很长，悬停看全）" }),
+          el("strong", { text: "运行环境（八个位置）" }),
+          el("span", { class: "faint", text: "值从哪来、在不在；就地可改（灰字 = 自动探测，黑字 = 你设过）" }),
           el("span", { class: "grow" }),
           redetectBtn,
+          saveEnvBtn,
         ]),
         el("div", { class: "sep" }),
         posHost,
         el("div", { class: "sep" }),
         srcNote,
+        envFlash,
+        el("div", { class: "faint",
+          text: "「保存并重新检测」把改动写进项目的 kb-location.json —— 由 Zotero 插件"
+              + "（宿主半）直接写，不经过 Python 引擎，所以引擎因为找不到 Python "
+              + "而起不来时你仍然改得回来。「浏览…」同理（走宿主半的系统文件选择框）。" }),
       ]));
 
-      // ------------------------------------------------------ 卡片 2：本机服务
+      // ------------------------------------------------------ 卡片 2：本机引擎
       const svcHost = el("div", null,
-                         [el("div", { class: "note note-warn", text: "正在读服务状态…" })]);
+                         [el("div", { class: "note note-warn", text: "正在读引擎状态…" })]);
       const restartNote = el("div", { class: "faint",
-        text: "点「重启服务」会请宿主半处理引擎的生命周期。注意：契约里这个接口"
-            + "本轮是占位返回（HTTP 服务退场后由宿主半管理生命周期），"
-            + "不会真的重启，页面会把引擎的原话照抄出来。" });
+        text: "引擎由宿主半按需拉起：正常情况下不需要手动重启；"
+            + "「重启引擎」会停掉当前进程，下一次请求自动拉起新的。"
+            + "有任务在跑时不会执行。" });
       const restartBtn = el("button", {
-        class: "btn btn-subtle", text: "重启服务",
+        class: "btn btn-subtle", text: "重启引擎",
         on: { click: onRestart },
       });
       host.appendChild(el("div", { class: "card" }, [
         el("div", { class: "row" }, [
-          el("strong", { text: "本机服务" }),
+          el("strong", { text: "本机引擎" }),
           el("span", { class: "faint", text: "随 Zotero 起落，不常驻、不自启" }),
           el("span", { class: "grow" }),
           restartBtn,
@@ -110,7 +155,8 @@
       //   `custom` = 自定义（自建或其它兼容服务）—— `custom` 落盘同样是
       //   provider="openai"，只是 base_url 不是已知服务商地址（见 uiProviderOf）。
       const state = { ui: "ollama", provider: "ollama", model: "", hasKey: false,
-                      keyTail: "", services: [], discovered: null, cacheAt: "" };
+                      keyTail: "", services: [], discovered: null, cacheAt: "",
+                      filterBare: true, hiddenBare: 0 };
 
       /** 落盘的 provider（页面的 custom 也要写 openai —— 引擎只认这两类）。 */
       function persistedProvider() {
@@ -179,12 +225,28 @@
         on: { click: function () { tryConnect(true); } },
       });
       const modelStatus = el("div", { class: "faint", text: "" });
+      // 「只列带上下文后缀的模型」（原设置页的更好的模型选择逻辑）——
+      // 没有后缀的模型看不出上下文窗口，容易挑错。这是**显示偏好**，不是
+      // 模型配置本身（配置仍只存 llm-config.json 一份）。
+      const filterCb = el("input", { type: "checkbox" });
+      const filterRow = el("label", { class: "pref-line" }, [
+        filterCb,
+        el("span", { text: "只列带上下文后缀的模型" }),
+        el("span", { class: "faint",
+                     text: "（-4k / -16k / -24k…；没有后缀的看不出窗口大小）" }),
+      ]);
+      filterCb.addEventListener("change", function () {
+        state.filterBare = filterCb.checked;
+        paintModels();
+        KBAdmin.post("/plugin-prefs", { filterBareModels: filterCb.checked })
+          .catch(function (e) { ctx.log("[模型] 记住过滤偏好失败：" + msgOf(e), "warn"); });
+      });
       // 模型一栏的"提示句"（本地/外部两套口径 + 探测结论，见 syncProviderUI/refreshModels）
       const modelHint = el("div", { class: "faint", text: "" });
       const modelNote = el("div", { class: "faint",
-        text: "保存到知识库目录下的 llm-config.json —— 服务端与面板的所有模型功能"
+        text: "保存到知识库目录下的 llm-config.json —— 引擎与面板的所有模型功能"
             + "（分类建议 / 元数据兜底 / 提示词试跑 / 经验草稿）都用这一份，"
-            + "改完立即生效、不用重启服务。Zotero 插件右键菜单用的是插件自己的 pref。" });
+            + "改完立即生效，下一次请求就用新配置。Zotero 插件右键菜单也读这一份。" });
 
       // 外部 API / 自定义才要的那一行（本地 Ollama 用不到 base_url / api_key）
       const credRow = el("div", { class: "row" }, [
@@ -207,6 +269,7 @@
           modelSel,
           refreshModelsBtn,
         ]),
+        filterRow,
         modelHint,
         el("div", { class: "sep" }),
         credRow,
@@ -221,71 +284,164 @@
       // ========================================================== 取数与画图
 
       /**
-       * 路径列：格子里只放一段、靠 CSS 省略，完整值进 title。
-       *
-       * 为什么不做"头尾保留"自己截断：路径长度差很多，硬截会切掉真正有用的尾段
-       * （pythonw.exe / ollama.exe 这种）。交给 title 最诚实。
+       * 每行的编辑状态（重检测时重建）。存"打开时显示的值"是为了实现用户
+       * 2026-10-16 的保存语义：**值与自动探测结果相同 → 视为未覆盖**。
        */
-      function pathCell(raw) {
-        const t = String(raw == null ? "" : raw);
-        const s = el("span", { class: "mono", text: t || "（未找到）" });
-        s.title = t || "（未找到）";
-        return s;
-      }
+      const envEdit = { items: [], inputs: {}, initial: {}, auto: {}, sources: {} };
 
-      /** 状态列：存在 / 找不到；可选组件另给一句不吓人的说明。 */
+      /** 状态标记：✓ 存在 / ✗ 找不到；可选组件与"允许暂缺"另给一句不吓人的说明。 */
       function statusCell(r) {
         const ok = r.ok === true;
         const optional = r.optional === true || OPTIONAL_KEYS[r.key] === 1;
+        const maybe = r.key === "kb_dir";     // 知识库可能还没建
         const s = el("span", {
-          class: ok ? "tag-ok" : "tag-bad",
+          class: (ok ? "tag-ok" : "tag-bad") + " env-st",
           text: ok ? "✓ 存在" : "✗ 找不到",
         });
         s.title = ok
           ? "这个路径存在"
-          : (optional ? "可选组件：不装 / 找不到都不影响其他功能"
-                      : "找不到这个路径，用到它的功能会报错");
+          : (maybe ? "这一项允许指向还不存在的目录（第一次建库会创建它）"
+             : optional ? "可选组件：不装 / 找不到都不影响其他功能"
+                        : "找不到这个路径，用到它的功能会报错");
         return s;
+      }
+
+      /** 来源标签：灰字=机器事实（自动探测/默认），黑字=用户设过的。 */
+      function sourceCell(r) {
+        const raw = String(r.source == null ? "" : r.source).trim();
+        const span = el("span", { class: "faint env-src",
+                                  text: raw ? ("来源：" + raw) : "来源：未知" });
+        span.title = raw === "自动探测"
+          ? "这一项没有手填，值是自动探测出来的（灰字）"
+          : (isUserSet(raw) ? "这一项是你明确设过的（黑字）：" + raw
+                            : "引擎没报来源（可能是旧版本引擎）");
+        if (isUserSet(raw)) span.style.color = "var(--text)";
+        return span;
+      }
+
+      /**
+       * 中段省略：保住头尾，长路径不再把行撑开（用户 2026-10-17 报"非常乱"）。
+       * 纯 JS + CSS，不引依赖；完整值一律进 title，鼠标悬停能看到。
+       */
+      function midPath(raw) {
+        const t = String(raw == null ? "" : raw);
+        const head = 20, tail = 30;
+        if (t.length <= head + tail + 1) return t;
+        // 尽量在路径分隔符处切，别把一段目录名劈成两半（"proje…"）；
+        // 但总长度仍受控，避免 CSS 再切掉尾巴。
+        let h = head;
+        const nextSep = t.indexOf("\\", head);
+        if (nextSep > 0 && nextSep - head <= 10) h = nextSep + 1;
+        let tailStart = t.length - tail;
+        const prevSep = t.lastIndexOf("\\", tailStart);
+        if (prevSep > 0 && tailStart - prevSep <= 10) tailStart = prevSep + 1;
+        if (tailStart <= h) tailStart = h + 1;
+        return t.slice(0, h) + "…" + t.slice(tailStart);
+      }
+
+      /** 输入框：值 = 当前生效值；灰字表示"这是自动探测到的"。 */
+      function envInput(r) {
+        const inp = el("input", { type: "text", class: "env-input" });
+        inp.value = String(r.path == null ? "" : r.path);
+        const auto = String(r.auto == null ? "" : r.auto);
+        inp.placeholder = auto ? ("自动探测：" + auto)
+                               : "（没有自动探测结果 —— 可手填，或点「浏览…」）";
+        const gray = !isUserSet(r.source);
+        inp.style.color = gray ? "var(--faint)" : "var(--text)";
+        // 用户一动手就变黑字（表示"这一项现在是手填的"）
+        inp.addEventListener("input", function () {
+          inp.style.color = "var(--text)";
+        });
+        const full = inp.value || auto || "";
+        inp.title = full;
+        envEdit.inputs[r.key] = inp;
+        envEdit.initial[r.key] = inp.value;
+        envEdit.auto[r.key] = auto;
+        envEdit.sources[r.key] = String(r.source == null ? "" : r.source).trim();
+        return inp;
+      }
+
+      /**
+       * 路径格：默认显示**中段省略**的等宽文本（整齐、不撑行），点一下才换成
+       * 可编辑的输入框（输入框永远存在，只是隐藏 —— 保存逻辑不变）。
+       */
+      function pathCell(r) {
+        const inp = envInput(r);
+        const full = inp.value || String(r.auto == null ? "" : r.auto) || "";
+        const disp = el("span", {
+          class: "env-path",
+          text: full ? midPath(full) : "（未设置）",
+        });
+        disp.title = full || "没有值（灰字是自动探测结果）";
+        if (!isUserSet(r.source)) disp.style.color = "var(--faint)";
+        inp.classList.add("hidden");
+        const paintDisp = function () {
+          const v = String(inp.value || "").trim();
+          disp.textContent = v ? midPath(v) : "（未设置）";
+          disp.title = v || "没有值";
+        };
+        disp.addEventListener("click", function () {
+          disp.classList.add("hidden");
+          inp.classList.remove("hidden");
+          inp.focus();
+          try { inp.select(); } catch (e) { /* ignore */ }
+        });
+        inp.addEventListener("input", paintDisp);
+        inp.addEventListener("blur", function () {
+          paintDisp();
+          inp.classList.add("hidden");
+          disp.classList.remove("hidden");
+        });
+        inp.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter") inp.blur();
+          if (ev.key === "Escape") { disp.classList.remove("hidden"); inp.classList.add("hidden"); }
+        });
+        // 「浏览…」选完之后要立刻更新上面那行短路径
+        inp._kbPathDisp = disp;
+        return el("div", { class: "env-path-cell" }, [disp, inp]);
+      }
+
+      /** 一行：名字 · 路径 · 来源 · 状态 · 浏览… ·（必要时）恢复自动 */
+      function envRow(r) {
+        const name = el("span", { class: "env-name",
+                                  text: String(r.name || ENV_LABELS[r.key] || r.key) });
+        const row = el("div", { class: "env-row" }, [
+          name, pathCell(r), sourceCell(r), statusCell(r),
+          el("button", {
+            class: "btn", text: "浏览…", title: pickTitle(r),
+            on: { click: function () { browseEnv(r); } },
+          }),
+        ]);
+        // 「恢复自动」只在**当前来源是面板设置**时有意义（其它档清不掉：
+        // 环境变量在系统里、`.env` 在文件里、自动探测本来就没手填）。
+        if (envEdit.sources[r.key] === "面板设置") {
+          row.appendChild(el("button", {
+            class: "btn btn-subtle", text: "恢复自动",
+            title: "清掉这一项的手填值，回到自动探测",
+            on: { click: function () { restoreAuto(r); } },
+          }));
+        }
+        let note = null;
+        if (r.note) note = el("div", { class: "env-note", text: String(r.note) });
+        return el("div", { class: "env-item" }, [row, note]);
       }
 
       function renderPos(d) {
         const items = (d && Array.isArray(d.items)) ? d.items : [];
+        envEdit.items = items;
+        envEdit.inputs = {};
+        envEdit.initial = {};
+        envEdit.auto = {};
+        envEdit.sources = {};
         posHost.textContent = "";
         if (!items.length) {
           posHost.appendChild(el("div", { class: "note note-warn",
             text: "引擎没有回任何一项（/env-check 回包是空的）。" }));
         } else {
-          const cols = [
-            // 表头排序口径见 admin.js::table：项目名 / 来源 / 状态可排；
-            // 「路径」是长自由文本（还会被 clip 掐断），**不给排序**。
-            { key: "name", label: "项目", sortable: true,
-              sortValue: function (r) {
-                return String(r.name || ENV_LABELS[r.key] || r.key || "");
-              },
-              render: function (r) {
-                return String(r.name || ENV_LABELS[r.key] || r.key || "");
-              } },
-            { key: "path", label: "路径",
-              render: function (r) { return pathCell(r.path); } },
-            { key: "source", label: "来源", sortable: true,
-              render: function (r) {
-                const s = String(r.source == null ? "" : r.source).trim();
-                const span = el("span", { text: s || "未知" });
-                span.title = s
-                  ? ("这一项最终取自「" + s + "」")
-                  : "引擎没报来源（可能是旧版本引擎）";
-                return span;
-              } },
-            { key: "ok", label: "状态", sortable: true,
-              // 不可用的排前面（升序 = 先看不正常的），别按中文"正常/缺"的字面排。
-              sortValue: function (r) { return r.ok ? 1 : 0; },
-              render: function (r) { return statusCell(r); } },
-          ];
-          posHost.appendChild(KBAdmin.table(cols, items));
+          items.forEach(function (r) { posHost.appendChild(envRow(r)); });
         }
 
-        // 「谁覆盖了谁 / 哪一档被否掉」——Tk 面板花最多篇幅讲的就是这句，
-        // 这里把它压成一行提示：只在**真有问题**时才出现，正常时不占视线。
+        // 「谁覆盖了谁 / 哪一档被否掉」——只在**真有问题**时才出现，正常时不占视线。
         const bits = [];
         const src = (d && d.sources) || {};
         Object.keys(src).forEach(function (k) {
@@ -314,15 +470,150 @@
           srcNote.textContent = "⚠ " + bits.join("；");
         } else {
           srcNote.className = "faint";
-          srcNote.textContent = "优先级：环境变量 > 运行时设置（面板写的 kb-location.json）"
-            + " > .env > 自动探测（调用方显式指定最优先）。留空的项交回下一档。";
+          srcNote.textContent = "优先级：调用方指定 > 环境变量 > 面板设置（这里保存的值）"
+            + " > 自动探测 > 救急 .env > 内置默认。改动只在你点「保存并重新检测」时落盘。";
+        }
+      }
+
+      // ------------------------------------------------------ 保存 / 浏览 / 恢复自动
+
+      function setFlash(text, cls) {
+        envFlash.className = cls || "faint";
+        envFlash.textContent = text || "";
+      }
+
+      /**
+       * 表单 → 请求体（宿主半 `POST /env-save`）。
+       *
+       * ⚠ **保存语义（用户 2026-10-16 明确要求，别改）**：
+       *   输入框里预填的是"当前生效的值"，没手填时它就是自动探测结果。用户点
+       *   保存但**没动过**那一项时，绝不能把它存成手填 —— 否则自动探测的值被冻
+       *   死，以后换机器/换路径不跟着变。所以：
+       *     · 值 == 自动探测结果 → 发**空串**（= 未覆盖，清掉手填项）；
+       *     · 值 != 自动探测结果 → 发那个值（= 手填，存进 kb-location.json）；
+       *     · 没动过**且**当前来源不是"面板设置" → **不发**这一项（没什么可清的）。
+       */
+      function collectEnvBody() {
+        const body = {};
+        let touched = 0;
+        envEdit.items.forEach(function (r) {
+          const key = r.key;
+          const inp = envEdit.inputs[key];
+          if (!inp) return;
+          const val = String(inp.value == null ? "" : inp.value).trim();
+          const init = String(envEdit.initial[key] == null ? "" : envEdit.initial[key]);
+          const auto = String(envEdit.auto[key] == null ? "" : envEdit.auto[key]);
+          const changed = (val !== init);
+          const wasPanel = (envEdit.sources[key] === "面板设置");
+          if (!changed && !wasPanel) return;      // 没动过、也没手填过 → 不写
+          body[key] = (auto && val === auto) ? "" : val;
+          touched++;
+        });
+        return { body: body, touched: touched };
+      }
+
+      async function saveEnv() {
+        const got = collectEnvBody();
+        if (!got.touched) {
+          setFlash("没有需要保存的改动（灰字那几项是自动探测结果，不会被存成手填）。");
+          return;
+        }
+        saveEnvBtn.disabled = true;
+        setFlash("正在保存并重新检测…");
+        // ⚠ 来源是"环境变量"的那几项：**就算写进 kb-location.json 也不会生效**
+        //   （环境变量那一档优先级更高）。这种情况要明说，否则用户会以为白填了。
+        const envVarKeys = Object.keys(got.body).filter(function (k) {
+          return envEdit.sources[k] === "环境变量";
+        });
+        try {
+          const r = await KBAdmin.post("/env-save", got.body);
+          const cleared = (r && Array.isArray(r.cleared)) ? r.cleared.length : 0;
+          let msg = "✓ 已保存（" + ((r && r.path) ? r.path : "kb-location.json")
+            + (cleared ? ("，" + cleared + " 项恢复自动") : "") + "）";
+          if (envVarKeys.length) {
+            msg += "　⚠ " + envVarKeys.map(function (k) {
+              return (ENV_LABELS[k] || k);
+            }).join("、") + " 当前来自环境变量（优先级更高），"
+              + "面板里保存的值要等那个环境变量去掉后才生效。";
+          }
+          setFlash(msg, envVarKeys.length ? "note note-warn" : "note note-ok");
+          ctx.log("[运行环境] 已保存 " + got.touched + " 项，"
+                  + cleared + " 项恢复自动");
+          await refreshAll();
+        } catch (e) {
+          setFlash("✗ 保存失败：" + msgOf(e), "note note-err");
+          ctx.log("[运行环境] 保存失败：" + msgOf(e), "warn");
+        } finally {
+          saveEnvBtn.disabled = false;
+        }
+      }
+
+      /** 「浏览…」：走宿主半的 nsIFilePicker（页面里没有系统文件选择框）。 */
+      async function browseEnv(r) {
+        try {
+          const res = await KBAdmin.post("/env-pick",
+                                         { kind: r.kind || "file",
+                                           title: pickTitle(r) });
+          if (!res || !res.path) return;          // 用户取消
+          const inp = envEdit.inputs[r.key];
+          if (inp) {
+            inp.value = res.path;
+            inp.style.color = "var(--text)";
+            inp.title = res.path;
+            if (inp._kbPathDisp) {
+              inp._kbPathDisp.textContent = midPath(res.path);
+              inp._kbPathDisp.title = res.path;
+              inp._kbPathDisp.style.color = "var(--text)";
+              inp._kbPathDisp.classList.remove("hidden");
+              inp.classList.add("hidden");
+            }
+          }
+          setFlash("已选：" + res.path + " —— 点「保存并重新检测」生效。");
+        } catch (e) {
+          setFlash("✗ 打开选择框失败：" + msgOf(e), "note note-err");
+        }
+      }
+
+      /**
+       * 「恢复自动」：二次确认后清掉这一项的手填值（宿主半删键）。
+       *
+       * ⚠ 这是"危险/清零"动作，按项目约定必须先确认，并**把要清掉的值与
+       *   接下来会用的自动探测值都摆出来**（用户才知道点了会发生什么）。
+       */
+      function restoreAuto(r) {
+        const name = String(r.name || ENV_LABELS[r.key] || r.key);
+        KBAdmin.dialog("恢复自动：" + name, el("div", null, [
+          el("div", { text: "把「" + name + "」的手填值清掉，交回自动探测。当前手填的值：" }),
+          el("div", { class: "mono", text: String(r.path || "（空）") }),
+          el("div", { class: "sep" }),
+          el("div", { class: "faint",
+            text: "自动探测结果（会被采用）："
+                + (r.auto ? String(r.auto) : "（这台机器上没探测到）")
+                + "。这一项在 kb-location.json 里的键会被删掉。" }),
+        ]), [
+          { text: "取消" },
+          { text: "恢复自动", primary: true, run: function () { restoreNow(r); } },
+        ]);
+      }
+
+      async function restoreNow(r) {
+        setFlash("正在恢复自动…");
+        try {
+          const body = {};
+          body[r.key] = "";
+          const res = await KBAdmin.post("/env-save", body);
+          setFlash("✓ 已恢复自动（" + ((res && res.path) ? res.path : "") + "）",
+                   "note note-ok");
+          await refreshAll();
+        } catch (e) {
+          setFlash("✗ 恢复自动失败：" + msgOf(e), "note note-err");
         }
       }
 
       function renderHealth(h) {
         svcHost.textContent = "";
         const rows = [
-          ["服务", (h && h.service) ? String(h.service) : "本机引擎（stdio）"],
+          ["引擎", (h && h.service) ? String(h.service) : "Python 引擎"],
           ["状态", (h && h.ok === false) ? "离线" : "在线 ✓"],
           ["知识库", h && h.kb_dir],
           ["项目目录", h && h.project_root],
@@ -365,7 +656,7 @@
              : src === "none" ? "没有候选" : "未探测";
       }
 
-      /** 模型候选（把 state.discovered 画成下拉选项）。 */
+      /** 模型候选（把 state.discovered 画成下拉选项，原设置页那套过滤/排序）。 */
       function modelOptions() {
         const d = state.discovered || {};
         const opts = [];
@@ -373,9 +664,39 @@
           opts.push({ value: "", text: "（自动挑选）",
                       title: "留空 = 交回引擎自动挑（优先 qwen3:4b-instruct）" });
         }
-        (d.models || []).forEach(function (m) {
-          const id = String((m && m.id) || "");
-          if (!id) return;
+        let list = (d.models || []).filter(function (m) {
+          return m && String(m.id || "").trim();
+        });
+        state.hiddenBare = 0;
+        if (state.ui === "ollama" && state.filterBare) {
+          // 没有 `-Nk` 后缀的模型看不出上下文窗口大小，默认不列；
+          // 但**一个带后缀的都没有**时不能把列表清空（回落成全部，页面会说明）。
+          const suffix = /-\d+k$/i;
+          const suffixed = list.filter(function (m) {
+            return suffix.test(String(m.id || ""));
+          });
+          if (suffixed.length) {
+            state.hiddenBare = list.length - suffixed.length;
+            list = suffixed;
+          }
+        }
+        // 排序：推荐模型所属的"系"优先 → 同系上下文大的优先 → 其余按名字。
+        const ctxOf = function (n) {
+          const m = String(n).match(/-(\d+)k$/i);
+          return m ? parseInt(m[1], 10) : -1;
+        };
+        const baseOf = function (n) { return String(n).replace(/-\d+k$/i, ""); };
+        const recBase = baseOf(d.recommended || "");
+        list = list.slice().sort(function (a, b) {
+          const ra = (recBase && baseOf(a.id) === recBase) ? 0 : 1;
+          const rb = (recBase && baseOf(b.id) === recBase) ? 0 : 1;
+          if (ra !== rb) return ra - rb;
+          const ca = ctxOf(a.id), cb = ctxOf(b.id);
+          if (ca !== cb) return cb - ca;
+          return String(a.id).localeCompare(String(b.id));
+        });
+        list.forEach(function (m) {
+          const id = String(m.id);
           const bits = [];
           if (m.name && m.name !== id) bits.push(String(m.name));
           if (m.context) bits.push("上下文 " + fmtTokens(m.context));
@@ -406,6 +727,9 @@
           modelStatus.className = "faint";
           modelStatus.textContent = "探测到 " + n + " 个模型（" + sourceLabel(d.source)
             + "，" + (d.at || "") + (d.cached ? "，缓存" : "") + "）"
+            + (state.hiddenBare
+               ? "　·　已隐藏 " + state.hiddenBare + " 个没有上下文后缀的"
+               : "")
             + (d.base_url ? "　·　" + d.base_url : "");
         } else {
           modelStatus.className = "note note-warn";
@@ -430,12 +754,14 @@
         //   UA 样式表里的 `[hidden]`（真机踩过：属性设了、行照样显示）。admin.css
         //   里另有一条 `[hidden]{display:none!important}` 兜底，但类名这条不依赖它。
         credRow.classList.toggle("hidden", !isApi);
+        filterRow.classList.toggle("hidden", ui !== "ollama");
         keyIn.placeholder = isApi ? "填服务商给的 Key（必填）" : "留空 = 不改";
         modelSel.input.placeholder = ui === "ollama"
           ? "留空 = 自动挑，或填本机模型名（ollama list）"
           : "从候选里挑，或直接输入服务商的模型 id";
         modelHint.textContent = ui === "ollama"
           ? ("本地 Ollama：候选来自本机 /api/tags（比 /v1/models 多给参数量与量化档）。"
+             + "默认只列带上下文后缀的模型（可在下面取消勾选）；"
              + "留空 = 引擎自动挑。要用外部 API 就把上面的「服务商」改成"
              + "「外部 API（OpenAI 兼容）」。")
           : ("外部 API 要填「服务商的模型 id」，不是产品名。候选由两层给："
@@ -541,7 +867,7 @@
         } catch (e2) {
           svcHost.textContent = "";
           svcHost.appendChild(el("div", { class: "note note-err",
-            text: "读服务状态失败：" + msgOf(e2) }));
+            text: "读引擎状态失败：" + msgOf(e2) }));
         }
         // 模型这块：先读配置（它有 provider/model/base_url），再探测目录
         // （探测要用到配置里的地址与模型名，顺序反了会拿不到它们）。
@@ -646,7 +972,7 @@
             + " —— 去服务商后台重新复制一个（注意别带空格/换行）。" + (hint ? "　" + hint : "") };
         }
         if (code === 404 || /not\s*found|does not exist/i.test(err)) {
-          return { kind: "err", text: "✗ 服务端说找不到（HTTP " + (code || "?") + "）："
+          return { kind: "err", text: "✗ 服务商说找不到（HTTP " + (code || "?") + "）："
             + "模型名「" + (model || "(空)") + "」可能拼错，或这个服务商没有它 —— "
             + "点「刷新模型列表」看它的候选。" + (hint ? "　" + hint : "") };
         }
@@ -686,16 +1012,15 @@
       }
 
       function onRestart() {
-        KBAdmin.dialog("重启服务", el("div", null, [
-          el("div", { text: "这一页跑在 Zotero 里，服务的生命周期由宿主半（插件）管。" }),
+        KBAdmin.dialog("重启引擎", el("div", null, [
+          el("div", { text: "引擎是宿主半按需拉起的子进程，随 Zotero 起落。" }),
           el("div", { class: "sep" }),
           el("div", { class: "faint",
-            text: "契约里 POST /service/restart 本轮是占位返回："
-                + "HTTP 服务退场后由宿主半管理生命周期。点「确认」不会真的重启，"
-                + "页面会把引擎返回的原话显示出来。" }),
+            text: "点「确认」会停掉当前引擎进程；下一次请求（包括本页的刷新）"
+                + "会自动拉起一个新进程。有任务正在跑时不会停，会如实告诉你稍后再试。" }),
         ]), [
           { text: "取消" },
-          { text: "确认", primary: true, run: doRestart },
+          { text: "确认重启", primary: true, run: doRestart },
         ]);
       }
 
@@ -704,10 +1029,14 @@
         restartNote.textContent = "正在请求…";
         try {
           const r = await KBAdmin.post("/service/restart", {});
-          const started = r && r.started === true;
-          restartNote.className = started ? "note note-ok" : "note note-warn";
-          restartNote.textContent = (started ? "✓ 已请求重启。" : "本轮没有真的重启：")
-            + ((r && r.note) || "引擎没有说明原因");
+          if (r && r.ok === false) {
+            restartNote.className = "note note-warn";
+            restartNote.textContent = "没有重启：" + String(r.note || "引擎正忙");
+            return;
+          }
+          restartNote.className = "note note-ok";
+          restartNote.textContent = "✓ 引擎已重启（旧进程已停，新进程已按需拉起）。";
+          await refreshAll();                  // 刷新 == 下一次请求，会拉起新引擎
         } catch (e) {
           restartNote.className = "note note-err";
           restartNote.textContent = "重启请求失败：" + msgOf(e);
@@ -716,7 +1045,17 @@
 
       // ========================================================== 起步
       refreshAll();
-      ctx.log("运行环境页：开始检测四个位置与服务状态");
+      // 「只列带后缀的模型」是显示偏好（原设置页那个勾选框），存在 pref 里；
+      // 模型配置本身仍然只有 llm-config.json 一份。
+      KBAdmin.get("/plugin-prefs").then(function (pref) {
+        const v = (pref && pref.values) || {};
+        state.filterBare = v.filterBareModels !== false;
+        filterCb.checked = state.filterBare;
+        paintModels();
+      }).catch(function (e) {
+        ctx.log("[模型] 读显示偏好失败：" + msgOf(e), "warn");
+      });
+      ctx.log("运行环境页：开始检测八个位置与引擎状态");
     },
   });
 })();

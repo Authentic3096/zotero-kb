@@ -8,15 +8,14 @@
  *
  * ## 三条架构约定（改之前先读）
  *
- * 1. **页面不直接 fetch 127.0.0.1:8765**。服务端**故意**在带 Origin 的请求上不给
- *    token（防恶意网页偷 token），而本机服务是唯一的数据来源。所以：页面 →
- *    `postMessage` 给**宿主半** → 宿主半用 `Zotero.HTTP`（带 token）去取 → 回传。
- *    这与侧栏列（`content/kbview.js` ↔ `src/20-kbview.js`）**同一套模式**，
- *    别自己发明第二条通道。
+ * 1. **页面不发任何网络请求**。取数一律 `KBAdmin.get/post(...)` → `postMessage`
+ *    给**宿主半** → 宿主半按 `src/23-admin.js` 的路由表翻成引擎方法。引擎是宿主半
+ *    **按需拉起的 stdio 子进程**（无端口、无 token，随 Zotero 起落）。这与侧栏列
+ *    （`content/kbview.js` ↔ `src/20-kbview.js`）**同一套模式**，别自己发明第二条通道。
  * 2. **一个页面一个文件**：`content/admin-pages/<id>.js`，各自调
  *    `KBAdmin.page({...})` 注册。壳只负责导航/取数/进度/日志，页面只管画自己的。
  *    这样多个人（或 agent）并行改不同页不会撞车。
- * 3. **长任务走 `/jobs/<id>` 轮询**（服务既有约定），不要自己去猜进度。
+ * 3. **长任务走 `/jobs/<id>` 轮询**（引擎既有约定），不要自己去猜进度。
  *    用 `KBAdmin.runTask(...)` 一把梭：提交 → 轮询 → 画进度条 → 完成/失败回调。
  * ==========================================================================*/
 (function () {
@@ -120,9 +119,9 @@
    * 提交一个长任务并轮询到结束。
    *   runTask({submit: () => post("/jobs", {...}), path: (id) => "/jobs/" + id,
    *            onTick: (st) => …, interval: 1000})
-   * 服务端既有约定：POST /jobs 返回 {job: {id}}；GET /jobs/<id> 返回
-   * {job: {state, percent, message, result, error}}（字段名以服务端为准，
-   * 这里做了宽松取值，服务端字段若有出入只改这一处）。
+   * 引擎既有约定：POST /jobs 返回 {job: {id}}；GET /jobs/<id> 返回
+   * {job: {state, percent, message, result, error}}（字段名以引擎为准，
+   * 这里做了宽松取值，引擎字段若有出入只改这一处）。
    */
   async function runTask(opts) {
     const hook = opts.onTick || (() => {});
@@ -637,10 +636,10 @@
     get("/health").then((h) => {
       if (!status) return;
       const kb = (h && h.kb_dir) || "";
-      status.textContent = "服务正常 · " + kb;
+      status.textContent = "引擎正常 · " + kb;
       status.title = kb;
     }).catch((e) => {
-      if (status) status.textContent = "本机服务没连上：" + e.message;
+      if (status) status.textContent = "引擎没连上：" + e.message;
       log("健康检查失败：" + e.message, "err");
     });
 

@@ -1,36 +1,34 @@
 /* 默认首选项。Zotero 加载 bootstrapped extension 时会读这个文件。 */
-pref("extensions.zotero.zotero-kb.model", "");
-// 模型下拉是否只列"名字带上下文后缀"的派生模型（默认开）。
-// 没有后缀的模型看不出上下文窗口大小，容易挑错。
+// ---- 模型配置：**不在这里**（2026-10-17 起）
+// 唯一权威来源是 <知识库>\llm-config.json（provider / model / base_url / api_key /
+// ollama_host），管理面板「运行环境」页编辑，插件与引擎都读它。
+// ⚠ 老的 zotero-kb.model / provider / apiModel / apiKey / apiBaseUrl 五个 pref
+//   已退役：启动时由 src/04-prefs.js::migrateLlmPrefs 搬进配置文件并清掉。
+//   别把它们的默认值加回来 —— 两个地方都存必然漂移。
+
+// 模型下拉是否只列"名字带上下文后缀"的派生模型（默认开；管理面板可改）。
+// 没有后缀的模型看不出上下文窗口大小，容易挑错。这是**面板显示偏好**，
+// 不影响已经保存的模型。
 pref("extensions.zotero.zotero-kb.filterBareModels", true);
 pref("extensions.zotero.zotero-kb.autoProcess", true);
 pref("extensions.zotero.zotero-kb.categories", "");
 pref("extensions.zotero.zotero-kb.createMissing", true);
 // 是否允许插件轮询本地服务领取"在 Zotero 里执行 JS"的任务。
-// 这是给自动调试/自动验证用的能力（走本地 token 认证、只监听 127.0.0.1）；
-// 不想开就设为 false，插件的核心功能（切片、分类建议）不受影响。
+// 这是给自动调试/自动验证用的能力；不想开就设为 false，核心功能不受影响。
 pref("extensions.zotero.zotero-kb.autoTaskPoll", true);
 // ---- 任务通道（W3 线2，2026-10-13）：文件信箱 + 老 HTTP 队列
 // 信箱目录：留空 = <知识库目录>\mailbox（正路）。只有在"知识库目录偏偏拿不到"
 // 时才需要手填一个别的可写目录。
 pref("extensions.zotero.zotero-kb.mailboxDir", "");
 // 是否还去消费**老的 HTTP 队列**（GET /task + POST /task/result）。
-// 默认 true：过渡期两条队列都消费（同一个任务只会写进其中一处，不会双执行）。
-// 等确认没有任何调用方还在用老通道，把它设成 false，插件就彻底不碰 8765 了。
-pref("extensions.zotero.zotero-kb.taskPollHttp", true);
+// ⚠ 2026-10-16 起默认 **false**：信箱（正路）已经跑通，这条 HTTP 兜底是每 2 秒
+// 一次、8765 退役后必然失败的请求（状态文件里连接错误的来源）。要旧通道就显式设 true。
+pref("extensions.zotero.zotero-kb.taskPollHttp", false);
 // W3 线3（2026-10-14）：是否**自动拉起**本机服务 8765（Zotero 启动时）。
-// 默认 true = 老行为。用户拍板停服务后把它设为 false —— 否则 Zotero 一重启
-// 服务又被拉起来，"停服务"就是假的。**只影响"自动拉起"这一个动作**：
-// 插件此时已全部走引擎桥/文件信箱，不依赖该服务。手动入口仍是
-// scripts\4-service.vbs；想恢复自动拉起就把它设回 true（或手动跑那个脚本）。
-pref("extensions.zotero.zotero-kb.autoStartService", true);
-// ---- 模型来源（支持 Ollama 与 OpenAI 兼容 API 两种后端）
-// provider: ollama（默认，本机）| openai（任何 OpenAI 兼容服务）
-pref("extensions.zotero.zotero-kb.provider", "ollama");
-// OpenAI 兼容后端用这几个（provider=openai 时生效）
-pref("extensions.zotero.zotero-kb.apiModel", "");
-pref("extensions.zotero.zotero-kb.apiKey", "");
-pref("extensions.zotero.zotero-kb.apiBaseUrl", "");
+// ⚠ 2026-10-16 起默认 **false**：8765 已退役，插件全部走引擎桥 + 文件信箱。
+// 这是一条**回退能力**，不是常态：想恢复自动拉起 → 显式设 true；
+// 只想手动起一次 → 跑 scripts\4-service.vbs。
+pref("extensions.zotero.zotero-kb.autoStartService", false);
 // 知识库目录位置：由插件从服务端 /health 自动记住（不用手填）。
 pref("extensions.zotero.zotero-kb.kbDir", "");
 // 知识库同步（可选，默认关闭）。

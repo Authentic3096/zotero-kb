@@ -29,7 +29,8 @@
  * 结构化字段（子进程输出格式会漂移，解析必然坏）。
  *
  * 三条硬约束（与 structure.js / experience.js 完全一致）：
- *   · 只画自己这一页，取数一律 KBAdmin.get/post，不直接 fetch 本机服务；
+ *   · 只画自己这一页，取数一律 KBAdmin.get/post（页面不发网络请求，
+ *     宿主半转给引擎）；
  *   · 样式只用 admin.css 的类，不写颜色字面量、不写内联 style；
  *   · 一页一个文件、不 import。
  *

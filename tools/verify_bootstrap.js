@@ -224,7 +224,6 @@ if (KB) {
   KB.healthCheck = async () => {};
   KB.refreshWeights = async () => {};
   KB.ollamaOnStartup = async () => {};
-  KB.registerPrefPane = () => {};
   KB.registerWeightColumn = () => {};
   KB.startTaskPolling = () => {};
   KB.registerToolbarButton = () => {};
@@ -241,6 +240,24 @@ if (KB) {
   const steps = (calls.status.find((s) => s.startupSteps) || {}).startupSteps || "";
   check("startup 各步全过（含 initLocale）",
     steps.indexOf("FAIL") < 0 && steps.indexOf("initLocale=ok") >= 0, steps);
+
+  // ---- 2026-10-17：设置窗格下线，设置只留管理面板
+  const HOST_ROUTES = KB.KB_ADMIN_HOST_ROUTES || {};
+  check("「偏好设置」/「重启引擎」的宿主路由都挂上了",
+    HOST_ROUTES["GET /plugin-prefs"] === "kbAdminHostPrefsGet"
+    && HOST_ROUTES["POST /plugin-prefs"] === "kbAdminHostPrefsSet"
+    && HOST_ROUTES["POST /open-path"] === "kbAdminHostOpenPath"
+    && HOST_ROUTES["POST /service/restart"] === "kbAdminHostServiceRestart",
+    JSON.stringify(Object.keys(HOST_ROUTES)));
+  check("「重启引擎」不再落到引擎的占位方法",
+    (KB.KB_ADMIN_ROUTES || {})["POST /service/restart"].method === "service.restart"
+    && !!KB.kbAdminHostServiceRestart,
+    "宿主路由先命中，引擎那条只给直接 RPC 用");
+  check("启动流程里不再注册 Zotero 设置窗格",
+    steps.indexOf("registerPrefPane") < 0, steps);
+  const prefsTxt = fs.readFileSync(path.join(PLUGIN, "prefs.js"), "utf8");
+  check("模型 pref 默认值已移除（权威来源改成 llm-config.json）",
+    !/"extensions\.zotero\.zotero-kb\.(model|provider|apiModel|apiKey|apiBaseUrl)"/.test(prefsTxt));
 
   // ---- ⑧ 文献列表两列（T0-8）：「已建知识库」「分节纲要」
   //
@@ -651,7 +668,7 @@ if (KB) {
   check("侧栏页面导出了 kbvReceive（宿主直接调它送内容）",
     pageJs.indexOf("window.kbvReceive") >= 0);
 
-  // ---- 逐块编辑 / 初始页定位 / 阅读器工具栏（派发包 §二 §三）
+  // ---- 逐块编辑 / 初始页定位（派发包 §三）
   check("编辑器：左等宽编辑框 + 右该块实时预览 + 改动过的块标黄",
     pageJs.indexOf("kbv-block-text") >= 0
     && pageJs.indexOf("kbv-block-prev") >= 0
@@ -694,10 +711,19 @@ if (KB) {
     pageJs.indexOf("kbv-tex-fail") >= 0
     && pageJs.indexOf("throwOnError: true") >= 0
     && pageCss.indexOf(".kbv-tex-fail") >= 0);
-  check("阅读器工具栏「对照」按钮走 renderToolbar（必须同步 append）",
-    kvSrc.indexOf('registerEventListener("renderToolbar"') >= 0
-    && kvSrc.indexOf("kbviewAddToolbarButton") >= 0
-    && kvSrc.indexOf("synchronously") >= 0);
+  // ⚠ 2026-10-16（用户要求）：原来这条断言是"工具栏「对照」按钮必须走
+  //   renderToolbar 且同步 append"。那个按钮与 rail 是**同一个入口的重复**
+  //   （都是开/关知识库那一列），用户拍板"不需要了"，已整条删除 ——
+  //   所以断言**反过来**：这条链路（注册 / 注入 / 补挂 / 状态字段）不许再出现。
+  //   断言没有删，只是换了方向（否则"删干净了没有"就没人守了）。
+  check("阅读器工具栏「对照」按钮那条链已整体删除（入口只留 rail）",
+    kvSrc.indexOf("renderToolbar") < 0
+    && kvSrc.indexOf("kbviewAddToolbarButton") < 0
+    && kvSrc.indexOf("kbviewInjectToolbarButton") < 0
+    && kvSrc.indexOf("kbviewEnsureReaderToolbar") < 0
+    && kvSrc.indexOf("kbviewRegisterReaderToolbar") < 0
+    && kvSrc.indexOf("kbViewReaderToolbar") < 0
+    && kvSrc.indexOf("zotero-kb-kbview-toolbar-button") < 0);
   check("两列不能同时开（kbviewOpen 里也兜一次）",
     kvSrc.indexOf("if (self.kbviewIsOpen(win, other)) self.kbviewClose(win, other);") >= 0);
 
@@ -823,13 +849,14 @@ if (KB) {
     KB.kbviewPickLevel("outline", () => false).levelId === "");
   check("存在性判断抛异常也不炸",
     KB.kbviewPickLevel("outline", () => { throw new Error("x"); }).levelId === "");
-  // 阅读器那边注册的事件**只允许这三种**：
-  //   · renderToolbar                     —— 工具栏「对照」按钮（2026-10-11）
+  // 阅读器那边注册的事件**只允许这两种**：
   //   · createViewContextMenu             —— 右键页面/公式「知识库：修正公式」
   //   · createAnnotationContextMenu       —— 右键已有标注（同上一项，2026-10-12）
   //     （两个都要：右键公式**不必先画标注**，见 src/22-formula.js 文件头）
+  // ⚠ 2026-10-16：`renderToolbar`（工具栏「对照」按钮，2026-10-11 加的）已从白名单
+  //   移除 —— 那个按钮按用户要求删掉了，白名单里留着它等于允许它被加回来。
   // 旧的"选中入口"（renderTextSelectionPopup 那批）随窗格一起删了，不许被加回来。
-  const READER_EVENTS_OK = ["renderToolbar", "createViewContextMenu",
+  const READER_EVENTS_OK = ["createViewContextMenu",
                             "createAnnotationContextMenu"];
   const badReaderEvents = calls.readers
     .filter((r) => READER_EVENTS_OK.indexOf(r.type) < 0)
@@ -912,9 +939,10 @@ if (KB) {
     KB.capStateLine("localModel").text);
 
   // probeLocalModel 的判据（不发新请求，用已有信息）
-  const savedPrefs = {};
-  const oGet = KB.getPref;
-  KB.getPref = (k, d) => (k === KB.PREFS.provider ? "ollama" : d);
+  // 2026-10-17：模型配置改从 `<知识库>\llm-config.json` 读（见 llmConfig()），
+  // 所以这里桩掉 llmConfig，而不是像以前那样桩 getPref(PREFS.provider)。
+  const oCfg = KB.llmConfig;
+  KB.llmConfig = () => ({ provider: "ollama" });
   KB.serverInfo = null;
   check("拿不到 /health 结果时 → null（未知，不是不可用）",
     KB.probeLocalModel() === null);
@@ -955,10 +983,10 @@ if (KB) {
                              models: ["qwen3:4b-instruct"] } };
   check("兼容「ollama 直接给结构」的服务端 → true",
     KB.probeLocalModel() === true);
-  KB.getPref = (k, d) => (k === KB.PREFS.provider ? "openai" : d);
+  KB.llmConfig = () => ({ provider: "openai", api_key: "", base_url: "" });
   KB.serverInfo = null;
   check("选 API 但没填 key → false", KB.probeLocalModel() === false);
-  KB.getPref = oGet;
+  KB.llmConfig = oCfg;
   KB.serverInfo = null;
 
   // 菜单清理 id：二级菜单的容器 id 必须在清理名单里
@@ -1029,6 +1057,7 @@ if (KB) {
     //   现在监听真的 `Zotero.Prefs.set`，桩与真机口径一致。
     const saved = {
       _exists: KB._exists, request: KB.request,
+      kbAdminHostRoute: KB.kbAdminHostRoute,
       getPref: KB.getPref, askOptionalGuide: KB.askOptionalGuide,
       notify: KB.notify, prefsSet: Zotero.Prefs.set,
     };
@@ -1039,8 +1068,16 @@ if (KB) {
     };
     Zotero.Prefs.set = (k, v) => { seen.pref.push([k, v]); calls.prefs[k] = v; };
     KB._exists = () => !!opts.localExe;
-    KB.request = async (m, path) => (path === "/mineru-check"
-      ? { ok: !!opts.mineruOk } : { ollama: opts.ollamaOk ? "C:\\x\\ollama.exe" : "" });
+    // ⚠ 2026-10-16：这两条探测（MinerU / Ollama 装没装）原来还各有一条**老 HTTP**
+    //   兜底（`KB.request`），那两条已随 8765 退役删除 —— 所以打桩对象必须从
+    //   `KB.request` 换成**引擎桥** `KB.kbAdminHostRoute`。不换的话桩根本拦不到
+    //   真实调用（"服务说装了"这个前提失效，两条 CHECK 会假失败）。
+    //   `KB.request` 仍打桩，是给"万一还有别的路径"留的哨兵。
+    KB.request = async () => { throw new Error("不该再走老 HTTP（8765 已退役）"); };
+    KB.kbAdminHostRoute = async (m, path) =>
+      (path === "/mineru-check"
+        ? { ok: !!opts.mineruOk }
+        : { ollama: opts.ollamaOk ? "C:\\x\\ollama.exe" : "" });
     KB.askOptionalGuide = (missing) => {
       seen.asked++; seen.missing = missing; return opts.choice;
     };
@@ -1051,6 +1088,7 @@ if (KB) {
     } finally {
       KB._exists = saved._exists;
       KB.request = saved.request;
+      KB.kbAdminHostRoute = saved.kbAdminHostRoute;
       Zotero.Prefs.set = saved.prefsSet;
       KB.getPref = saved.getPref;
       KB.askOptionalGuide = saved.askOptionalGuide;

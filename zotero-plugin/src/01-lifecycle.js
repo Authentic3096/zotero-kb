@@ -147,15 +147,12 @@ Object.assign(ZoteroKB, {
   // ================================================================ 首选项
 
   PREFS: {
-    model: "zotero-kb.model",
+    // ⚠ 模型配置（model / provider / apiModel / apiKey / apiBaseUrl）已**退役**：
+    //   唯一权威来源是 `<知识库>\llm-config.json`（见 04-prefs.js 顶部）。
+    //   老 pref 由 migrateLlmPrefs 一次性搬过去并清掉，别再往这里加回来。
     filterBareModels: "zotero-kb.filterBareModels",
     autoProcess: "zotero-kb.autoProcess",
     categories: "zotero-kb.categories",
-    // ---- 模型来源（支持多后端）
-    provider: "zotero-kb.provider",     // ollama | openai
-    apiModel: "zotero-kb.apiModel",     // 如 deepseek-chat
-    apiKey: "zotero-kb.apiKey",
-    apiBaseUrl: "zotero-kb.apiBaseUrl",
     // 从 DSH 导入文献前是否先弹确认框（**默认关**）。
     //
     // ⚠ 这里原来默认是 true，被用户否掉了。用户的原话：

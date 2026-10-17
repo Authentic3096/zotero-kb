@@ -49,11 +49,13 @@ Object.assign(ZoteroKB, {
       return Promise.resolve(self.caps);
     }
     self.caps.at = now;
-    // ⚠ 先刷一次 /health：`probeLocalModel` 读的是 `serverInfo`，而它只在
-    //   startup（以及权重列 401 重试）时取过 —— 不在这里刷新的话，
-    //   「先开 Zotero、再开 Ollama」永远等不到状态变对（本机 2026-10-10
-    //   实测：caps.localWhy 一直停在"没找到 Ollama"）。/health 是本机一次
-    //   HTTP，很便宜；失败也不抛（healthCheck 自己 try/catch）。
+    // ⚠ 先刷一次 healthCheck（引擎桥 `kb.health`）：`probeLocalModel` 读的是
+    //   `serverInfo`，而它只在 startup（以及权重列 401 重试）时取过 —— 不在这里
+    //   刷新的话，「先开 Zotero、再开 Ollama」永远等不到状态变对（本机 2026-10-10
+    //   实测：caps.localWhy 一直停在"没找到 Ollama"）。走引擎桥，很便宜；
+    //   失败也不抛（healthCheck 自己 try/catch）。
+    //   ⚠ 2026-10-16：这里不再牵涉老 HTTP `/health`（8765 退役，healthCheck 已
+    //   删掉那条兜底）。
     return Promise.resolve(
       self.healthCheck ? self.healthCheck() : null
     ).catch(function () { return null; }).then(function () {
@@ -138,28 +140,31 @@ Object.assign(ZoteroKB, {
    * 本地模型可用不可用。返回 `true` / `false` / `null`（未知）。
    *
    * 判据用**已经拿到的**信息，不再发新请求：
-   *   · 插件 pref 里选了 `openai` → 有 apiKey（和 baseUrl）就算可用；
-   *   · 选了 `ollama` → 看 `serverInfo.ollama`（`/health` 报的：文件在不在 +
-   *     API 通不通 + 有哪些模型）→ `api_up && models.length` 才算可用；
-   *   · 拿不到 `/health` 的结果 → `null`（未知），界面上写"检测中"。
+   *   · `llm-config.json` 里 provider=openai → 有 apiKey（和 baseUrl）就算可用；
+   *   · provider=ollama（默认）→ 看 `serverInfo.ollama`（**引擎桥 `kb.health`**
+   *     报的：文件在不在 + API 通不通 + 有哪些模型）→ `api_up && models.length`
+   *     才算可用；
+   *   · 拿不到 `kb.health` 的结果 → `null`（未知），界面上写"检测中"。
+   *
+   * ⚠ 2026-10-17：模型配置改从 `<知识库>\llm-config.json` 读（不再读退役的
+   *   provider / apiKey / apiBaseUrl pref）—— 面板与插件必须看同一份。
    */
   probeLocalModel: function () {
     var self = ZoteroKB;
-    let provider = "";
-    try {
-      provider = String(self.getPref(self.PREFS.provider, "") || "").trim();
-    } catch (e) { provider = ""; }
+    let cfg = {};
+    try { cfg = self.llmConfig() || {}; } catch (e) { cfg = {}; }
+    let provider = String(cfg.provider || "").trim();
     if (!provider) provider = "ollama";
     if (provider === "openai") {
-      const key = String(self.getPref(self.PREFS.apiKey, "") || "").trim();
-      const base = String(self.getPref(self.PREFS.apiBaseUrl, "") || "").trim();
-      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（运行环境 → 模型配置）";
+      const key = String(cfg.api_key || "").trim();
+      const base = String(cfg.base_url || "").trim();
+      self.caps.localWhy = key ? "" : "选了 API 但没填 API Key（面板「运行环境」→ 模型配置）";
       return !!key && !!base;
     }
     let info = null;
     try {
       // ⚠ 优先读**结构化**的 `ollama_info`（服务端 2026-10-10 新增）。
-      //   在那之前 `/health` 只回报 `ollama`（一个**路径字符串**），
+      //   在那之前 `kb.health` 只回报 `ollama`（一个**路径字符串**），
       //   而下面的判据按 `info.exists / info.api_up` 读 —— 于是 `info.exists`
       //   恒为 undefined、永远走"没找到 Ollama"：明明连上了也显示「未连接」
       //   （用户 2026-10-10 报的正是这个）。

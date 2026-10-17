@@ -1760,8 +1760,18 @@ def env_report() -> dict:
 
     sources = _S.resolve_sources()
     ollama_info["source"] = (sources.get("ollama") or {}).get("source", "")
+    # 八个"位置"的可编辑行（面板「运行环境」页与插件设置页的只读展示共用一份）。
+    # ⚠ 2026-10-16 加的：以前只有 4 项、而且只有 python/project_root/ollama 三个
+    #   有顶层值；settings.js 的只读列表要用到它，engine 的 env.check 也改成
+    #   直接读这一份（实现只有一处，见 schemas.env_source_items）。
+    try:
+        items = _S.env_source_items(sources)
+    except Exception as exc:      # noqa: BLE001 —— 一项探测失败别让整份报告打不开
+        log(f"生成运行环境清单失败：{exc}")
+        items = []
     return {
         "ok": py_ok,
+        "items": items,
         "sources": sources,
         "env_file": _env_file_info(),
         "python": {

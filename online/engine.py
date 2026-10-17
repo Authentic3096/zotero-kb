@@ -44,6 +44,7 @@ W2 批次 A（2026-10-13）新增的方法表（契约见开发说明）：
     outline.list / outline.render / outline.delete /
     meta.fillScan / meta.fillCancel / meta.typeScan / env.check / env.save /
     llm.config / llm.save / llm.models / llm.test / service.restart /
+    kb.sync（2026-10-17，管理面板「偏好设置」页的「立即同步一次」）/
     prompts.list / prompts.save / prompts.probe
 
 W2 批次 B（2026-10-13）新增的方法表（契约见开发说明）：
@@ -1261,41 +1262,25 @@ def _m_meta_type_scan(params: dict) -> dict:
 # ---------------------------------------------------------------- 运行环境 / 模型
 
 def _env_items(rep: dict) -> list:
-    """四个位置 → `[{key,name,path,ok,source,optional?}]`（env 页的表格）。
+    """八个"位置" → `[{key,name,path,ok,source,auto,kind,optional?,note?}]`。
 
-    只列面板那四项（项目目录 / Python / Ollama / MinerU）—— 与
-    `tools/panels/tab_env.py（已退役 2026-10-14）` 的四行一一对应；figures / kb_dir 这些在
-    `sources` 里照旧可见，不塞进这张表（它们不是"位置"）。
+    2026-10-16 起「运行环境」页改成**唯一设置面**（可编辑 + 来源 + 状态 + 恢复自动），
+    所以这张表要一次给全八项（用户指定的行序）：项目目录 / Python / Ollama /
+    MinerU / MinerU HOME / 知识库位置 / Zotero 数据目录 / MathType。
+
+    ⚠ 实现只有一处：`schemas.env_source_items()`（它同时被 `env_report()` 用）。
+      这里只做"拿现成的、拿不到再算一次"——**别再抄一份形状进来**，
+      两份迟早在"哪些是可选项 / auto 怎么算"上漂移。
     """
+    got = (rep or {}).get("items")
+    if isinstance(got, list) and got:
+        return got
     import schemas as S
-    src = rep.get("sources") or {}
-    root = rep.get("project_root") or {}
-    py = rep.get("python") or {}
-    ol = rep.get("ollama") or {}
-    mu_path = ""
-    mu_ok = False
     try:
-        mu_path = S.resolve_mineru()
-        mu_ok = bool(mu_path) and os.path.exists(mu_path)
+        return S.env_source_items((rep or {}).get("sources") or None)
     except Exception as exc:      # noqa: BLE001 —— 探测失败不该让整页打不开
-        log(f"探测 MinerU 失败：{exc}")
-    rows = [
-        {"key": "project_root", "path": root.get("path") or "",
-         "ok": bool(root.get("exists")), "source": root.get("source") or ""},
-        {"key": "python", "path": py.get("path") or "",
-         "ok": bool(py.get("exists")), "source": py.get("source") or ""},
-        # ⚠ 状态列的语义是"文件在不在"（页面写的就是"存在/找不到"），
-        #   不是"服务通不通" —— 后者由 llm.models 真去问一次。
-        {"key": "ollama", "path": ol.get("path") or "",
-         "ok": bool(ol.get("exists")), "source": ol.get("source") or "",
-         "optional": True},
-        {"key": "mineru", "path": mu_path, "ok": mu_ok,
-         "source": (src.get("mineru") or {}).get("source", ""), "optional": True},
-    ]
-    labels = getattr(S, "ENV_SOURCE_LABELS", {})
-    for r in rows:
-        r["name"] = labels.get(r["key"], r["key"])
-    return rows
+        log(f"生成运行环境清单失败：{exc}")
+        return []
 
 
 def _env_rejected(sources: dict) -> list:
@@ -1325,21 +1310,25 @@ def _m_env_check(params: dict) -> dict:
 
 
 def _m_env_save(params: dict) -> dict:
-    """写运行环境配置 → `{saved, check}`。
+    """写运行环境配置 → `{saved, check, report}`。
 
-    ⚠ 语义照 `schemas.save_env_config`：**非空值**要校验存在性（不合格报错、
-      不写），**空串** = 这一项交回自动探测（清掉用户设置）。
-      `figures` 不在那三个位置里，它是 `kb-location.json` 的一个开关，
-      单独走 `write_location_config`（合并写，不会碰 env 段）。
+    ⚠ 语义照 `schemas.save_env_config`：**非空值**要校验（不合格报错、不写），
+      **空串** = 这一项**删键**、交回自动探测（用户要求：「恢复自动」要真的回到
+      自动探测，不是留一个空串值）。可写的键就是 `schemas.ENV_KEYS`（八个位置）
+      外加 `figures`（`kb-location.json` 里的一个开关，不走 env 段）。
+
+    ⚠ 这是**脚本/后备**通道。管理面板的「运行环境」页不走这里 —— 它走宿主半的
+      `POST /env-save`（直接写 kb-location.json），因为"引擎起不来（找不到
+      python）"恰恰是最需要能改这些路径的时刻，那种时刻不能依赖引擎。
     """
     import schemas as S
     given = {k: str(params.get(k) or "")
-             for k in ("project_root", "python", "ollama", "mineru")
+             for k in S.ENV_KEYS
              if k in params}
     has_fig = "figures" in params
     fig = params.get("figures")
     if not given and not has_fig:
-        raise RpcError("没有要写入的键（project_root / python / ollama / mineru / figures）")
+        raise RpcError("没有要写入的键（" + " / ".join(S.ENV_KEYS) + " / figures）")
     try:
         if given:
             S.save_env_config(given)
@@ -1790,16 +1779,36 @@ def _m_llm_test(params: dict) -> dict:
 
 
 def _m_service_restart(params: dict) -> dict:
-    """「重启服务」**占位**：没有 8765 之后，引擎的生命周期归宿主半（插件）管。
+    """直接调引擎时的兜底：引擎**不能重启自己**（会杀掉处理本请求的进程）。
 
-    为什么如实回 `started:false` 而不是假装成功：引擎是 Zotero 的子进程、
-    **不能自己重启自己**（重启自己 = 杀掉正在处理这次请求的进程）。真要做成
-    "重开引擎"，那是宿主半的动作（关掉旧句柄 + 下次请求重新拉起），
-    不是引擎能承诺的事。页面的原话照抄这一句，不装作重启了。
+    ⚠ 2026-10-17 起，管理面板的「重启引擎」走**宿主路由**
+    （`src/23-admin.js::kbAdminHostServiceRestart`：停掉子进程、下次请求重拉），
+    不会再落到这里。这个方法只留给直接发 RPC 的脚本/测试，如实回 `started:false`。
     """
     return {"started": False,
-            "note": "HTTP 服务退场后由宿主半管理生命周期（引擎随 Zotero 起落，"
-                    "不常驻、不自启）"}
+            "note": "引擎不能重启自己；面板的「重启引擎」由宿主半停进程后重拉"}
+
+
+def _m_kb_sync(params: dict) -> dict:
+    """把知识库同步到别处（用户可选功能，默认关闭）。
+
+    复用 `online/localserver.py` 里同一份实现（`_sync_to_folder` / `_sync_by_command`），
+    不再另写一套 —— 这是 8765 退役后补到引擎上的最后一条 HTTP 端点。
+    """
+    import schemas as S
+    mode = str((params or {}).get("mode") or "none").strip()
+    target = str((params or {}).get("target") or "").strip()
+    if mode == "none" or not target:
+        raise RpcError("没启用同步，或没填同步目标")
+    if mode == "folder":
+        res = LS._sync_to_folder(S.KB_DIR, target)
+    elif mode == "command":
+        res = LS._sync_by_command(target)
+    else:
+        raise RpcError(f"未知同步方式 {mode}")
+    if not res.get("ok"):
+        raise RpcError(str(res.get("error") or "同步失败"))
+    return res
 
 
 # ---------------------------------------------------------------- 提示词
@@ -3147,6 +3156,7 @@ METHODS = {
     "llm.test": _m_llm_test,
     "llm.discover": _m_llm_discover,
     "service.restart": _m_service_restart,
+    "kb.sync": _m_kb_sync,
     "prompts.list": _m_prompts_list,
     "prompts.save": _m_prompts_save,
     "prompts.probe": _m_prompts_probe,

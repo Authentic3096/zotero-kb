@@ -95,7 +95,7 @@
       const right = el("div", { class: "card grow" }, [
         el("div", { class: "row" }, [
           el("strong", { text: "编辑" }),
-          el("span", { class: "faint", text: "改完点「保存」，立即生效、不用重启服务" }),
+          el("span", { class: "faint", text: "改完点「保存」，立即生效" }),
         ]),
         // 「用在哪 / 占位符 / 改没改过」这行很长，**必须独占一行**：塞进上面的
         // `.row` 会把右卡的 min-content 宽度顶大，flex-wrap 就把两栏折成上下。

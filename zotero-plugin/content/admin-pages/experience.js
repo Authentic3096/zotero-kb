@@ -40,8 +40,8 @@
  *   POST /learn    {sessions:[…]} → {job:{id}}  ← 长任务，之后轮询 GET /jobs/<id>
  *
  * ## 三条硬约束（照抄 admin.js 顶部那三条）
- *   · 只画自己这一页，取数一律 KBAdmin.get/post，不直接 fetch 本机服务
- *     （服务端故意不给带 Origin 的请求发 token）；
+ *   · 只画自己这一页，取数一律 KBAdmin.get/post（页面不发网络请求，
+ *     宿主半按路由表转成引擎方法）；
  *   · 样式只用 admin.css 的类，不写颜色字面量、不写内联 style；
  *   · 一页一个文件、不 import。
  * ==========================================================================*/
@@ -404,7 +404,7 @@
       //   就是死的，故与"经验体检"并列为同一个视图切换。
       const btnPending = el("button", {
         class: "btn btn-subtle", text: "待确认清单",
-        title: "小模型从会话里抽出来、还没确认的条目" });
+        title: "模型从会话里抽出来、还没确认的条目" });
       // ⚠ 2026-10-13 用户要求：把「修改」与「增添」**拆成两个按钮**。
       //   原来只有一个 btnEdit，按"有没有选中行"在两种语义间切换（选中=改那条、
       //   没选=新增）—— 用户看不出这次点下去到底是改还是增，所以拆开：
@@ -423,7 +423,7 @@
         title: "新记一条经验（打开的是空表单，跟有没有选中无关）" });
       const btnSessions = el("button", {
         class: "btn btn-subtle", text: "选择会话…",
-        title: "挑要扫的对话，让小模型从里面抽经验" });
+        title: "挑要扫的对话，让模型从里面抽经验" });
 
       const infoLine = el("span", { class: "faint", text: INFO });
       infoLine.title = INFO_WHY;

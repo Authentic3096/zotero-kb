@@ -190,9 +190,8 @@ Object.assign(ZoteroKB, {
     "POST /typefix-scan": { method: "meta.typeScan", from: "body" },
     // 运行环境（/health 复用上面那条）
     "GET /env-check": { method: "env.check", from: "query" },
-    // W3 线2.5（2026-10-14）：插件设置面板要的是**诊断原文**（= env_report() 那个形状，
-    // 带 python / project_root / runtime_state 顶层键）；管理面板仍用上面那个重整形过的。
-    "GET /env-check-raw": { method: "env.checkRaw", from: "query" },
+    // 注：`env.checkRaw`（诊断原文）仍留在引擎里给脚本/测试直接调；
+    // 设置窗格下线后，插件的页面不再需要这条桥（`kbEnvReport` 已删）。
     // W3 线2.5：**内联元数据**的分类建议（新文献还没入库时用）。
     // ⚠ 与 `POST /classify`（→ ai.classify，认 key）是**两个能力**，并存不冲突。
     "POST /classify-item": { method: "classify.item", from: "body" },
@@ -206,6 +205,8 @@ Object.assign(ZoteroKB, {
     // 「模型目录」三层兜底：本机 /api/tags、外部 /models、失败回落内置候选。
     // 引擎侧自己只等 12s（`discover_llm` 的 timeout 参数），这里给 30s。
     "POST /llm-discover": { method: "llm.discover", from: "body" },
+    // ⚠ 这条映射**现在不会被用到**：`KB_ADMIN_HOST_ROUTES` 里同路径的宿主路由
+    //   先命中（真的停掉引擎）。保留它只是给"直接发 RPC 的脚本"一个一致的路径名。
     "POST /service/restart": { method: "service.restart", from: "body" },
     // 提示词
     "GET /prompts": { method: "prompts.list", from: "query" },
@@ -224,6 +225,8 @@ Object.assign(ZoteroKB, {
     "POST /classify": { method: "ai.classify", from: "body" },
     "POST /apply-suggestion": { method: "ai.apply", from: "body" },
     "POST /maintain": { method: "maintain.run", from: "body" },
+    // 「偏好设置」页的「立即同步一次」（引擎复用 localserver 的同步实现）。
+    "POST /kb-sync": { method: "kb.sync", from: "body" },
     // PDF 解析
     "GET /mineru-status": { method: "mineru.status", from: "query" },
     // W3 线2.5（2026-10-14）：安装引导要的**原文**（带 exe/version/vlm_engine/cuda/gpu…），
@@ -795,7 +798,462 @@ Object.assign(ZoteroKB, {
   //   那条路径 2026-10-13 已删除（engine.py 从来没有 `--once`），临时目录也就
   //   没有使用方了 —— 一并删掉，不留没人调的成员。
 
+  // ================================================================ 宿主路由（不走引擎）
+  //
+  // 「运行环境」页的**保存**与**浏览…**必须是**宿主半自己**干的两件事，原因：
+  //
+  //   · 保存走引擎的代价 —— 用户最需要改这些路径的时刻，恰恰是"引擎起不来"
+  //     （找不到 python / 项目目录填错了）。那时请求根本到不了引擎，面板就
+  //     **永远改不回来**了。所以宿主半直接读写 `kb-location.json`。
+  //   · 「浏览…」要弹系统文件/目录选择框 —— 那只有 chrome 作用域能做。
+  //
+  // 这两条不进 `KB_ADMIN_ROUTES`（那张表是"页面路径 → 引擎方法"），而是
+  // 单独一张 `KB_ADMIN_HOST_ROUTES`：**在派发时先看它**，命中就直接在本进程里
+  // 执行，不碰引擎。表里存的是"处理函数名"（成员引用检查能扫到它）。
+  KB_ADMIN_HOST_ROUTES: {
+    "POST /env-save": "kbAdminHostEnvSave",
+    "POST /env-pick": "kbAdminHostEnvPick",
+    // 2026-10-17：设置页下线后，「偏好设置」页读写插件 pref（白名单见下）。
+    "GET /plugin-prefs": "kbAdminHostPrefsGet",
+    "POST /plugin-prefs": "kbAdminHostPrefsSet",
+    // 打开知识库目录（面板里只有宿主能碰文件系统）。
+    "POST /open-path": "kbAdminHostOpenPath",
+    // 「重启引擎」真的停掉子进程（不再走引擎的占位方法）。
+    "POST /service/restart": "kbAdminHostServiceRestart",
+  },
+
+  /**
+   * 可写进 `kb-location.json` 的键 + 它们的形状（与 `offline/schemas.py` 的
+   * `ENV_KEYS` / `_ENV_DIR_KEYS` / `_ENV_MAYBE_MISSING` 一一对应）。
+   *
+   * ⚠ 这是**第二份**形状定义（Python 那份才是权威）。两边漂移的后果是
+   *   "面板存得进、引擎读不到"或反过来。改键名时**两处一起改**。
+   *   `flat` 是"老版本用过的扁平键"，resolve_* 也认它 —— 写/删都要带上，
+   *   否则删了 `env.python` 却留着 `python_exe`，那一项还是被手填值盖着。
+   */
+  KB_ADMIN_ENV_KEYS: {
+    project_root: { dir: true, flat: "project_root" },
+    python: { flat: "python_exe" },
+    ollama: { flat: "ollama_exe" },
+    mineru: { flat: "mineru_exe" },
+    mineru_home: { dir: true, flat: "mineru_home" },
+    // 知识库可能还没建 —— 允许指向一个还不存在的目录（第一次建库会创建它）
+    kb_dir: { dir: true, maybeMissing: true, flat: "kb_dir" },
+    zotero_data_dir: { dir: true, flat: "zotero_data_dir" },
+    mathtype: { flat: "mathtype_exe" },
+  },
+
+  /** 面板那几项里，哪些要顺手镜像进插件自己的 pref（插件启动引擎时读它们）。 */
+  KB_ADMIN_ENV_PREFS: {
+    project_root: "zotero-kb.projectRoot",
+    python: "zotero-kb.pythonExe",
+    ollama: "zotero-kb.ollamaExe",
+  },
+
+  /** 项目根的 `kb-location.json`（与 offline/schemas.py 的 LOCATION_FILE 同一处）。 */
+  kbAdminLocationFile: function (root) {
+    const r = String(root || "").replace(/[\\/]+$/, "");
+    return r ? (r + "\\kb-location.json") : "";
+  },
+
+  /** 用户级 `location.json`（项目被挪走时的后备；与 schemas.USER_LOCATION_FILE 同一处）。 */
+  kbAdminUserLocationFile: function () {
+    // ⚠ 先问 `Services.env`（一定拿得到 %APPDATA%），dirsvc 只作后备 ——
+    //   "AppData" 这个 dirsvc 键在个别 Zotero/Gecko 版本上未必注册。
+    let base = "";
+    try {
+      base = Services.env.get("APPDATA") || "";
+    } catch (e) { base = ""; }
+    if (!base) {
+      try {
+        base = Services.dirsvc.get("AppData",
+                                   Components.interfaces.nsIFile).path;
+      } catch (e2) { base = ""; }
+    }
+    return base ? (base + "\\zotero-kb\\location.json") : "";
+  },
+
+  /** 读一个 JSON 文件（不存在 / 读不动 / 不是对象都返回 {}）。 */
+  kbAdminReadJsonFile: function (path) {
+    var self = ZoteroKB;
+    if (!path) return {};
+    try {
+      const f = Zotero.File.pathToFile(path);
+      if (!f.exists()) return {};
+      const text = String(Zotero.File.getContents(f) || "");
+      const data = JSON.parse(text);
+      return (data && typeof data === "object" && !Array.isArray(data)) ? data : {};
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 读配置失败（当作空）：" + path + " —— " + e);
+      return {};
+    }
+  },
+
+  /**
+   * 原子写一个 JSON 文件（先写 `.tmp`，再顶掉目标）。
+   *
+   * ⚠ 不直接覆盖原文件：写到一半（崩溃/断电）会留下半截 JSON，那份配置
+   *   以后**谁都读不出来**（Python 的 json.load 直接抛，面板整页空白）。
+   *   Python 侧的 write_location_config 也是 tmp + os.replace，口径一致。
+   * 返回 "" 表示成功，否则是一句原因。
+   */
+  kbAdminWriteJsonFile: function (path, data) {
+    if (!path) return "没有目标路径";
+    let text = "";
+    try {
+      text = JSON.stringify(data, null, 2) + "\n";
+    } catch (e) { return "序列化失败：" + e; }
+    try {
+      const dest = Zotero.File.pathToFile(path);
+      const dir = dest.parent;
+      if (dir && !dir.exists()) dir.create(Components.interfaces.nsIFile.DIRECTORY_TYPE, 0o755);
+    } catch (e2) { /* 目录建不出来时下面会报 */ }
+    const tmpPath = path + ".tmp";
+    try {
+      Zotero.File.putContents(Zotero.File.pathToFile(tmpPath), text);
+    } catch (e3) {
+      return "写临时文件失败：" + e3;
+    }
+    try {
+      const tmp = Zotero.File.pathToFile(tmpPath);
+      const dest = Zotero.File.pathToFile(path);
+      if (dest.exists()) dest.remove(false);
+      tmp.moveTo(dest.parent, dest.leafName);
+      return "";
+    } catch (e4) {
+      try { Zotero.File.pathToFile(tmpPath).remove(false); } catch (e5) { /* ignore */ }
+      return "替换目标文件失败：" + e4;
+    }
+  },
+
+  /** 这个值能不能用（与 Python `_env_value_problem` 同一套判据）。 */
+  kbAdminEnvValueOk: function (val, spec) {
+    var self = ZoteroKB;
+    try {
+      const f = Zotero.File.pathToFile(val);
+      if (!f.exists()) return !!spec.maybeMissing;
+      return spec.dir ? f.isDirectory() : f.isFile();
+    } catch (e) {
+      return false;
+    }
+  },
+
+  /** 从 runtime.json 里删掉几个键（「恢复自动」时用，见 Python 侧同名注释）。 */
+  kbAdminClearRuntimeKeys: function (keys) {
+    var self = ZoteroKB;
+    const list = (keys || []).filter(Boolean);
+    if (!list.length) return;
+    let userFile = "";
+    try { userFile = self.kbAdminUserLocationFile(); } catch (e) { userFile = ""; }
+    if (!userFile) return;
+    const dir = userFile.replace(/[\\/][^\\/]+$/, "");
+    const rtPath = dir + "\\runtime.json";
+    const state = self.kbAdminReadJsonFile(rtPath);
+    let hit = false;
+    for (const k of list) {
+      if (Object.prototype.hasOwnProperty.call(state, k)) {
+        delete state[k];
+        hit = true;
+      }
+    }
+    if (hit) self.kbAdminWriteJsonFile(rtPath, state);
+  },
+
+  /**
+   * `POST /env-save` —— **运行环境页的保存**（宿主半直接写 kb-location.json）。
+   *
+   * 请求体就是 `{项目键: 值, ...}`（只带**要动的**键；空串 = 恢复自动）。
+   * 语义与 `schemas.save_env_config` 一致：非空 → 校验后写进 `env` 段 +
+   * 扁平键；空串 → **删键**（不是写空字符串，那会留残渣）。
+   *
+   * 写哪儿：优先写**有效项目根**下的 `kb-location.json`（project_root 这一项
+   * 本身被改时写**新目录**下）；那里写不进去（只读/OneDrive 占用）就退到
+   * 用户级 `location.json` —— 与 Python `write_location_config` 同一套退路。
+   *
+   * ⚠ 顺手把 project_root / python / ollama 镜像进插件 pref：插件自己起引擎时
+   *   读的是 pref（`projectRoot()` / `pythonExe()` / `ollamaPaths()`），不镜像的话
+   *   "面板里改完，插件还是用旧的" —— 而插件那三个 pref 从此不再是用户设置面。
+   */
+  kbAdminHostEnvSave: function (body) {
+    var self = ZoteroKB;
+    const params = (body && typeof body === "object") ? body : {};
+    const keys = self.KB_ADMIN_ENV_KEYS;
+    let touched = false;
+    const cleared = [];
+
+    // 先定目标目录（看 project_root 这一项有没有被改成另一个目录）
+    let targetRoot = "";
+    if (Object.prototype.hasOwnProperty.call(params, "project_root")) {
+      const v = String(params.project_root || "").trim();
+      if (v) {
+        try {
+          const f = Zotero.File.pathToFile(v);
+          if (f.exists() && f.isDirectory()) targetRoot = v;
+        } catch (e) { /* 用当前项目根 */ }
+      }
+    }
+    if (!targetRoot) targetRoot = self.projectRoot();
+
+    let filePath = self.kbAdminLocationFile(targetRoot);
+    if (!filePath) filePath = self.kbAdminUserLocationFile();
+    const cfg = self.kbAdminReadJsonFile(filePath);
+    if (cfg.env && typeof cfg.env === "object" && !Array.isArray(cfg.env)) {
+      cfg.env = Object.assign({}, cfg.env);
+    } else {
+      cfg.env = {};
+    }
+
+    for (const key of Object.keys(keys)) {
+      if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+      touched = true;
+      const spec = keys[key];
+      const val = String(params[key] == null ? "" : params[key]).trim();
+      const wasSet = Object.prototype.hasOwnProperty.call(cfg, spec.flat)
+        || Object.prototype.hasOwnProperty.call(cfg.env, key);
+      if (!val) {
+        delete cfg.env[key];
+        if (spec.flat) delete cfg[spec.flat];
+        if (wasSet) cleared.push(key);
+        continue;
+      }
+      if (!self.kbAdminEnvValueOk(val, spec)) {
+        const what = spec.dir ? "要是一个存在的目录" : "要是一个存在的文件";
+        throw new Error((spec.flat || key) + " " + what + "：" + val);
+      }
+      cfg.env[key] = val;
+      if (spec.flat) cfg[spec.flat] = val;
+    }
+    if (!touched) throw new Error("没有要写入的键");
+    if (cfg.env && !Object.keys(cfg.env).length) delete cfg.env;
+
+    let path = filePath;
+    let err = self.kbAdminWriteJsonFile(path, cfg);
+    if (err) {
+      // 项目根写不进去（只读安装等）→ 退到用户级配置，与 Python 侧同一套退路
+      const userPath = self.kbAdminUserLocationFile();
+      if (userPath && userPath !== path) {
+        const cfg2 = self.kbAdminReadJsonFile(userPath);
+        if (cfg2.env && typeof cfg2.env === "object" && !Array.isArray(cfg2.env)) {
+          cfg2.env = Object.assign({}, cfg2.env);
+        } else {
+          cfg2.env = {};
+        }
+        for (const key of Object.keys(keys)) {
+          if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+          const spec = keys[key];
+          const val = String(params[key] == null ? "" : params[key]).trim();
+          if (!val) { delete cfg2.env[key]; delete cfg2[spec.flat]; continue; }
+          cfg2.env[key] = val;
+          if (spec.flat) cfg2[spec.flat] = val;
+        }
+        if (cfg2.env && !Object.keys(cfg2.env).length) delete cfg2.env;
+        err = self.kbAdminWriteJsonFile(userPath, cfg2);
+        if (!err) path = userPath;
+      }
+    }
+    if (err) throw new Error("写运行环境配置失败：" + err);
+
+    // 镜像 pref（插件起引擎时读它们）
+    for (const key of Object.keys(self.KB_ADMIN_ENV_PREFS)) {
+      if (!Object.prototype.hasOwnProperty.call(params, key)) continue;
+      try {
+        const val = String(params[key] == null ? "" : params[key]).trim();
+        Zotero.Prefs.set(self.KB_ADMIN_ENV_PREFS[key], val);
+      } catch (e2) { Zotero.debug("[zotero-kb] 镜像 pref 失败：" + key + " —— " + e2); }
+    }
+    // 清掉被"恢复自动"的项在 runtime.json 里的缓存（不然会被读回来）
+    try { self.kbAdminClearRuntimeKeys(cleared); } catch (e3) { /* 清不掉不影响主流程 */ }
+
+    try { self.writeStatusFile({ kbEnvSaved: path + " (" + cleared.length + " 项恢复自动)" }); }
+    catch (e4) { /* ignore */ }
+    return { ok: true, path: path, cleared: cleared };
+  },
+
+  /** `POST /env-pick` —— 弹系统文件/目录选择框（页面「浏览…」用）。 */
+  kbAdminHostEnvPick: async function (body) {
+    var self = ZoteroKB;
+    const params = (body && typeof body === "object") ? body : {};
+    const kind = String(params.kind || "file");
+    const title = String(params.title || (kind === "dir" ? "选择目录" : "选择文件"));
+    if (kind === "dir") {
+      const p = await self.pickFolder(title);
+      return { path: p || "", cancelled: !p };
+    }
+    let p = "";
+    try {
+      p = await self.pickFile(title, "程序", "*.exe");
+    } catch (e) {
+      Zotero.debug("[zotero-kb] 选文件失败：" + e);
+    }
+    return { path: p || "", cancelled: !p };
+  },
+
+  // ================================================================ 面板「偏好设置」页
+  //
+  // 2026-10-17：Zotero 设置里的「文献知识库」偏好窗格整体下线，设置项搬进面板。
+  // 插件行为开关仍然是 Zotero pref（在 Zotero 进程内直接生效、没有第二份副本），
+  // 但**只有面板这一个 UI**读写它们 —— 页面拿不到 Zotero.Prefs，所以走宿主路由。
+  //
+  // 模型配置**不在**这里：唯一权威来源是 <知识库>\llm-config.json（见 04-prefs.js）。
+
+  /** 面板能读写的 pref（名字 → 键 + 类型）。**白名单**，别让页面乱写别的键。 */
+  KB_ADMIN_PREF_KEYS: {
+    autoProcess: { key: "zotero-kb.autoProcess", type: "bool" },
+    acquireConfirm: { key: "zotero-kb.acquireConfirm", type: "bool" },
+    acquireAutoClassify: { key: "zotero-kb.acquireAutoClassify", type: "bool" },
+    categories: { key: "zotero-kb.categories", type: "string" },
+    createMissing: { key: "zotero-kb.createMissing", type: "bool" },
+    filterBareModels: { key: "zotero-kb.filterBareModels", type: "bool" },
+    kbviewLevel: { key: "zotero-kb.kbviewLevel", type: "string" },
+    kbviewFont: { key: "zotero-kb.kbviewFont", type: "int", min: 10, max: 24 },
+    syncEnabled: { key: "zotero-kb.syncEnabled", type: "bool" },
+    syncMode: { key: "zotero-kb.syncMode", type: "string" },
+    syncTarget: { key: "zotero-kb.syncTarget", type: "string" },
+    autoTaskPoll: { key: "zotero-kb.autoTaskPoll", type: "bool" },
+    taskPollHttp: { key: "zotero-kb.taskPollHttp", type: "bool" },
+    autoStartService: { key: "zotero-kb.autoStartService", type: "bool" },
+    mailboxDir: { key: "zotero-kb.mailboxDir", type: "string" },
+  },
+
+  /** `GET /plugin-prefs` —— 面板「偏好设置」页读当前值。 */
+  kbAdminHostPrefsGet: function () {
+    var self = ZoteroKB;
+    const values = {};
+    for (const name of Object.keys(self.KB_ADMIN_PREF_KEYS)) {
+      const spec = self.KB_ADMIN_PREF_KEYS[name];
+      try {
+        const v = Zotero.Prefs.get(spec.key);
+        values[name] = (v === undefined) ? null : v;
+      } catch (e) {
+        values[name] = null;
+      }
+    }
+    return { ok: true, values: values, version: self.version || "",
+             zoteroVersion: (typeof Zotero !== "undefined" && Zotero.version)
+                            ? String(Zotero.version) : "",
+             // 侧栏能显示哪几级：唯一事实来源是 src/13-kbopen.js::KB_LEVELS
+             // （与 offline/kbviews.py 的 LEVELS 由 check_kb_levels.py 盯着）。
+             // 页面别自己再抄一份 id/标签。
+             levels: (self.KB_LEVELS || []).map(function (lv) {
+               return { value: lv.id, text: lv.label };
+             }) };
+  },
+
+  /**
+   * `POST /plugin-prefs` —— 写一项或几项；`{resetGuides:true}` 重置安装引导标记。
+   *
+   * 每次只改传进来的键（其余不动），类型按白名单强制。写失败如实抛错（页面会显示）。
+   */
+  kbAdminHostPrefsSet: function (body) {
+    var self = ZoteroKB;
+    const params = (body && typeof body === "object") ? body : {};
+    if (params.resetGuides === true) {
+      const keys = ["zotero-kb.mineruGuideDone", "zotero-kb.optionalGuideDone"];
+      for (const k of keys) {
+        try { Zotero.Prefs.set(k, false); } catch (e) { throw new Error("写 " + k + " 失败：" + e); }
+      }
+      return { ok: true, resetGuides: true };
+    }
+    let touched = 0;
+    for (const name of Object.keys(params)) {
+      const spec = self.KB_ADMIN_PREF_KEYS[name];
+      if (!spec) continue;                     // 白名单外：静默忽略
+      let val = params[name];
+      if (spec.type === "bool") {
+        val = (val === true || val === "true" || val === 1 || val === "1");
+      } else if (spec.type === "int") {
+        val = parseInt(val, 10);
+        if (!isFinite(val)) continue;
+        if (spec.min != null && val < spec.min) val = spec.min;
+        if (spec.max != null && val > spec.max) val = spec.max;
+      } else {
+        val = String(val == null ? "" : val).trim();
+        if (name === "kbviewLevel" && ["tldr", "outline", "card", "fulltext",
+                                       "figures", "weight"].indexOf(val) < 0) {
+          continue;
+        }
+        if (name === "syncMode" && ["none", "folder", "command"].indexOf(val) < 0) {
+          continue;
+        }
+      }
+      try {
+        Zotero.Prefs.set(spec.key, val);
+        touched++;
+      } catch (e) {
+        throw new Error("写 " + spec.key + " 失败：" + e);
+      }
+    }
+    if (!touched) throw new Error("没有可写入的偏好项");
+    return { ok: true, touched: touched };
+  },
+
+  /** `POST /open-path` —— 在系统文件管理器里显示一个路径（「打开目录」用）。 */
+  kbAdminHostOpenPath: function (body) {
+    var self = ZoteroKB;
+    const p = String((body && body.path) || "").trim();
+    if (!p) throw new Error("需要 path");
+    const f = Zotero.File.pathToFile(p);
+    if (!f.exists()) throw new Error("路径不存在：" + p);
+    f.reveal();
+    return { ok: true, path: p };
+  },
+
+  /**
+   * `POST /service/restart` —— **真的重启引擎**（宿主半自己动手）。
+   *
+   * 引擎是宿主的子进程，自己重启自己等于杀掉正在处理请求的进程；所以这条
+   * 走宿主路由：先停掉子进程（`kbAdminStop`），下一次请求会自动重新拉起。
+   *
+   * ⚠ 正在跑任务时**不硬杀**：任务可能已经跑了几十分钟（纲要 / 重解析），
+   *   杀掉就白跑了。判据两条：① 还有引擎 RPC 在途；② 引擎的 jobs 里有
+   *   pending/running 的。任一为真就如实回 `{ok:false, busy:true}`。
+   */
+  kbAdminHostServiceRestart: async function () {
+    var self = ZoteroKB;
+    const st = self.kbAdminEngineState();
+    if (st.starting) {
+      return { ok: false, busy: true, stopped: false,
+               note: "引擎正在启动，稍后再试" };
+    }
+    if (st.pending && st.pending.size) {
+      return { ok: false, busy: true, stopped: false,
+               note: "引擎正忙（还有 " + st.pending.size + " 个请求在跑），稍后再试" };
+    }
+    if (st.proc && !st.dead) {
+      try {
+        const r = await self.kbAdminRpc("jobs.list", {});
+        const jobs = (r && Array.isArray(r.jobs)) ? r.jobs : [];
+        const running = jobs.filter(function (j) {
+          const s = String((j && j.state) || "");
+          return s === "running" || s === "pending";
+        });
+        if (running.length) {
+          return { ok: false, busy: true, stopped: false,
+                   note: "引擎在跑任务（" + running.length + " 个），等它跑完再重启" };
+        }
+      } catch (e) {
+        // 问不到任务列表：引擎可能已经不正常了 —— 这时"停掉重来"正是要做的
+        Zotero.debug("[zotero-kb] 重启前查任务列表失败（照常停）：" + e);
+      }
+    }
+    const stopped = self.kbAdminStop();
+    return { ok: true, started: true, stopped: !!stopped,
+             note: stopped ? "引擎已停掉，下一次请求会重新拉起"
+                           : "引擎本来就没在跑；下一次请求会重新拉起" };
+  },
+
   // ================================================================ 路由与派发
+
+  /** 这条 HTTP 语义的路径是不是**宿主路由**；是就返回处理函数名。 */
+  kbAdminHostRouteOf: function (method, path) {
+    var self = ZoteroKB;
+    const m = String(method || "GET").toUpperCase();
+    const raw = String(path == null ? "" : path);
+    const qi = raw.indexOf("?");
+    let only = qi < 0 ? raw : raw.slice(0, qi);
+    if (only && only.charAt(0) !== "/") only = "/" + only;
+    return self.KB_ADMIN_HOST_ROUTES[m + " " + only] || "";
+  },
 
   /** `a=1&b=2` → `{a:"1", b:"2"}`（自己写：沙箱里 URLSearchParams 不保证有）。 */
   kbAdminParseQuery: function (query) {
@@ -859,13 +1317,28 @@ Object.assign(ZoteroKB, {
     return null;
   },
 
-  /** 页面的一条 `op:"http"` 请求 → `{ok, data|error}`。 */
+  /**
+   * 页面的一条 `op:"http"` 请求 → `{ok, data|error}`。
+   *
+   * ⚠ **先看宿主路由**（`KB_ADMIN_HOST_ROUTES`：保存运行环境、浏览…）——
+   *   那两条故意不走引擎（理由见文件里"宿主路由"一节）。命中就在本进程执行。
+   */
   kbAdminHandleRequest: async function (browser, msg) {
     var self = ZoteroKB;
     if (msg.op !== "http") {
       return { ok: false, error: "宿主半不认识这个 op：" + String(msg.op) };
     }
     const args = msg.args || {};
+    const hostHandler = self.kbAdminHostRouteOf(args.method, args.path);
+    if (hostHandler) {
+      try {
+        const fn = self[hostHandler];
+        const data = await fn.call(self, args.body || {});
+        return { ok: true, data: data };
+      } catch (e0) {
+        return { ok: false, error: String((e0 && e0.message) || e0) };
+      }
+    }
     const route = self.kbAdminMapRoute(args.method, args.path, args.body);
     if (!route) {
       return { ok: false,
@@ -1575,6 +2048,14 @@ Object.assign(ZoteroKB, {
 
   kbAdminHostRoute: function (method, path, body) {
     var self = ZoteroKB;
+    // ⚠ **先看宿主路由**：`POST /env-save`、`POST /env-pick` 是宿主半自己做的
+    //   两件事（不走引擎），映射表在 KB_ADMIN_HOST_ROUTES。
+    const hostHandler = self.kbAdminHostRouteOf(method, path);
+    if (hostHandler) {
+      return Promise.resolve().then(function () {
+        return self[hostHandler].call(self, body || {});
+      });
+    }
     const route = self.kbAdminMapRoute(method, path, body);
     if (!route) {
       return Promise.reject(new Error(

@@ -101,8 +101,13 @@ Object.assign(ZoteroKB, {
 
       const keys = items.map((it) => it.key);
       let info = {};
-      // 知识库根路径从本地服务取，而不是写死 —— 这样知识库以后
+      // 知识库根路径从**引擎桥**取，而不是写死 —— 这样知识库以后
       // 迁到别处（比如 Zotero 数据目录）这里不用改。
+      // ⚠ 2026-10-16：原来这里发的是老 HTTP `GET /health`（127.0.0.1:8765）。
+      //   8765 已退役，那条请求平时必然失败（正是 plugin-status.json 里
+      //   `lastRequestError` 的来源）。现在改走**引擎桥的同名接口**
+      //   （`kb.health`，与 healthCheck 取的是同一份数据），拿不到就用
+      //   `self.kbDir()` 这个缓存值兜底（下面 kbDir 初值就是它）。
       let kbDir = self.kbDir();      // 缓存值兜底，下面再用 /health 校正
       try {
         // W3 线2.5：走**共用**的 kbItemInfo（桥优先、退回 HTTP；见 05-server.js）。
@@ -110,7 +115,7 @@ Object.assign(ZoteroKB, {
         //   下面的 `info[k]` 查不到就落到「这篇还没进知识库」那句，行为可接受。
         const r = await self.kbItemInfo(keys);
         for (const x of (r && r.items) || []) info[x.key] = x;
-        const st = await self.request("GET", "/health");
+        const st = await self.kbAdminHostRoute("GET", "/health");
         if (st && st.kb_dir) kbDir = String(st.kb_dir).replace(/[\\/]+$/, "");
       } catch (e) {
         Zotero.debug("[zotero-kb] 取知识库信息失败（用默认路径）：" + e);
