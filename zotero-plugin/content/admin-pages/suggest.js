@@ -279,7 +279,7 @@
   KBAdmin.page({
     id: "suggest",
     title: "分类建议",
-    order: 30,
+    order: 60,
 
     async render(host, ctx) {
       const el = ctx.el;

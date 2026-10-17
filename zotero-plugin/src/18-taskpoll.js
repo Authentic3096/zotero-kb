@@ -155,16 +155,11 @@ Object.assign(ZoteroKB, {
    * 原本只能"打开 运行JavaScript 窗口 → 复制 → 粘贴 → Ctrl+R"，一次几十秒。
    * 有了轮询，Python 侧派任务、插件执行、结果回传，全自动。
    *
-   * ⚠ 两条队列：**文件信箱**（`<知识库>\mailbox`，新的、正路）与**老的 HTTP 队列**
-   *   （`GET /task`，兜底）。2026-10-13 W3 线2 第一条就位之后，第二条一直是
-   *   "过渡期留着"；2026-10-16（用户拍板"HTTP 噪音一起清"）它**默认关闭**
-   *   （`zotero-kb.taskPollHttp` 默认 false）—— 因为它是**每 2 秒一次**的定时请求，
-   *   而 8765 已退役，每次必然失败，正是状态文件里那堆连接错误的来源。
-   *   要旧通道就把那个 pref 显式设回 true（并且 `scripts\4-service.vbs` 起服务）。
-   *   同一个任务只会被写进其中一处，所以不存在双执行；先看信箱、要开 HTTP 才看它。
+   * ⚠ 只有**文件信箱**一条队列（2026-10 起）：`<知识库>\mailbox` —— 没有端口、
+   *   没有 token、服务没跑也能干活。老的 HTTP 队列（GET /task）已随 8765 一起删除。
    *
-   * 安全：老通道走服务 token；新通道只认本机文件系统里的那个目录（没有端口）。
-   * 不想开这个能力就把 prefs 里的 autoTaskPoll 设为 false。
+   * 安全：只认本机文件系统里的那个目录；不想开这个能力就把 pref
+   * `autoTaskPoll` 设为 false。
    *
    * ⚠ 定时器的坑（本机实测，花了很久）：
    *   `setInterval` 在这个沙箱里**创建成功但回调从不触发**
@@ -291,22 +286,12 @@ Object.assign(ZoteroKB, {
       if (self.taskBusy) return;
       self.taskBusy = true;
       try {
-        // ① 新通道：文件信箱（不需要服务在跑）。领取一个就执行一个。
+        // 只有文件信箱一条通道（领取一个就执行一个）。
         let task = null;
         try {
           task = await self.pollTaskMailbox();
         } catch (e) {
           Zotero.debug("[zotero-kb] 任务信箱轮询失败：" + e);
-        }
-        // ② 老通道：HTTP 队列（**默认关闭**，见 startTaskPolling 的说明）。
-        //    开着时才发 GET /task —— 8765 退役后这是纯噪音，所以默认不走。
-        if (!task && self.getPref("zotero-kb.taskPollHttp", false)) {
-          try {
-            const res = await self.request("GET", "/task");
-            if (res && res.task) { task = res.task; task.__via = "http"; }
-          } catch (e) {
-            // 服务没跑是最常见的情况（W3 之后本来就会没跑），不必刷日志
-          }
         }
         if (task) {
           Zotero.debug("[zotero-kb] 领取任务 " + task.id + "（" + task.kind
@@ -396,19 +381,10 @@ Object.assign(ZoteroKB, {
       Zotero.logError(e);
     }
     const ms = Date.now() - started;
-    // 回报结果：在哪领的就回哪去（信箱任务绝不能往 HTTP 回，反之亦然 ——
-    // 回错地方派发方永远等不到结果，而且看起来像"任务丢了"）。
+    // 结果只回文件信箱（任务就是从那里领的）。
     try {
-      if (task.__via === "mailbox") {
-        await self.reportTaskMailbox(task, ok, error,
-          { value: self.safeStringify(result), ms: ms, pluginVersion: self.version });
-      } else {
-        await self.request("POST", "/task/result", {
-          id: task.id, ok: ok, error: error,
-          result: { value: self.safeStringify(result), ms: ms,
-                    pluginVersion: self.version },
-        });
-      }
+      await self.reportTaskMailbox(task, ok, error,
+        { value: self.safeStringify(result), ms: ms, pluginVersion: self.version });
     } catch (e) {
       Zotero.debug("[zotero-kb] 回报任务结果失败：" + e);
     }

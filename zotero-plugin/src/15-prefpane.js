@@ -55,11 +55,8 @@ Object.assign(ZoteroKB, {
         mailboxClaimed: self.mailboxClaimed || 0,
         mailboxLastTask: self.mailboxLastTask || "",
         mailboxLastClaimAt: self.mailboxLastClaimAt || "",
-        taskPollHttp: !!self.getPref("zotero-kb.taskPollHttp", true),
         timerDiag: self.timerDiag || null,
         alive: !!self.alive,
-        lastRequestError: self.lastRequestError || "",
-        lastRequests: self.lastRequests || [],
         // 「生成分节纲要」的现况与上一批结果。
         // 为什么必须落盘：这项的 UI 只有一个 Zotero 进度窗（而且它**没有**
         // 可查的历史），出问题（"点了没反应"/"列没变"）时，能从 Python 侧

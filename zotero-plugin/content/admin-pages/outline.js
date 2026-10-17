@@ -69,7 +69,7 @@
   KBAdmin.page({
     id: "outline",
     title: "分节纲要",
-    order: 80,
+    order: 30,
 
     async render(host, ctx) {
       const el = ctx.el;
@@ -262,7 +262,7 @@
 
         // ⚠ 文案要说实话（2026-10-13 用户问「已经生成过再点『生成』会怎样」）。
         //   链路：POST /digest {key, force:false} → engine._m_digest →
-        //   localserver.start_digest_job(key, force=False) → do_digest →
+        //   kbops.start_digest_job(key, force=False) → do_digest →
         //   digest.build(force=False)：节指纹 = sha1(节标题 + 节内正文前 2000 字)。
         //   **指纹没变的节直接复用上次的摘要、一个模型调用都不发**；只有变了/新增的
         //   节才补问。所以"已有纲要"时这颗按钮多半是秒回 —— 这件事必须写在按钮上，

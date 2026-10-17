@@ -435,27 +435,23 @@ Object.assign(ZoteroKB, {
       paint(head, st.currentLabel + "\n" + it.key, true);
       let job = null;
       try {
-        const res = await self.request("POST", "/digest", { key: it.key });
-        const jobId = res && res.job;
-        if (!jobId) throw new Error((res && res.error) || "服务端没返回 job id");
+        const res = await self.kbAdminHostRoute("POST", "/digest", { key: it.key });
+        const jobId = (res && ((res.job && res.job.id) || res.job || res.id)) || "";
+        if (!jobId) throw new Error((res && res.error) || "引擎没返回 job id");
         // 学位论文几分钟，给到 30 分钟（真超时也只是"这一篇算失败"，
         // 不中断后面的；服务端那个 job 仍在跑，下一次会命中的它的结果）。
         const deadline = Date.now() + 30 * 60 * 1000;
         while (Date.now() < deadline) {
           if (st.stopped) {
-            // 用户点了停止：**每一轮都发一次**取消请求。服务端是"到下一节
+            // 用户点了停止：**每一轮都发一次**取消请求。引擎是"到下一节
             // 边界才收工"，而这一篇可能正卡在一节几分钟的模型调用里，
-            // 只发一次不够稳（服务端可能刚好还没进循环）。
-            // W3 线2.5（2026-10-14）：桥优先（`kb.digestCancel` 与 HTTP
-            // `POST /digest/cancel` **置的是同一个取消标记**），失败退回老 HTTP。
+            // 只发一次不够稳（引擎可能刚好还没进循环）。
             try {
               await self.kbAdminHostRoute("POST", "/digest/cancel", {});
-            } catch (e0) {
-              self.request("POST", "/digest/cancel", {}).catch(() => {});
-            }
+            } catch (e0) { /* 这一轮没发出去，下一轮再试 */ }
           }
           await new Promise((r) => setTimeout(r, 2000));
-          // W3 线2.5：轮询也走桥（`jobs.get` 与 HTTP 同形），失败退回老 HTTP。
+          // 轮询也走桥（`jobs.get`）。
           job = await self.kbJobGet(jobId);
           if (!job) break;
           const log = job.log || [];
@@ -572,7 +568,7 @@ Object.assign(ZoteroKB, {
   /** 停止正在跑的那一批纲要生成（右键菜单里的「停止生成纲要」）。
    *
    * ⚠ 这不是"杀线程"，而是**置一个标记**：服务端在每节开始前看一眼
-   *   （见 localserver.do_digest 的 should_stop）。已经在跑的那一次模型
+   *   （见 kbops.do_digest 的 should_stop）。已经在跑的那一次模型
    *   调用会跑完，所以点完可能还要等十几秒才真的停 —— 提示里要说清，
    *   否则用户以为没点着。
    */
@@ -589,12 +585,8 @@ Object.assign(ZoteroKB, {
     }
     st.stopped = true;
     // 主循环里还会反复发（一篇可能正卡在一节长调用里），这里先发一次求快。
-    // W3 线2.5：桥优先，失败退回老 HTTP（两处都得改，只改一处会留下隐形 HTTP 依赖）。
     self.kbAdminHostRoute("POST", "/digest/cancel", {}).catch((e0) => {
-      Zotero.debug("[zotero-kb] 引擎桥停止纲要失败（退回 HTTP）：" + e0);
-      self.request("POST", "/digest/cancel", {}).catch((e) => {
-        Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e);
-      });
+      Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e0);
     });
     self.notify("正在停止生成纲要…",
       "当前这一篇会在这一节的模型调用跑完后停下；\n"

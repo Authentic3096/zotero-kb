@@ -1,7 +1,7 @@
 
 # ---- 含密钥 / 本机状态，绝不能进版本库 ----
 kb/llm-config.json      # 模型 API Key 在这里
-kb/service-token.txt    # 本地服务 token
+kb/service-token.txt    # 老 HTTP 服务的通行证（服务已删；防老库误提交，留着）
 kb/zotero-api-key.txt   # Zotero 本地 API key
 kb/bridge-token.txt
 

@@ -20,9 +20,9 @@
  * 用 Zotero API 读写库，少一层依赖、也更稳（升级到 10 后本地 API 一度 403，
  * 但插件这条路不受影响）。
  *
- * 与本地服务的分工：
- *   插件只负责"Zotero 侧"的监听与写入；所有解析、切片、模型推理都在本地
- *   Python 服务（online/localserver.py，端口 8765）里做 —— 因为 PyMuPDF、
+ * 与本地引擎的分工：
+ *   插件只负责"Zotero 侧"的监听与写入；所有解析、切片、模型推理都在按需拉起的
+ *   Python 引擎（online/engine.py，stdio、无端口）里做 —— 因为 PyMuPDF、
  *   嵌入模型、Ollama 都在那边，插件里重写一遍不现实。
  */
 
@@ -222,7 +222,8 @@ var ZoteroKB = {
           (r) => { timing[name] = Date.now() - a; return r; },
           (e) => { timing[name] = Date.now() - a; throw e; });
       };
-      self.serverOnStartup()
+      // 启动后先做一次健康检查（引擎桥 `kb.health`），再刷权重与两列。
+      Promise.resolve()
         .then(timed("healthCheck", () => self.healthCheck()))
         .then(timed("refreshWeights", () => self.refreshWeights()))
         // 两列的数据同一次启动里也拉一份（不拉的话，要等轮询那 30 秒
@@ -283,8 +284,6 @@ Object.assign(ZoteroKB, {
     // Ollama 收尾：只有"标记文件在"（= 是我们拉起来的）才关。
     // 放在最前面 —— Zotero 关闭时留给 shutdown 的时间有限，先做要紧的。
     try { self.ollamaOnShutdown(); } catch (e) { /* ignore */ }
-    // 本地服务同理：只关我们自己拉起的那一个（随弃随关）
-    try { self.serverOnShutdown(); } catch (e) { /* ignore */ }
     try {
       if (Zotero.ZoteroKB === self) delete Zotero.ZoteroKB;
     } catch (e) { /* ignore */ }
@@ -785,23 +784,11 @@ Object.assign(ZoteroKB, {
   ollamaFlagPath: function () {
     return this.kbDir() + "\\ollama-owned-by-zotero.flag";
   },
-
-
-  /**
-   * 本地服务（:8765）的归属标记。
-   *
-   * 和 Ollama 用的是同一套思路：**标记文件在 = 是我们拉起来的**，
-   * 关 Zotero 时就顺手关掉；标记不在 = 本来就在跑（用户手动开的、
-   * 或开机自启拉起的），绝不去碰它。
-   */
-  serverFlagPath: function () {
-    return this.kbDir() + "\\server-owned-by-zotero.flag";
-  },
 });
 
 // ===== src/03-processes.js =====
 /**
- * 03-processes.js —— 本地服务与 Ollama 进程的起停（带 flag 文件，不抢别人的进程）
+ * 03-processes.js —— Ollama 进程的起停（带 flag 文件，不抢别人的进程）
  *
  * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
  *   bootstrap.js（xpi 里装的是那个生成物）。
@@ -820,165 +807,6 @@ Object.assign(ZoteroKB, {
    * 下次启动就会"误以为是自己启动的"而去关一个不是自己开的 Ollama。
    * 每次开机/每次启动都重判 + 用文件标记，能自然自愈。
    */
-
-
-  /** 本地服务是否响应（问 /health，不需要 token）。 */
-  serverUp: async function () {
-    // ⚠ 这是一次**真连 8765** 的探测。它已**不是任何自动路径的一部分**：
-    //   调用方只有 serverOnStartup（严格 opt-in，见那里），以及手动诊断。
-    try {
-      const r = await Zotero.HTTP.request(
-        "GET", "http://127.0.0.1:8765/health",
-        { timeout: 2500, responseType: "text" });
-      return !!(r && r.status === 200);
-    } catch (e) {
-      return false;
-    }
-  },
-
-
-  /** 拉起本地服务（不经控制台窗口）。 */
-  serverStart: function () {
-    var self = ZoteroKB;
-    const py = self.pythonConsoleExe();
-    const root = self.projectRoot();
-    if (!py || !root) {
-      Zotero.debug("[zotero-kb] 拉不起本地服务：找不到 Python 或项目目录");
-      return false;
-    }
-    // 用 pythonw.exe（无窗口）—— 服务是后台常驻的，弹个黑框很吓人。
-    const pyw = py.replace(/python\.exe$/i, "pythonw.exe");
-    const exe = self._exists(pyw) ? pyw : py;
-    const script = root + "\\online\\localserver.py";
-    try {
-      const { Subprocess } = ChromeUtils.importESModule(
-        "resource://gre/modules/Subprocess.sys.mjs");
-      Subprocess.call({ command: exe, arguments: ["-X", "utf8", script],
-                        workdir: root, stderr: "ignore", stdout: "ignore" })
-        .catch(() => {});
-      return true;
-    } catch (e) {
-      try {
-        const nsLocalFile = Components.Constructor(
-          "@mozilla.org/file/local;1", "nsIFile", "initWithPath");
-        const proc = Components.classes["@mozilla.org/process/util;1"]
-          .createInstance(Components.interfaces.nsIProcess);
-        proc.init(nsLocalFile(exe));
-        const a = ["-X", "utf8", script];
-        proc.runw(false, a, a.length);
-        return true;
-      } catch (e2) {
-        Zotero.debug("[zotero-kb] 启动本地服务失败：" + e2);
-        return false;
-      }
-    }
-  },
-
-
-  /**
-   * Zotero 启动时：**只在用户显式要求时才**拉起本地服务（严格 opt-in）。
-   *
-   * ⚠⚠ 2026-10-16（用户拍板"HTTP 噪音一起清"）：这一整组（serverUp /
-   *   serverStart / serverOnStartup / serverOnShutdown）**保留**，但从"默认自动"
-   *   改成"**只有显式置 `zotero-kb.autoStartService=true` 才走**"。
-   *   为什么保留而不是整组删：它是一条**回退能力**（有人仍需旧 HTTP 通道时，
-   *   手动入口是 `scripts\4-service.vbs`，或把这个 pref 设回 true）；
-   *   为什么默认必须 false：8765 已退役、插件已全部走引擎桥/文件信箱，
-   *   默认 true 会让**每次启动都去探/拉起一个没人用的服务**（就是"HTTP 噪音"）。
-   *
-   * 判据（pref 为 false 时的**唯一行为**）：立刻返回、**一个网络请求都不发**
-   * —— 这条早退必须在任何 serverUp()/serverStart() 之前（现在就是）。
-   *
-   * 触发者清单（改这里前先看）：
-   *   · `00-core.js` 启动流程 → 调本函数；
-   *   · `01-lifecycle.js` shutdown → 调 `serverOnShutdown()`（它只在自己留过
-   *     标记文件时才发 `/shutdown`，没启动过就纯本地检查、不发请求）；
-   *   · 只有这两个，没有按钮、没有定时器。
-   */
-  serverOnStartup: async function () {
-    var self = ZoteroKB;
-    try {
-      // W3 线3（2026-10-14）：自动拉起本地服务是一个开关。
-      // ⚠ 2026-10-16 起**默认值改成 false**（原为 true）：不开这个开关时，
-      //   启动流程**完全不碰 8765**。用户手动起服务用 scripts\4-service.vbs。
-      if (!self.getPref("zotero-kb.autoStartService", false)) {
-        Zotero.debug("[zotero-kb] 本地服务自动拉起未开启"
-                     + "（pref zotero-kb.autoStartService 默认 false）"
-                     + "—— 不碰 8765；要旧 HTTP 通道请手动跑 scripts\\4-service.vbs");
-        self.serverStartedByMe = false;
-        self.writeStatusFile({ serverStartedByMe: false, serverAutoStart: false });
-        return;
-      }
-      // 清掉上次可能残留的标记，避免误判成"是我们拉起的"
-      try {
-        const fp = self.serverFlagPath();
-        if (await IOUtils.exists(fp)) await IOUtils.remove(fp);
-      } catch (e) { /* ignore */ }
-
-      if (await self.serverUp()) {
-        self.serverStartedByMe = false;
-        Zotero.debug("[zotero-kb] 本地服务已在运行，不动它（关 Zotero 时也不关）");
-      } else {
-        Zotero.debug("[zotero-kb] 本地服务没在跑，由插件拉起");
-        self.serverStartedByMe = self.serverStart();
-        if (self.serverStartedByMe) {
-          try {
-            await IOUtils.writeUTF8(self.serverFlagPath(),
-              JSON.stringify({ by: "zotero", at: new Date().toISOString() }));
-          } catch (e) { Zotero.debug("[zotero-kb] 写服务标记失败：" + e); }
-          // 等它就绪 —— 权重列、任务轮询都要用它
-          for (let i = 0; i < 20; i++) {
-            await new Promise((r) => setTimeout(r, 500));
-            if (await self.serverUp()) break;
-          }
-          Zotero.debug("[zotero-kb] 本地服务就绪：" + (await self.serverUp()));
-        }
-      }
-      self.writeStatusFile({ serverStartedByMe: !!self.serverStartedByMe });
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 本地服务处理失败：" + e);
-    }
-  },
-
-
-  /**
-   * Zotero 关闭时：**只关自己启动的那个**（随弃随关）。
-   *
-   * ⚠ 2026-10-16：`autoStartService` 默认 false 之后，插件平时**不会**启动服务，
-   *   也就不会留下标记文件 —— 所以这里通常**第一句就 return**（无网络请求）。
-   *   只有当初真的走 serverOnStartup 拉起过（用户显式开了那个 pref）才会有标记。
-   *
-   * 关法是 `POST /shutdown` 让服务自己退出，**不是** taskkill ——
-   * 服务跑在 pythonw.exe 里，而 pythonw 是极常见的进程名，
-   * `taskkill /IM pythonw.exe` 会把管理面板、用户自己的 Python 脚本
-   * 一起杀掉。这个坑不能踩。
-   *
-   * 同步实现：Zotero 关闭时留给 shutdown() 的时间有限，等不了 async。
-   * 用同步的 XHR 把请求发出去（服务收到就置位退出），不等回复。
-   */
-  serverOnShutdown: function () {
-    var self = ZoteroKB;
-    try {
-      const fp = Zotero.File.pathToFile(self.serverFlagPath());
-      if (!fp.exists()) return;             // 不是我们启动的，绝不动它
-    } catch (e) {
-      return;
-    }
-    try {
-      const url = "http://127.0.0.1:8765/shutdown";
-      const req = new XMLHttpRequest();
-      req.open("POST", url, false);         // false = 同步，关闭流程里必须这样
-      req.setRequestHeader("Content-Type", "application/json");
-      req.send("{}");
-      Zotero.debug("[zotero-kb] 已请求本地服务退出，HTTP " + req.status);
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 请求服务退出失败：" + e);
-    }
-    try {
-      const fp2 = Zotero.File.pathToFile(self.serverFlagPath());
-      if (fp2.exists()) fp2.remove(false);
-    } catch (e) { /* ignore */ }
-  },
 
 
   /** Ollama 的 API 是否响应（比看进程更可靠：能确认服务真的可用）。 */
@@ -1335,100 +1163,28 @@ Object.assign(ZoteroKB, {
 
 // ===== src/05-server.js =====
 /**
- * 05-server.js —— 与本地服务通信：`baseURL` / `request` / `healthCheck`
+ * 05-server.js —— 与引擎的桥接（`healthCheck` / `kbItemInfo` / `kbJobGet`）
+ *
+ * ⚠ 2026-10 起老 HTTP 服务（127.0.0.1:8765）及其全部代码已删除。
+ *   插件只走**宿主半的引擎桥**（`kbAdminHostRoute` → 引擎子进程，stdio 无端口）；
+ *   这里不再有 `baseURL()` / `request()`，也没有任何 HTTP 兜底。
  *
  * ⚠ 这是**源码**：改完跑 tools/build_bootstrap.py 重新生成
  *   bootstrap.js（xpi 里装的是那个生成物）。
  */
 Object.assign(ZoteroKB, {
 
-  // ================================================================ 与服务通信
-
-  /**
-   * 老的 HTTP 通道地址（**固定值**，不再有首选项）。
-   *
-   * 8765 服务已退役、插件平时不碰它；这个地址只剩一个用途：万一有人按回退说明
-   * （`scripts\4-service.vbs`）手动把它起起来，`kbItemInfo` / `kbJobGet` 的兜底
-   * 分支还认得它。所以这里写死字面量，**不再从 pref 读**（那个 pref 已删）。
-   */
-  baseURL: function () {
-    return "http://127.0.0.1:8765";
-  },
-
-
-  request: async function (method, path, body) {
-    const url = this.baseURL() + path;
-    const options = {
-      method: method,
-      headers: { "Content-Type": "application/json" },
-      responseType: "json",
-      timeout: 120000,
-      // Zotero 7+ 的 HTTP 封装
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    };
-    // 记下最近几次请求的结果 —— catch 里只 Zotero.debug 的话，
-    // 用户和我都看不到失败原因（本机踩过：权重缓存一直是 0，
-    // 但没有任何地方说明为什么）。写进状态文件才查得动。
-    var self = ZoteroKB;
-    const note = (ok, detail) => {
-      try {
-        self.lastRequests = self.lastRequests || [];
-        self.lastRequests.push({
-          at: new Date().toISOString().slice(11, 19),
-          method: method, path: path, ok: ok,
-          detail: String(detail == null ? "" : detail).slice(0, 400),
-        });
-        if (self.lastRequests.length > 12) self.lastRequests.shift();
-        if (!ok) self.lastRequestError = method + " " + path + " → " + detail;
-      } catch (e) { /* ignore */ }
-    };
-    let result;
-    try {
-      if (Zotero.HTTP && Zotero.HTTP.request) {
-        const xhr = await Zotero.HTTP.request(method, url, options);
-        result = typeof xhr.response === "string"
-          ? JSON.parse(xhr.response || "{}")
-          : xhr.response;
-        note(true, "HTTP ok, responseType=" + typeof xhr.response);
-        return result;
-      }
-      // 老式 XHR 兜底
-      result = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open(method, url, true);
-        xhr.setRequestHeader("Content-Type", "application/json");
-        xhr.timeout = 120000;
-        xhr.onload = () => {
-          try { resolve(JSON.parse(xhr.responseText || "{}")); }
-          catch (e) { reject(e); }
-        };
-        xhr.onerror = () => reject(new Error("请求失败"));
-        xhr.ontimeout = () => reject(new Error("请求超时"));
-        xhr.send(body ? JSON.stringify(body) : null);
-      });
-      note(true, "XHR fallback ok");
-      return result;
-    } catch (e) {
-      note(false, (e && e.message) ? e.message : String(e));
-      throw e;
-    }
-  },
-
+  // ================================================================ 引擎桥
 
   /**
    * 某几条文献在知识库里的状态（`{items:[…]}`）—— **两个调用方共用这一处**：
    *   · `06-watch.js`：监听新条目，判"这条建过库没有"（看 `in_kb` / `n_chunks`）；
    *   · `12-dsh.js`：把文献发给 DSH 时，带上权重/分类/正文字数。
    *
-   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kb.itemInfo`），拿不到再退回
-   * 老 HTTP —— 过渡期两条都必须能用。桥不需要那个常驻 8765，也不需要 token。
+   * 只走引擎桥（`kb.item-info`）；拿不到就返回 null —— 调用方按"拿不到信息"
+   * 处理，绝不抛（列表不该因为引擎没起来就画不出来）。
    *
-   * 为什么把两条通道收在这一个函数里：以前是两个调用点各写一遍
-   * `request("POST", "/item-info", …)`，迁桥时若各改各的，很容易只改一处
-   * （另一处继续走 HTTP 而没人发现）。
-   *
-   * @returns Promise<{items:Array}|null> —— 两条通道都失败时返回 null
-   *          （调用方按"拿不到信息"处理，绝不抛）。
+   * @returns Promise<{items:Array}|null>
    */
   kbItemInfo: async function (keys) {
     var self = ZoteroKB;
@@ -1438,28 +1194,18 @@ Object.assign(ZoteroKB, {
     try {
       const r = await self.kbAdminHostRoute("POST", "/item-info", { keys: want });
       if (r && r.items) return r;
-      Zotero.debug("[zotero-kb] 引擎桥的 item-info 没给 items（退回 HTTP）");
+      Zotero.debug("[zotero-kb] 引擎桥的 item-info 没给 items");
     } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥取条目信息失败（退回 HTTP）：" + e);
+      Zotero.debug("[zotero-kb] 引擎桥取条目信息失败：" + e);
     }
-    try {
-      return await self.request("POST", "/item-info", { keys: want });
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 取条目信息失败：" + e);
-      return null;
-    }
+    return null;
   },
 
 
   /**
    * 查一条长任务的状态（`{state, log, result, error}`）。
    *
-   * W3 线2.5（2026-10-14）：桥优先（`jobs.get`，与 HTTP `GET /jobs/<id>` **同形** ——
-   * 两边都走 `LS.do_jobs_get`），拿不到再退回老 HTTP；**两条都失败返回 null**
-   * （调用方按"查不到"处理，绝不抛）。
-   *
-   * ⚠ 收成一个共用函数的原因：`/jobs/<id>` 原来是好几处各写一遍 `request("GET", …)`，
-   *   迁桥时很容易只改一处（另一处继续走 HTTP 而没人发现）。
+   * 只走引擎桥（`jobs.get`）；拿不到返回 null（调用方按"查不到"处理，绝不抛）。
    */
   kbJobGet: async function (jobId) {
     var self = ZoteroKB;
@@ -1469,29 +1215,18 @@ Object.assign(ZoteroKB, {
       const j = await self.kbAdminHostRoute("GET", "/jobs/" + encodeURIComponent(id));
       if (j) return j;
     } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥查任务失败（退回 HTTP）：" + e);
+      Zotero.debug("[zotero-kb] 引擎桥查任务失败：" + e);
     }
-    try {
-      return await self.request("GET", "/jobs/" + encodeURIComponent(id));
-    } catch (e) {
-      Zotero.debug("[zotero-kb] 查任务失败：" + e);
-      return null;
-    }
+    return null;
   },
 
 
   /**
-   * 插件/引擎是否活着（问引擎桥的 `kb.health`，**不碰 8765**）。
+   * 插件/引擎是否活着（问引擎桥的 `kb.health`）。
    *
-   * 判据是引擎桥给的 `kb.health`：它给 kb_dir / project_root / python / ollama，
-   * 够定位知识库与运行环境（stdio 通道没有"浏览器偷 token"这回事，所以它本来
-   * 就不含 token）。
-   *
-   * ⚠ 2026-10-16：**删掉了"老 HTTP `/health` 兜底"**。那段兜底打的是
-   *   127.0.0.1:8765 —— 服务早就退役了，所以它每次启动/每次体检**必然失败**，
-   *   唯一的产出就是 `plugin-status.json` 里的 `lastRequestError`（用户看到的
-   *   "HTTP 噪音"）。现在判定只有一条：**桥给到 info = 在线，桥拿不到 = 离线**。
-   *   非要把老服务起起来的人另有入口（`scripts\4-service.vbs`），但插件不再探它。
+   * 判据只有一条：**桥给到 info = 在线，桥拿不到 = 离线**。桥背后是
+   * 宿主半按需拉起的 stdio 引擎（无端口、无 token），所以这里也没有任何
+   * HTTP 请求。
    */
   healthCheck: async function () {
     var self = ZoteroKB;
@@ -1513,7 +1248,6 @@ Object.assign(ZoteroKB, {
       this.serverProjectRoot = engineInfo.project_root || this.serverProjectRoot || "";
       Zotero.debug("[zotero-kb] 引擎桥在线（kb_dir=" + this.serverKbDir + "）");
     } else {
-      // 桥也拿不到 → 离线。**不**再去问老 HTTP（8765 已退役，问了只会失败）。
       this.serverOk = false;
       this.serverInfo = null;
       Zotero.debug("[zotero-kb] 引擎桥不可用：判为离线");
@@ -1631,14 +1365,8 @@ Object.assign(ZoteroKB, {
   /**
    * 给一篇/几篇**派一次建索引**，返回 job id（拿不到就返回空串）。
    *
-   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kb.reindex`），拿不到再退回
-   * 老 HTTP —— 过渡期两条都必须能用，桥不需要那个常驻 8765。
-   *
-   * ⚠ **两条通道的"派发回执"形状不一样，这里必须归一化**（踩点）：
-   *   · 桥 `kb.reindex` → `{job:{id:"job-…"}, id:"job-…"}`（契约形状，job 是对象）
-   *   · HTTP `POST /reindex` → `{job:"job-…", state:"running"}`（job 是**字符串**）
-   *   直接照抄老写法 `res.job` 走桥会拿到一个对象，再拿去拼
-   *   `GET /jobs/<object>` 就是一条注定失败的请求（而且报错看不出是这个原因）。
+   * 只走宿主半的引擎桥（`kb.reindex`）。派发回执是契约形状
+   * `{job:{id:"job-…"}, id:"job-…"}`（job 是对象，不是字符串）。
    */
   reindexOne: async function (keys) {
     var self = ZoteroKB;
@@ -1646,17 +1374,10 @@ Object.assign(ZoteroKB, {
     try {
       res = await self.kbAdminHostRoute("POST", "/reindex", { keys: keys });
     } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥派建索引失败（退回 HTTP）：" + e);
+      Zotero.debug("[zotero-kb] 引擎桥派建索引失败：" + e);
+      return "";
     }
     const flat = (r) => (r && ((r.job && r.job.id) || r.job || r.id)) || "";
-    if (!flat(res)) {
-      try {
-        res = await self.request("POST", "/reindex", { keys: keys });
-      } catch (e) {
-        Zotero.debug("[zotero-kb] 派建索引失败：" + e);
-        return "";
-      }
-    }
     return String(flat(res) || "");
   },
 
@@ -1670,14 +1391,8 @@ Object.assign(ZoteroKB, {
       // （这里已经踩过一次 Zotero.setInterval / Zotero.setTimeout 不存在的坑）。
       await new Promise((r) => setTimeout(r, 1000));
       try {
-        let job = null;
-        // W3 线2.5：桥优先（`jobs.get` 与 HTTP `GET /jobs/<id>` **同形**：
-        // 都走 LS.do_jobs_get），拿不到再退回 HTTP。
-        try {
-          job = await self.kbAdminHostRoute("GET", "/jobs/" + jobId);
-        } catch (e) {
-          job = await self.request("GET", "/jobs/" + jobId);
-        }
+        // 只走引擎桥（`jobs.get`）。
+        const job = await self.kbAdminHostRoute("GET", "/jobs/" + jobId);
         if (job && (job.state === "done" || job.state === "failed")) return job;
       } catch (e) {
         return null;
@@ -1756,29 +1471,15 @@ Object.assign(ZoteroKB, {
       };
     }
     try {
-      // ⚠ 这一处曾经**故意留在老 HTTP**（2026-10-13）：引擎原来的 `ai.classify` 只认
-      //   **key**、由它从索引库读元数据，而这里要分类的是**还没入库的新文献**
-      //   （元数据只能在 Zotero 这边现取），且要带**用户在这个弹窗里选的**模型配置。
-      //   那是**两个能力**，不能互相顶替（硬迁会对新文献报 `索引库里没有 key=…`）。
-      //
-      // 2026-10-14：引擎侧已按同一契约补齐 `classify.item`（`POST /classify-item`，
-      //   见 online/engine.py::_m_classify_item：收**内联** item + 调用方给的模型配置，
-      //   复用 `LS.do_classify_one`），所以这里改成**桥优先 → 退回老 HTTP**。
-      //   入参就是本函数上面造好的 `payload` —— 它**本来就是扁平的**，
-      //   不用像 `/env-config` 那样再摊平一层。
+      // 新文献还没入库，元数据只能在这边现取 —— 所以走 `classify.item`
+      // （引擎收**内联** item + 调用方给的模型配置，复用 kbops.do_classify_one）。
+      // 入参就是上面造好的 `payload`（本来就是扁平的）。
       let res = null;
       try {
         res = await this.kbAdminHostRoute("POST", "/classify-item", payload);
       } catch (e) {
-        Zotero.debug("[zotero-kb] 引擎桥分类失败（退回 HTTP）：" + e);
-      }
-      if (!res || res.error) {
-        try {
-          res = await this.request("POST", "/classify", payload);
-        } catch (e) {
-          Zotero.debug("[zotero-kb] 分类请求失败：" + e);
-          return null;
-        }
+        Zotero.debug("[zotero-kb] 引擎桥分类失败：" + e);
+        return null;
       }
       if (!res || res.error) return null;
       return res;
@@ -1894,25 +1595,21 @@ Object.assign(ZoteroKB, {
     let okCount = 0, lastWeight = null, err = "";
     for (const k of keys) {
       try {
-        // W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kb.weight`，复用
-        // LS.do_set_weight —— 与 HTTP /weight **同一份实现**），拿不到再退回老 HTTP。
-        // 两条通道的回包形状实测同形（`{ok, key, pinned, manual, note, weight, …}`），
-        // 所以这里不需要像 /reindex 那样归一化。
+        // 只走引擎桥（`kb.weight`，复用 kbops.do_set_weight）。
         let r = null;
         try {
           r = await self.kbAdminHostRoute("POST", "/weight",
                                           { key: k, pinned: !!pinned });
         } catch (e) {
-          Zotero.debug("[zotero-kb] 引擎桥写权重失败（退回 HTTP）：" + e);
-        }
-        if (!r || r.ok !== true) {
-          r = await self.request("POST", "/weight", { key: k, pinned: !!pinned });
+          Zotero.debug("[zotero-kb] 引擎桥写权重失败：" + e);
+          err = String(e);
+          continue;
         }
         if (r && r.ok) {
           okCount++;
           lastWeight = r.weight;
         } else {
-          err = (r && r.error) || "服务端没接受";
+          err = (r && r.error) || "引擎没接受";
         }
       } catch (e) {
         err = String(e);
@@ -2118,19 +1815,11 @@ Object.assign(ZoteroKB, {
         self.notify("正在检查条目类型与标题…", "这一篇是网页类型但挂着 PDF", null, false);
       } catch (e) { /* ignore */ }
       try {
-        // W3 线2.5（2026-10-14）：桥优先（`meta.typefixOne` = HTTP `POST /typefix`
-        // **同一份同步实现**，只出建议、不写库），失败退回老 HTTP。
-        try {
-          tf = await self.kbAdminHostRoute("POST", "/typefix",
-                                           { key: item.key, use_network: true });
-        } catch (e0) {
-          Zotero.debug("[zotero-kb] 引擎桥类型检查失败（退回 HTTP）：" + e0);
-          tf = await self.request("POST", "/typefix",
-                                  { key: item.key, use_network: true });
-        }
-      } catch (e) {
-        // 检查失败不能挡住原本的补全功能 —— 记一行，继续走下面的字段建议
-        Zotero.debug("[zotero-kb] 类型/标题检查失败：" + e);
+        // 只走引擎桥（`meta.typefixOne`，同步实现、只出建议不写库）。
+        tf = await self.kbAdminHostRoute("POST", "/typefix",
+                                         { key: item.key, use_network: true });
+      } catch (e0) {
+        Zotero.debug("[zotero-kb] 引擎桥类型检查失败：" + e0);
         tf = null;
       }
     }
@@ -2163,18 +1852,10 @@ Object.assign(ZoteroKB, {
 
     let res;
     try {
-      // 这个请求可能真的要调本地模型（规则没抽到字段时），所以可能几十秒；
-      // request() 的超时是 120 秒。等的时候弹的是进度窗（非模态），不卡界面。
-      // W3 线2.5（2026-10-14）：桥优先（`meta.fillOne` = HTTP `POST /metafill`
-      // **同一份同步实现**，只出建议、不写库），失败退回老 HTTP。
-      try {
-        res = await self.kbAdminHostRoute("POST", "/metafill",
-                                          { key: item.key, use_model: true });
-      } catch (e0) {
-        Zotero.debug("[zotero-kb] 引擎桥补元数据失败（退回 HTTP）：" + e0);
-        res = await self.request("POST", "/metafill",
-                                 { key: item.key, use_model: true });
-      }
+      // 这个请求可能真的要调本地模型（规则没抽到字段时），所以可能几十秒。
+      // 只走引擎桥（`meta.fillOne`，同步实现、只出建议不写库）。
+      res = await self.kbAdminHostRoute("POST", "/metafill",
+                                        { key: item.key, use_model: true });
     } catch (e) {
       this.notify("补全建议失败", String((e && e.message) || e), null, true);
       return;
@@ -2954,14 +2635,9 @@ Object.assign(ZoteroKB, {
       const it = list[i];
       let res = null;
       try {
-        // W3 线2.5（2026-10-14）：桥优先（`meta.fillOne`），失败退回老 HTTP。
-        try {
-          res = await self.kbAdminHostRoute("POST", "/metafill",
-                                           { key: it.key, use_model: false });
-        } catch (e0) {
-          res = await self.request("POST", "/metafill",
-                                   { key: it.key, use_model: false });
-        }
+        // 只走引擎桥（`meta.fillOne`）。
+        res = await self.kbAdminHostRoute("POST", "/metafill",
+                                         { key: it.key, use_model: false });
       } catch (e) {
         res = { ok: false, error: String((e && e.message) || e) };
       }
@@ -2970,15 +2646,9 @@ Object.assign(ZoteroKB, {
       // 只在最后的回报里提醒用户单独去处理（见函数头第 3 条）。
       if (self.itemIsWebSaved(it)) {
         try {
-          // W3 线2.5：桥优先（`meta.typefixOne`），失败退回老 HTTP。
-          let tf = null;
-          try {
-            tf = await self.kbAdminHostRoute("POST", "/typefix",
-                                            { key: it.key, use_network: false });
-          } catch (e0) {
-            tf = await self.request("POST", "/typefix",
-                                    { key: it.key, use_network: false });
-          }
+          // 只走引擎桥（`meta.typefixOne`）。
+          const tf = await self.kbAdminHostRoute("POST", "/typefix",
+                                                 { key: it.key, use_network: false });
           if (tf && tf.ok !== false && (tf.fixes || []).length) {
             suspects.push({ item: it, tf: tf });
           }
@@ -4251,15 +3921,11 @@ Object.assign(ZoteroKB, {
       let info = {};
       // 知识库根路径从**引擎桥**取，而不是写死 —— 这样知识库以后
       // 迁到别处（比如 Zotero 数据目录）这里不用改。
-      // ⚠ 2026-10-16：原来这里发的是老 HTTP `GET /health`（127.0.0.1:8765）。
-      //   8765 已退役，那条请求平时必然失败（正是 plugin-status.json 里
-      //   `lastRequestError` 的来源）。现在改走**引擎桥的同名接口**
-      //   （`kb.health`，与 healthCheck 取的是同一份数据），拿不到就用
-      //   `self.kbDir()` 这个缓存值兜底（下面 kbDir 初值就是它）。
+      // 拿不到就用 `self.kbDir()` 这个缓存值兜底（下面 kbDir 初值就是它）。
       let kbDir = self.kbDir();      // 缓存值兜底，下面再用 /health 校正
       try {
-        // W3 线2.5：走**共用**的 kbItemInfo（桥优先、退回 HTTP；见 05-server.js）。
-        // ⚠ 它可能回 null（两条通道都失败）——那时只有 Zotero 元数据可发，
+        // 走**共用**的 kbItemInfo（只走引擎桥；见 05-server.js）。
+        // ⚠ 它可能回 null（引擎没起来）——那时只有 Zotero 元数据可发，
         //   下面的 `info[k]` 查不到就落到「这篇还没进知识库」那句，行为可接受。
         const r = await self.kbItemInfo(keys);
         for (const x of (r && r.items) || []) info[x.key] = x;
@@ -4991,27 +4657,23 @@ Object.assign(ZoteroKB, {
       paint(head, st.currentLabel + "\n" + it.key, true);
       let job = null;
       try {
-        const res = await self.request("POST", "/digest", { key: it.key });
-        const jobId = res && res.job;
-        if (!jobId) throw new Error((res && res.error) || "服务端没返回 job id");
+        const res = await self.kbAdminHostRoute("POST", "/digest", { key: it.key });
+        const jobId = (res && ((res.job && res.job.id) || res.job || res.id)) || "";
+        if (!jobId) throw new Error((res && res.error) || "引擎没返回 job id");
         // 学位论文几分钟，给到 30 分钟（真超时也只是"这一篇算失败"，
         // 不中断后面的；服务端那个 job 仍在跑，下一次会命中的它的结果）。
         const deadline = Date.now() + 30 * 60 * 1000;
         while (Date.now() < deadline) {
           if (st.stopped) {
-            // 用户点了停止：**每一轮都发一次**取消请求。服务端是"到下一节
+            // 用户点了停止：**每一轮都发一次**取消请求。引擎是"到下一节
             // 边界才收工"，而这一篇可能正卡在一节几分钟的模型调用里，
-            // 只发一次不够稳（服务端可能刚好还没进循环）。
-            // W3 线2.5（2026-10-14）：桥优先（`kb.digestCancel` 与 HTTP
-            // `POST /digest/cancel` **置的是同一个取消标记**），失败退回老 HTTP。
+            // 只发一次不够稳（引擎可能刚好还没进循环）。
             try {
               await self.kbAdminHostRoute("POST", "/digest/cancel", {});
-            } catch (e0) {
-              self.request("POST", "/digest/cancel", {}).catch(() => {});
-            }
+            } catch (e0) { /* 这一轮没发出去，下一轮再试 */ }
           }
           await new Promise((r) => setTimeout(r, 2000));
-          // W3 线2.5：轮询也走桥（`jobs.get` 与 HTTP 同形），失败退回老 HTTP。
+          // 轮询也走桥（`jobs.get`）。
           job = await self.kbJobGet(jobId);
           if (!job) break;
           const log = job.log || [];
@@ -5128,7 +4790,7 @@ Object.assign(ZoteroKB, {
   /** 停止正在跑的那一批纲要生成（右键菜单里的「停止生成纲要」）。
    *
    * ⚠ 这不是"杀线程"，而是**置一个标记**：服务端在每节开始前看一眼
-   *   （见 localserver.do_digest 的 should_stop）。已经在跑的那一次模型
+   *   （见 kbops.do_digest 的 should_stop）。已经在跑的那一次模型
    *   调用会跑完，所以点完可能还要等十几秒才真的停 —— 提示里要说清，
    *   否则用户以为没点着。
    */
@@ -5145,12 +4807,8 @@ Object.assign(ZoteroKB, {
     }
     st.stopped = true;
     // 主循环里还会反复发（一篇可能正卡在一节长调用里），这里先发一次求快。
-    // W3 线2.5：桥优先，失败退回老 HTTP（两处都得改，只改一处会留下隐形 HTTP 依赖）。
     self.kbAdminHostRoute("POST", "/digest/cancel", {}).catch((e0) => {
-      Zotero.debug("[zotero-kb] 引擎桥停止纲要失败（退回 HTTP）：" + e0);
-      self.request("POST", "/digest/cancel", {}).catch((e) => {
-        Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e);
-      });
+      Zotero.debug("[zotero-kb] 请求停止纲要失败：" + e0);
     });
     self.notify("正在停止生成纲要…",
       "当前这一篇会在这一节的模型调用跑完后停下；\n"
@@ -5816,11 +5474,8 @@ Object.assign(ZoteroKB, {
         mailboxClaimed: self.mailboxClaimed || 0,
         mailboxLastTask: self.mailboxLastTask || "",
         mailboxLastClaimAt: self.mailboxLastClaimAt || "",
-        taskPollHttp: !!self.getPref("zotero-kb.taskPollHttp", true),
         timerDiag: self.timerDiag || null,
         alive: !!self.alive,
-        lastRequestError: self.lastRequestError || "",
-        lastRequests: self.lastRequests || [],
         // 「生成分节纲要」的现况与上一批结果。
         // 为什么必须落盘：这项的 UI 只有一个 Zotero 进度窗（而且它**没有**
         // 可查的历史），出问题（"点了没反应"/"列没变"）时，能从 Python 侧
@@ -6035,12 +5690,9 @@ Object.assign(ZoteroKB, {
   /**
    * 拉取全量权重映射填进内存缓存（供同步的 dataProvider 查表）。
    *
-   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kbAdminHostRoute("GET","/weights")`
-   * → 引擎 `kb.weightsMap`），拿不到就**退回老 HTTP** —— 过渡期两条都必须能用。
-   * 为什么先桥后 HTTP：桥不需要那个常驻 8765 服务（引擎按需拉起、随 Zotero 退出），
-   * 这正是"去掉常驻服务"要的效果；而 HTTP 兜底保证在引擎起不来时列表还有数。
-   * ⚠ 引擎那边**必须**是全量映射（每篇都有基础权重）。用 `advanced.weightList`
-   *   （只列有经验的几篇）会让其余全空白 —— 老实现就踩过这个坑。
+   * 只走宿主半的引擎桥（`GET /weights` → 引擎 `kb.weightsMap`）；拿不到就先补一次
+   * `healthCheck`（拉起引擎）再试一次。⚠ 引擎那边**必须**是全量映射（每篇都有
+   * 基础权重）。用 `advanced.weightList`（只列有经验的几篇）会让其余全空白。
    */
   refreshWeights: async function () {
     var self = ZoteroKB;
@@ -6048,17 +5700,13 @@ Object.assign(ZoteroKB, {
     try {
       res = await self.kbAdminHostRoute("GET", "/weights");
     } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥取权重失败（退回 HTTP）：" + e);
+      Zotero.debug("[zotero-kb] 引擎桥取权重失败：" + e);
     }
     if (!res || !res.weights) {
+      // 拿不到（引擎刚起、还没就绪）→ 补问一次 healthCheck（拉起引擎），再试一次。
+      await this.healthCheck();
       try {
-        res = await this.request("GET", "/weights");
-        if (!res || !res.weights) {
-          // 拿不到（引擎刚起、还没就绪）→ 补问一次 healthCheck（问引擎桥的 kb.health），
-          // 再试一次。
-          await this.healthCheck();
-          res = await this.request("GET", "/weights");
-        }
+        res = await self.kbAdminHostRoute("GET", "/weights");
       } catch (e) {
         Zotero.debug("[zotero-kb] 拉权重失败：" + e);
       }
@@ -6338,16 +5986,11 @@ Object.assign(ZoteroKB, {
    * 原本只能"打开 运行JavaScript 窗口 → 复制 → 粘贴 → Ctrl+R"，一次几十秒。
    * 有了轮询，Python 侧派任务、插件执行、结果回传，全自动。
    *
-   * ⚠ 两条队列：**文件信箱**（`<知识库>\mailbox`，新的、正路）与**老的 HTTP 队列**
-   *   （`GET /task`，兜底）。2026-10-13 W3 线2 第一条就位之后，第二条一直是
-   *   "过渡期留着"；2026-10-16（用户拍板"HTTP 噪音一起清"）它**默认关闭**
-   *   （`zotero-kb.taskPollHttp` 默认 false）—— 因为它是**每 2 秒一次**的定时请求，
-   *   而 8765 已退役，每次必然失败，正是状态文件里那堆连接错误的来源。
-   *   要旧通道就把那个 pref 显式设回 true（并且 `scripts\4-service.vbs` 起服务）。
-   *   同一个任务只会被写进其中一处，所以不存在双执行；先看信箱、要开 HTTP 才看它。
+   * ⚠ 只有**文件信箱**一条队列（2026-10 起）：`<知识库>\mailbox` —— 没有端口、
+   *   没有 token、服务没跑也能干活。老的 HTTP 队列（GET /task）已随 8765 一起删除。
    *
-   * 安全：老通道走服务 token；新通道只认本机文件系统里的那个目录（没有端口）。
-   * 不想开这个能力就把 prefs 里的 autoTaskPoll 设为 false。
+   * 安全：只认本机文件系统里的那个目录；不想开这个能力就把 pref
+   * `autoTaskPoll` 设为 false。
    *
    * ⚠ 定时器的坑（本机实测，花了很久）：
    *   `setInterval` 在这个沙箱里**创建成功但回调从不触发**
@@ -6474,22 +6117,12 @@ Object.assign(ZoteroKB, {
       if (self.taskBusy) return;
       self.taskBusy = true;
       try {
-        // ① 新通道：文件信箱（不需要服务在跑）。领取一个就执行一个。
+        // 只有文件信箱一条通道（领取一个就执行一个）。
         let task = null;
         try {
           task = await self.pollTaskMailbox();
         } catch (e) {
           Zotero.debug("[zotero-kb] 任务信箱轮询失败：" + e);
-        }
-        // ② 老通道：HTTP 队列（**默认关闭**，见 startTaskPolling 的说明）。
-        //    开着时才发 GET /task —— 8765 退役后这是纯噪音，所以默认不走。
-        if (!task && self.getPref("zotero-kb.taskPollHttp", false)) {
-          try {
-            const res = await self.request("GET", "/task");
-            if (res && res.task) { task = res.task; task.__via = "http"; }
-          } catch (e) {
-            // 服务没跑是最常见的情况（W3 之后本来就会没跑），不必刷日志
-          }
         }
         if (task) {
           Zotero.debug("[zotero-kb] 领取任务 " + task.id + "（" + task.kind
@@ -6579,19 +6212,10 @@ Object.assign(ZoteroKB, {
       Zotero.logError(e);
     }
     const ms = Date.now() - started;
-    // 回报结果：在哪领的就回哪去（信箱任务绝不能往 HTTP 回，反之亦然 ——
-    // 回错地方派发方永远等不到结果，而且看起来像"任务丢了"）。
+    // 结果只回文件信箱（任务就是从那里领的）。
     try {
-      if (task.__via === "mailbox") {
-        await self.reportTaskMailbox(task, ok, error,
-          { value: self.safeStringify(result), ms: ms, pluginVersion: self.version });
-      } else {
-        await self.request("POST", "/task/result", {
-          id: task.id, ok: ok, error: error,
-          result: { value: self.safeStringify(result), ms: ms,
-                    pluginVersion: self.version },
-        });
-      }
+      await self.reportTaskMailbox(task, ok, error,
+        { value: self.safeStringify(result), ms: ms, pluginVersion: self.version });
     } catch (e) {
       Zotero.debug("[zotero-kb] 回报任务结果失败：" + e);
     }
@@ -6933,9 +6557,10 @@ Object.assign(ZoteroKB, {
  * ## 规矩
  *
  *   · 插件**首次启动**、且**没检测到**某个可选组件时，弹**一次**对话框：
- *     「看安装方法」/「以后再说」。
- *   · 「看安装方法」弹一条提示，直接写清去哪装、怎么装（MinerU 用项目里的
- *     `scripts\install-mineru.cmd`；Ollama 用官网安装器）。
+ *     「打开面板去装」/「以后再说」。
+ *   · 「打开面板去装」打开管理面板；真正的安装按钮在
+ *     「偏好设置 → 可选组件安装引导」（MinerU 开始安装 / Ollama 拉取推荐模型）。
+ *     这里不再重复安装说明（两处必然漂移）。
  *   · 无论选哪个都记 `optionalGuideDone`，不再打扰；已经装齐的用户一次都不弹。
  *
  * ## 为什么先本地看一眼、再问服务
@@ -6953,10 +6578,9 @@ Object.assign(ZoteroKB, {
  *
  * ## 本文件只做"首启引导"
  *
- * 早期那套图形化安装向导（说明代价 → 体检 → 后台安装）随旧的 Tk 面板一起退役，
- * 那时它是 `tools/panels/*_guide.py`。现在**没有任何一键安装按钮**：面板的
- * 「运行环境」页看八个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
- * 所以这里**不许**再把用户指向"面板里的安装向导"。
+ * 真正的安装动作在管理面板「偏好设置 → 可选组件安装引导」：MinerU 跑项目里的
+ * `scripts\install-mineru.ps1`、Ollama 打开官网下载页 / `ollama pull`。
+ * 这里只负责**告诉用户去哪**并打开面板，不再各写一份安装说明。
  */
 Object.assign(ZoteroKB, {
 
@@ -7055,7 +6679,7 @@ Object.assign(ZoteroKB, {
 
   /**
    * 弹对话框。`missing` 是缺的组件名数组（"mineru" / "ollama"）。
-   * 返回 0 =「看安装方法」，1 =「以后再说」。
+   * 返回 0 =「打开面板去装」，1 =「以后再说」。
    *
    * 为什么用 `Services.prompt.confirmEx` 而不是自绘窗口：它是**同步**的、
    * 两个按钮的文案都能自定义，而且不需要额外 xhtml。
@@ -7070,16 +6694,17 @@ Object.assign(ZoteroKB, {
       + "\n\n不装完全不影响现有功能：\n"
       + "  · 不装 MinerU：正文仍用 Zotero 缓存 + PyMuPDF 解析；\n"
       + "  · 不装 Ollama：在面板「运行环境 → 模型配置」里改成用 API（DeepSeek 等）即可。\n\n"
-      + "要看怎么装吗？\n"
-      + "  · MinerU：双击项目里的 scripts\\install-mineru.cmd；\n"
-      + "  · Ollama：到 ollama.com 下 Windows 安装器。";
+      + "要打开管理面板去装吗？\n"
+      + "  面板 →「偏好设置」→「可选组件安装引导」：\n"
+      + "  · MinerU 有「开始安装」（装到项目内 .mineru\\）；\n"
+      + "  · Ollama 有「打开官网下载页」和「拉取推荐模型」。";
     try {
       const ps = Services.prompt;
       const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
         + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_IS_STRING;
       const win = (Zotero.getMainWindow && Zotero.getMainWindow()) || null;
       return ps.confirmEx(win, "知识库：可选组件（不装也能用）", body, flags,
-                          "看安装方法", "以后再说", null, null, {});
+                          "打开面板去装", "以后再说", null, null, {});
     } catch (e) {
       Zotero.debug("[zotero-kb] 弹可选组件引导失败：" + e);
       return 1;
@@ -7088,29 +6713,19 @@ Object.assign(ZoteroKB, {
 
 
   /**
-   * 「看安装方法」：弹一条提示，直接写清**去哪装、怎么装**。
-   * `which` = "mineru" | "ollama"。
+   * 「打开面板去装」：打开管理面板（安装按钮在「偏好设置」页）。
    *
-   * ⚠ 这里**不能**把用户指向"面板里的安装向导" —— 那套图形化向导随旧的 Tk 面板
-   * 一起退役了；现在面板的「运行环境」/「PDF 解析」页只负责**看状态与跑解析**，
-   * 没有一键安装按钮。所以这里给的是真能照着做的两条路。
-   * 返回 false 让调用方知道"没自动打开"。
+   * ⚠ 这里不重复安装步骤 —— 面板里那两块是唯一实现（MinerU 跑
+   *   scripts\install-mineru.ps1；Ollama 打开官网 / ollama pull）。
+   * 返回 false 让调用方知道"没有自动安装"。
    */
   openOptionalGuide: function (which) {
     var self = ZoteroKB;
-    const isOllama = (which === "ollama");
-    const how = isOllama
-      ? ("到 ollama.com/download 下 Windows 安装器装上（按用户安装，不需要管理员），\n"
-         + "再拉一个模型：ollama pull qwen3:4b-instruct。\n"
-         + "装完在面板「运行环境」页能看到它被认出来，"
-         + "「模型配置」那一栏就能选它。")
-      : ("双击项目里的 scripts\\install-mineru.cmd"
-         + "（加 -WithVlm 会连 VLM 档一起装），或在命令行跑：\n"
-         + "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\install-mineru.ps1\n"
-         + "装完在面板「运行环境」页会显示已认到，「PDF 解析」页可以开始解析。");
+    try { if (self.openPanel) self.openPanel(); } catch (e) { /* 面板打不开也不影响提示 */ }
     try {
-      self.notify("装 " + (isOllama ? "Ollama" : "MinerU") + "（可选组件）",
-        how + "\n\n面板里的对应页只负责看状态、跑解析，没有一键安装按钮。",
+      self.notify("装 " + (which === "ollama" ? "Ollama" : "MinerU") + "（可选组件）",
+        "已打开管理面板：到「偏好设置 → 可选组件安装引导」点安装。\n"
+        + "（MinerU 会装到项目内 .mineru\\；Ollama 会打开官网下载页 / 拉取推荐模型。）",
         null, false);
     } catch (e) { /* 提示失败不影响调用方 */ }
     return false;
@@ -7324,23 +6939,14 @@ Object.assign(ZoteroKB, {
     return "outline";
   },
 
-  /** 字号（px，只作用于这一列）。12~20，默认 13。 */
+  /** 字号（px，只作用于这一列）。唯一来源是面板「偏好设置」写的 pref。10~20，默认 13。 */
   kbviewFont: function () {
     var self = ZoteroKB;
     try {
       const v = parseInt(self.getPref(self.PREFS.kbviewFont, 13), 10);
-      if (v >= 10 && v <= 24) return v;
+      if (v >= 10 && v <= 20) return v;
     } catch (e) { /* ignore */ }
     return 13;
-  },
-
-  setKbviewFont: function (px) {
-    var self = ZoteroKB;
-    try {
-      const v = parseInt(px, 10);
-      // ⚠ 写 pref 用 Zotero.Prefs.set：插件里**没有** setPref 这个包装
-      if (v >= 10 && v <= 24) Zotero.Prefs.set(self.PREFS.kbviewFont, v);
-    } catch (e) { /* ignore */ }
   },
 
   setKbviewLevel: function (id) {
@@ -7989,11 +7595,6 @@ Object.assign(ZoteroKB, {
       self.kbviewPush(win, kind, msg.level);
       return;
     }
-    if (t === "setFont") {
-      self.setKbviewFont(msg.font);
-      self.kbviewPush(win, kind, null);
-      return;
-    }
     if (t === "openPath") {
       try { self.openKbPath(msg.path, "知识库文件"); }
       catch (e) { Zotero.debug("[zotero-kb] 打开文件失败：" + e); }
@@ -8175,15 +7776,10 @@ Object.assign(ZoteroKB, {
       out.order = order;
       out.md = "";                      // 逐页时整份 md 不必再传（省一半体积）
       let meta = {};
-      // W3 线2.5（2026-10-14）：桥优先（`doc.get` = 与 HTTP `GET /doc-edit` **同一份**
-      // 只读状态），拿不到再退回老 HTTP —— 失败了都一样当空（页面照样渲染）。
+      // 只走引擎桥（`doc.get`，只读状态）；失败当空（页面照样渲染）。
       try {
-        try {
-          meta = await self.kbAdminHostRoute("GET",
-            "/doc-edit?key=" + encodeURIComponent(out.key));
-        } catch (e0) {
-          meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(out.key));
-        }
+        meta = await self.kbAdminHostRoute("GET",
+          "/doc-edit?key=" + encodeURIComponent(out.key));
       } catch (e9) { meta = {}; }
       out.edited = (meta && meta.edited) || [];
       out.stale = (meta && meta.stale) || [];
@@ -8320,15 +7916,9 @@ Object.assign(ZoteroKB, {
     if (!item) return false;
     self.kbviewHint(win, kind, "正在导出草稿…");
     try {
-      // W3 线2.5：桥优先（`doc.save` = HTTP `POST /doc-edit` 同一份实现），失败退回老 HTTP。
-      let r = null;
-      try {
-        r = await self.kbAdminHostRoute("POST", "/doc-edit",
-                                        { key: item.key, action: "draft" });
-      } catch (e0) {
-        Zotero.debug("[zotero-kb] 引擎桥导草稿失败（退回 HTTP）：" + e0);
-        r = await self.request("POST", "/doc-edit", { key: item.key, action: "draft" });
-      }
+      // 只走引擎桥（`doc.save`）。
+      const r = await self.kbAdminHostRoute("POST", "/doc-edit",
+                                            { key: item.key, action: "draft" });
       if (r && r.path) {
         self.kbviewHint(win, kind, "草稿已写出：" + r.path);
         try { self.openKbPath(r.path, "正文草稿"); } catch (e) { /* 打不开不影响导出 */ }
@@ -8795,8 +8385,8 @@ Object.assign(ZoteroKB, {
     if (!jobId) return {};
     for (var i = 0; i < 240; i++) {
       var job = {};
-      try { job = await self.request("GET", "/jobs/" + encodeURIComponent(jobId)); }
-      catch (e) { return {}; }
+      job = await self.kbJobGet(jobId);
+      if (!job) return {};
       if (onTick) onTick(job);
       if (job && job.state && job.state !== "running") return job;
       await new Promise(function (r) { setTimeout(r, 1500); });
@@ -8814,20 +8404,15 @@ Object.assign(ZoteroKB, {
     var note = onStatus || function () {};
     note("正在重建切片…");
     var res = null;
-    // W3 线2.5（2026-10-14）：桥优先（`doc.save`，**写路径**：保存某一页的修订并派一次
-    // 单篇重建 —— 与 HTTP `POST /doc-edit` 同一份实现），失败退回老 HTTP。
+    // 只走引擎桥（`doc.save`，**写路径**：保存某一页的修订并派一次单篇重建）。
     try {
-      try { res = await self.kbAdminHostRoute("POST", "/doc-edit", body); }
-      catch (e0) {
-        Zotero.debug("[zotero-kb] 引擎桥保存正文失败（退回 HTTP）：" + e0);
-        res = await self.request("POST", "/doc-edit", body);
-      }
+      res = await self.kbAdminHostRoute("POST", "/doc-edit", body);
     } catch (e) {
       note("请求失败：" + ((e && e.message) ? e.message : e));
       return false;
     }
     if (!res || !res.job) {
-      note("服务没有返回任务：" + JSON.stringify(res == null ? {} : res).slice(0, 120));
+      note("引擎没有返回任务：" + JSON.stringify(res == null ? {} : res).slice(0, 120));
       return false;
     }
     var done = await self.kbviewWaitJob(res.job, function (j) {
@@ -9030,9 +8615,7 @@ Object.assign(ZoteroKB, {
    * 只 Zotero.debug 一句，并且**保留上一次的数据** —— 服务重启几秒钟，
    * 不该让两列一起变空。
    *
-   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**
-   * （`kbAdminHostRoute("GET","/col-status")` → 引擎 `kb.colStatus`），拿不到再退回
-   * 老 HTTP —— 过渡期两条都必须能用。桥不需要常驻 8765（引擎随 Zotero 起停）。
+   * 只走宿主半的引擎桥（`GET /col-status` → 引擎 `kb.colStatus`）。
    * ⚠ 引擎那边 `outline_sections` 必须走 `meta.ai_outline:`（读端口径），
    *   不是数 `views/*.outline.md` 文件个数：本机 94 篇有 meta、只有 50 个文件，
    *   按文件数会把 44 篇有纲要的显示成 ✗。
@@ -9044,11 +8627,7 @@ Object.assign(ZoteroKB, {
       try {
         res = await self.kbAdminHostRoute("GET", "/col-status");
       } catch (e) {
-        Zotero.debug("[zotero-kb] 引擎桥取列状态失败（退回 HTTP）：" + e);
-      }
-      if (!res || !res.ok || !res.items) {
-        // 桥不可用 / 桥没给数据 → 走老 HTTP 兜一次（过渡期两条都活着）。
-        res = await self.request("GET", "/col-status");
+        Zotero.debug("[zotero-kb] 引擎桥取列状态失败：" + e);
       }
       if (!res || !res.ok || !res.items) {
         Zotero.debug("[zotero-kb] 拉列状态失败（保持原样）："
@@ -9380,25 +8959,18 @@ ZoteroKB.kbFormulaStart = function (event) {
     url += "&rects=" + encodeURIComponent(JSON.stringify(info.rects));
   }
   self.writeStatusFile({ kbFormulaLast: "定位 " + info.key + " p" + info.page });
-  // W3 线2.5（2026-10-14）：桥优先（`formula.target`，与 HTTP `GET /formula-target`
-  // 同一份实现：rects 走查询串、是 JSON 字符串），拿不到再退回老 HTTP。
-  const ask = (async function () {
-    try { return await self.kbAdminHostRoute("GET", url); }
-    catch (e0) {
-      Zotero.debug("[zotero-kb] 引擎桥定位公式失败（退回 HTTP）：" + e0);
-      return await self.request("GET", url);
-    }
-  })();
+  // 只走引擎桥（`formula.target`：rects 走查询串、是 JSON 字符串）。
+  const ask = self.kbAdminHostRoute("GET", url);
   ask.then(function (res) {
     if (!res || res.ok !== true) {
       self.kbFormulaAlert("没找到可改的公式："
-        + ((res && (res.error || res.why)) || "本机服务没返回原因"));
+        + ((res && (res.error || res.why)) || "引擎没返回原因"));
       return;
     }
     if (!self.kbviewIsOpen(win, "reader")) self.kbviewOpen(win, "reader");
     self.kbFormulaSendWhenReady(win, res, 0);
   }).catch(function (e2) {
-    self.kbFormulaAlert("连本机服务失败：" + e2);
+    self.kbFormulaAlert("引擎没有响应：" + e2);
   });
 };
 
@@ -9434,17 +9006,11 @@ ZoteroKB.kbFormulaApply = function (win, kind, msg) {
   const back = function (payload) {
     if (dock) self.kbviewSend(dock, payload);
   };
-  // W3 线2.5（2026-10-14）：桥优先（`formula.apply`，**写路径**：写回该页第 ordinal 条
-  // $$…$$ 并复用 doc.save 的重切重向量 —— 与 HTTP `POST /formula-apply` 同一份实现）。
+  // 只走引擎桥（`formula.apply`，**写路径**：写回该页第 ordinal 条 $$…$$，
+  // 并复用 doc.save 的重切重向量）。
   const payload = { key: msg.key, page: msg.page, latex: msg.latex,
                     ordinal: msg.ordinal, old_latex: msg.old_latex };
-  const send = (async function () {
-    try { return await self.kbAdminHostRoute("POST", "/formula-apply", payload); }
-    catch (e0) {
-      Zotero.debug("[zotero-kb] 引擎桥写回公式失败（退回 HTTP）：" + e0);
-      return await self.request("POST", "/formula-apply", payload);
-    }
-  })();
+  const send = self.kbAdminHostRoute("POST", "/formula-apply", payload);
   send.then(function (res) {
     if (!res || res.error) {
       back({ type: "formulaResult", ok: false,
@@ -9463,15 +9029,9 @@ ZoteroKB.kbFormulaMathType = function (win, kind, msg) {
   var self = ZoteroKB;
   const host = self.kbviewHost(win, false);
   const dock = host ? (kind === "reader" ? host.read : host.lib) : null;
-  // W3 线2.5（2026-10-14）：桥优先（`formula.mathtype`：本机放剪贴板 + 起 MathType），
-  // 失败退回老 HTTP。`dry_run` 只在自检里用，正常路径不传。
-  const askMt = (async function () {
-    try { return await self.kbAdminHostRoute("POST", "/formula-mathtype", { latex: msg.latex || "" }); }
-    catch (e0) {
-      Zotero.debug("[zotero-kb] 引擎桥起 MathType 失败（退回 HTTP）：" + e0);
-      return await self.request("POST", "/formula-mathtype", { latex: msg.latex || "" });
-    }
-  })();
+  // 只走引擎桥（`formula.mathtype`：本机放剪贴板 + 起 MathType）。
+  const askMt = self.kbAdminHostRoute("POST", "/formula-mathtype",
+                                      { latex: msg.latex || "" });
   askMt
     .then(function (res) {
       if (dock) {
@@ -9494,13 +9054,8 @@ ZoteroKB.kbFormulaMathType = function (win, kind, msg) {
 ZoteroKB.kbFormulaWaitJob = function (win, kind, jobId, tries) {
   var self = ZoteroKB;
   if (!jobId) { self.kbviewPush(win, kind, null); return; }
-  // W3 线2.5：轮询也走桥（`jobs.get`，与 HTTP `GET /jobs/<id>` 同形），失败退回 HTTP。
-  const poll = (async function () {
-    try { return await self.kbAdminHostRoute("GET", "/jobs/" + encodeURIComponent(jobId)); }
-    catch (e0) {
-      return await self.request("GET", "/jobs/" + encodeURIComponent(jobId));
-    }
-  })();
+  // 轮询也走桥（`jobs.get`）。
+  const poll = self.kbAdminHostRoute("GET", "/jobs/" + encodeURIComponent(jobId));
   poll.then(function (j) {
     const st = String((j && j.state) || "");
     if (st === "done" || st === "failed" || st === "cancelled" || tries > 120) {
@@ -9668,7 +9223,7 @@ Object.assign(ZoteroKB, {
   KB_ADMIN_ROUTES: {
     // 页面顶部那句话（admin.js::boot 用 /health）与状态卡
     "GET /health": { method: "kb.health", from: "query" },
-    // 知识库位置：老 HTTP 服务停着也要能用（原来只有 8765 上那条）
+    // 知识库位置（引擎 kb.location）
     "GET /kb-location": { method: "kb.location", from: "query" },
     "POST /kb-location": { method: "kb.locationMigrate", from: "body" },
     "GET /status": { method: "kb.status", from: "query" },
@@ -9745,7 +9300,7 @@ Object.assign(ZoteroKB, {
     "POST /classify": { method: "ai.classify", from: "body" },
     "POST /apply-suggestion": { method: "ai.apply", from: "body" },
     "POST /maintain": { method: "maintain.run", from: "body" },
-    // 「偏好设置」页的「立即同步一次」（引擎复用 localserver 的同步实现）。
+    // 「偏好设置」页的「立即同步一次」（引擎复用 kbops 的同步实现）。
     "POST /kb-sync": { method: "kb.sync", from: "body" },
     // PDF 解析
     "GET /mineru-status": { method: "mineru.status", from: "query" },
@@ -9757,6 +9312,9 @@ Object.assign(ZoteroKB, {
     "POST /typefix": { method: "meta.typefixOne", from: "body" },
     "POST /mineru/parse": { method: "mineru.parse", from: "body" },
     "POST /mineru/clear": { method: "mineru.clear", from: "body" },
+    // 2026-10：面板「偏好设置」里的**真安装**入口（长任务；输出进 job.log）。
+    "POST /mineru/install": { method: "mineru.install", from: "body" },
+    "POST /ollama/pull": { method: "ollama.pull", from: "body" },
     // 损坏查询
     "GET /quality-stats": { method: "quality.stats", from: "query" },
     "POST /quality-scan": { method: "quality.scan", from: "body" },
@@ -10338,6 +9896,8 @@ Object.assign(ZoteroKB, {
     "POST /plugin-prefs": "kbAdminHostPrefsSet",
     // 打开知识库目录（面板里只有宿主能碰文件系统）。
     "POST /open-path": "kbAdminHostOpenPath",
+    // 打开外部链接（安装引导里的官网下载页；只允许 http/https）。
+    "POST /open-url": "kbAdminHostOpenUrl",
     // 「重启引擎」真的停掉子进程（不再走引擎的占位方法）。
     "POST /service/restart": "kbAdminHostServiceRestart",
   },
@@ -10625,13 +10185,11 @@ Object.assign(ZoteroKB, {
     createMissing: { key: "zotero-kb.createMissing", type: "bool" },
     filterBareModels: { key: "zotero-kb.filterBareModels", type: "bool" },
     kbviewLevel: { key: "zotero-kb.kbviewLevel", type: "string" },
-    kbviewFont: { key: "zotero-kb.kbviewFont", type: "int", min: 10, max: 24 },
+    kbviewFont: { key: "zotero-kb.kbviewFont", type: "int", min: 10, max: 20 },
     syncEnabled: { key: "zotero-kb.syncEnabled", type: "bool" },
     syncMode: { key: "zotero-kb.syncMode", type: "string" },
     syncTarget: { key: "zotero-kb.syncTarget", type: "string" },
     autoTaskPoll: { key: "zotero-kb.autoTaskPoll", type: "bool" },
-    taskPollHttp: { key: "zotero-kb.taskPollHttp", type: "bool" },
-    autoStartService: { key: "zotero-kb.autoStartService", type: "bool" },
     mailboxDir: { key: "zotero-kb.mailboxDir", type: "string" },
   },
 
@@ -10702,6 +10260,22 @@ Object.assign(ZoteroKB, {
       } catch (e) {
         throw new Error("写 " + spec.key + " 失败：" + e);
       }
+      // 字号改完让**已经开着的侧栏**立刻换字号（不用重新打开/切条目）。
+      if (name === "kbviewFont") {
+        try {
+          const m = self.kbviewMap && self.kbviewMap();
+          if (m) {
+            m.forEach(function (host) {
+              [host && host.read, host && host.lib].forEach(function (dock) {
+                if (dock && dock.open) {
+                  try { self.kbviewSend(dock, { type: "font", font: val }); }
+                  catch (e2) { /* 某一列发不出去不影响别的 */ }
+                }
+              });
+            });
+          }
+        } catch (e3) { /* 面板不该因为侧栏没开而保存失败 */ }
+      }
     }
     if (!touched) throw new Error("没有可写入的偏好项");
     return { ok: true, touched: touched };
@@ -10716,6 +10290,14 @@ Object.assign(ZoteroKB, {
     if (!f.exists()) throw new Error("路径不存在：" + p);
     f.reveal();
     return { ok: true, path: p };
+  },
+
+  /** `POST /open-url` —— 用系统默认浏览器打开一个 http(s) 链接（安装官网用）。 */
+  kbAdminHostOpenUrl: function (body) {
+    const url = String((body && body.url) || "").trim();
+    if (!/^https?:\/\//i.test(url)) throw new Error("只允许 http(s) 链接");
+    Zotero.launchURL(url);
+    return { ok: true, url: url };
   },
 
   /**

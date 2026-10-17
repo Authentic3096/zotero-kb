@@ -55,7 +55,7 @@ ROWS_STALE_JSON = "rows.stale.json"
 TOMBSTONE_JSON = "tombstone.json"
 MINERU_SUB = "mineru"        # kb/mineru/<key>/ 在 trash 里就叫 mineru/
 SNAPSHOT_VERSION = 1
-# 运行日志：与 localserver.log / zotero-sync.log 同一个日志目录（<知识库>\logs\）
+# 运行日志：与 kbops.log / zotero-sync.log 同一个日志目录（<知识库>\logs\）
 LOG_NAME = "trash.log"
 
 

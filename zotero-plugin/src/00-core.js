@@ -13,9 +13,9 @@
  * 用 Zotero API 读写库，少一层依赖、也更稳（升级到 10 后本地 API 一度 403，
  * 但插件这条路不受影响）。
  *
- * 与本地服务的分工：
- *   插件只负责"Zotero 侧"的监听与写入；所有解析、切片、模型推理都在本地
- *   Python 服务（online/localserver.py，端口 8765）里做 —— 因为 PyMuPDF、
+ * 与本地引擎的分工：
+ *   插件只负责"Zotero 侧"的监听与写入；所有解析、切片、模型推理都在按需拉起的
+ *   Python 引擎（online/engine.py，stdio、无端口）里做 —— 因为 PyMuPDF、
  *   嵌入模型、Ollama 都在那边，插件里重写一遍不现实。
  */
 
@@ -215,7 +215,8 @@ var ZoteroKB = {
           (r) => { timing[name] = Date.now() - a; return r; },
           (e) => { timing[name] = Date.now() - a; throw e; });
       };
-      self.serverOnStartup()
+      // 启动后先做一次健康检查（引擎桥 `kb.health`），再刷权重与两列。
+      Promise.resolve()
         .then(timed("healthCheck", () => self.healthCheck()))
         .then(timed("refreshWeights", () => self.refreshWeights()))
         // 两列的数据同一次启动里也拉一份（不拉的话，要等轮询那 30 秒

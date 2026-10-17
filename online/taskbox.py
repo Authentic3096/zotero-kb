@@ -1,12 +1,8 @@
 # -*- coding: utf-8 -*-
-"""任务信箱：把"让 Zotero 插件干一件事"从 HTTP 队列改成**文件信箱**（W3 线2）。
+"""任务信箱：**DSH → Zotero 插件的唯一派活通道**（W3 线2；2026-10 起唯一）。
 
-为什么要有它
-------------
-原来 DSH 侧派活（`tools\\zotero\\dispatch_js.py`、`online/acquire.py`、
-`tools\\zotero\\zotero_session.py quit` 的第①级）都是往常驻的
-`127.0.0.1:8765` POST `/task`，再由 Zotero 插件 `GET /task` 领走。
-W3 要把那个常驻 HTTP 服务送走，于是把这条通道换成"文件即消息"：
+原来的常驻 HTTP 服务（127.0.0.1:8765 的 `/task`）与其队列**已整体删除**，
+这条通道现在是文件即消息：
 
     <知识库>\\mailbox\\
       requests\\<id>.json   ← 派发方写（先写 .tmp 再 rename，读者永远看到完整文件）
@@ -15,7 +11,7 @@ W3 要把那个常驻 HTTP 服务送走，于是把这条通道换成"文件即�
 
 方向与 `zotero-bridge` 的 FLAG_DIR 那套一致（文件即消息、轮询领取），
 只是这条是 DSH → Zotero。**没有端口、没有 token、没有常驻进程**：
-Zotero 关着时任务就静静躺在 requests\\ 里（与 HTTP 队列的行为一样）。
+Zotero 关着时任务就静静躺在 requests\\ 里。
 
 三条语义（刻意与老的 HTTP 队列**逐条对齐**，调用方不必重新想）
 ------------------------------------------------------------

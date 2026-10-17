@@ -30,9 +30,8 @@
     · 兼容 UTF-8 BOM、CRLF/LF、%VAR%（Windows）与 $VAR 展开、~ 展开
     · 文件不存在 → 静默返回空（那不是错误，绝大多数用户根本不需要它）
 
-边界（重要）：密钥不进 `.env`。token / API key 仍然走 `kb/llm-config.json`、
-    `kb/service-token.txt` 这些运行时文件（它们是程序生成、已进 `.gitignore`
-    的，不该拿来手填）。
+边界（重要）：密钥不进 `.env`。API key 仍然走 `kb/llm-config.json`
+    这个运行时文件（程序生成、已进 `.gitignore`，不该拿来手填）。
 """
 
 from __future__ import annotations

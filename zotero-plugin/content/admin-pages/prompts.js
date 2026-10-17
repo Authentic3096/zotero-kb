@@ -33,7 +33,7 @@
   KBAdmin.page({
     id: "prompts",
     title: "提示词",
-    order: 100,
+    order: 110,
 
     async render(host, ctx) {
       const el = ctx.el;

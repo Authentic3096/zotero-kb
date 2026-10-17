@@ -14,11 +14,11 @@
             imgBase,page,edited[],stale[],busy}
     hint   {text}
     busy   {busy,text}
+    font   {font}                 // 面板改了字号 → 已打开的列立刻换（10~20）
 
   本页 → 宿主的动作：
     {type:"selectLevel", level}
     {type:"reload"}
-    {type:"setFont", font}
     {type:"exportDraft"}
     {type:"savePage", page, text}       整页源码模式：直接交整页 markdown
     {type:"saveBlocks", page, parts}    按块编辑：交回 parts（宿主负责拼回整页）
@@ -682,10 +682,7 @@
         return { value: lv.id, label: lv.label };
       }), msg.level);
     }
-    if (msg.font) {
-      els.font.value = String(msg.font);
-      document.documentElement.style.setProperty("--kbv-font-size", String(msg.font) + "px");
-    }
+    if (msg.font) setFontSize(msg.font);
     els.btnDraft.hidden = !st.fulltext;
 
     if (msg.empty) renderEmpty(msg);
@@ -831,10 +828,20 @@
     try { e.tex.focus(); } catch (err) { /* ignore */ }
   }
 
+  /** 正文字号：唯一来源是宿主给的 `font`（pref `zotero-kb.kbviewFont`，10~20）。 */
+  function setFontSize(px) {
+    var v = parseInt(px, 10);
+    if (!isFinite(v)) v = 13;
+    if (v < 10) v = 10;
+    if (v > 20) v = 20;
+    document.documentElement.style.setProperty("--kbv-font-size", v + "px");
+  }
+
   function handle(msg) {
     try {
       if (!msg || typeof msg.type !== "string") return;
       if (msg.type === "render") render(msg);
+      else if (msg.type === "font") setFontSize(msg.font);
       // ⚠ 原来这里还有一个 `page` 消息（宿主翻页时推当前页、本页滚过去）：
       //   2026-10-11 按页跟随去掉，宿主不再发它，这个分支也就删了。
       else if (msg.type === "hint") setText(els.hint, msg.text);
@@ -868,7 +875,6 @@
     els.view = document.getElementById("kbv-view");
     els.hint = document.getElementById("kbv-hint");
     els.level = document.getElementById("kbv-level");
-    els.font = document.getElementById("kbv-font");
     els.btnDraft = document.getElementById("kbv-draft");
     els.btnReload = document.getElementById("kbv-reload");
     els.btnClose = document.getElementById("kbv-close");
@@ -876,11 +882,7 @@
     els.level.addEventListener("change", function () {
       post({ type: "selectLevel", level: els.level.value });
     });
-    els.font.addEventListener("change", function () {
-      var px = parseInt(els.font.value, 10) || 13;
-      document.documentElement.style.setProperty("--kbv-font-size", px + "px");
-      post({ type: "setFont", font: px });
-    });
+    // 字号没有本地控件：唯一来源是面板「偏好设置 → 侧栏」里的数值（px）。
     els.btnDraft.addEventListener("click", function () { post({ type: "exportDraft" }); });
     els.btnReload.addEventListener("click", function () { post({ type: "reload" }); });
     els.btnClose.addEventListener("click", function () { post({ type: "close" }); });

@@ -220,7 +220,6 @@ check("插件对象建起来了", !!(KB && KB.startup), "ZoteroKB 不存在");
 if (KB) {
   // 桩掉会真的碰文件/网络的几步，只验结构
   KB.writeStatusFile = (o) => { calls.status.push(o); };
-  KB.serverOnStartup = async () => {};
   KB.healthCheck = async () => {};
   KB.refreshWeights = async () => {};
   KB.ollamaOnStartup = async () => {};
@@ -1056,10 +1055,11 @@ if (KB) {
     //   `self.setPref(...)` 静默失败一直没被发现（2026-10-05 修的）。
     //   现在监听真的 `Zotero.Prefs.set`，桩与真机口径一致。
     const saved = {
-      _exists: KB._exists, request: KB.request,
+      _exists: KB._exists,
       kbAdminHostRoute: KB.kbAdminHostRoute,
       getPref: KB.getPref, askOptionalGuide: KB.askOptionalGuide,
       notify: KB.notify, prefsSet: Zotero.Prefs.set,
+      openPanel: KB.openPanel,
     };
     KB.getPref = (k, d) => {
       if (k === KB.PREFS.optionalGuideDone) return !!opts.done;
@@ -1068,12 +1068,8 @@ if (KB) {
     };
     Zotero.Prefs.set = (k, v) => { seen.pref.push([k, v]); calls.prefs[k] = v; };
     KB._exists = () => !!opts.localExe;
-    // ⚠ 2026-10-16：这两条探测（MinerU / Ollama 装没装）原来还各有一条**老 HTTP**
-    //   兜底（`KB.request`），那两条已随 8765 退役删除 —— 所以打桩对象必须从
-    //   `KB.request` 换成**引擎桥** `KB.kbAdminHostRoute`。不换的话桩根本拦不到
-    //   真实调用（"服务说装了"这个前提失效，两条 CHECK 会假失败）。
-    //   `KB.request` 仍打桩，是给"万一还有别的路径"留的哨兵。
-    KB.request = async () => { throw new Error("不该再走老 HTTP（8765 已退役）"); };
+    // ⚠ 2026-10：老 HTTP 客户端（`KB.request` / `baseURL`）已随 8765 一起删除；
+    //   两条探测（MinerU / Ollama 装没装）只打桩引擎桥 `KB.kbAdminHostRoute`。
     KB.kbAdminHostRoute = async (m, path) =>
       (path === "/mineru-check"
         ? { ok: !!opts.mineruOk }
@@ -1081,18 +1077,19 @@ if (KB) {
     KB.askOptionalGuide = (missing) => {
       seen.asked++; seen.missing = missing; return opts.choice;
     };
-    // 哨兵：现在**没有任何代码**会去起面板进程；如果哪天又有人加回来，seen.panel 会非空。
+    // 哨兵：引导现在会**直接打开管理面板**（安装按钮在「偏好设置」页）。
+    KB.openPanel = () => { seen.panel.push("open"); };
     KB.notify = (title, body) => { seen.notices.push(String(title) + "|" + String(body)); };
     try {
       await KB.maybeAskOptionalGuides();
     } finally {
       KB._exists = saved._exists;
-      KB.request = saved.request;
       KB.kbAdminHostRoute = saved.kbAdminHostRoute;
       Zotero.Prefs.set = saved.prefsSet;
       KB.getPref = saved.getPref;
       KB.askOptionalGuide = saved.askOptionalGuide;
       KB.notify = saved.notify;
+      KB.openPanel = saved.openPanel;
     }
     return seen;
   };
@@ -1122,23 +1119,23 @@ if (KB) {
       JSON.stringify(s));
 
     s = await guideCase({ choice: 0 });
-    // 2026-10-16：图形化安装向导随 Tk 面板退役后，「看安装方法」**不再拉任何进程、
-    // 也不再指向面板里那个不存在的安装器** —— 改成直接给两条真能照做的路
-    // （MinerU 走 scripts\install-mineru.cmd；Ollama 走官网安装器）。
-    // 断言新意图：① 仍然弹一次并记 pref（用户不会被反复问）② 先缺谁就先说谁
-    // ③ 通知里给的是**真的安装路径**，不是"去面板点安装引导"。
-    check("两个都没装 + 选「看安装方法」→ 给出真安装路径（不再指面板向导），先缺谁开谁",
+    // 2026-10-18：面板里已经有**真安装按钮**了，所以首启引导改成
+    // "打开面板 → 偏好设置 → 可选组件安装引导"，不再自己写一套安装说明
+    // （两处说明必然漂移）。断言：弹一次、记 pref、真的调了 openPanel、
+    // 通知里指的是面板那一页。
+    check("两个都没装 + 选「打开面板去装」→ 打开面板并指到「偏好设置」",
       s.asked === 1 && s.pref.length === 1 && s.pref[0][1] === true
-      && s.panel.length === 0
+      && s.panel.length === 1
       && JSON.stringify(s.missing) === JSON.stringify(["mineru", "ollama"])
-      && s.notices.some((n) => n.indexOf("install-mineru.cmd") >= 0),
+      && s.notices.some((n) => n.indexOf("偏好设置") >= 0
+                               && n.indexOf("可选组件安装引导") >= 0),
       JSON.stringify(s));
 
     s = await guideCase({ mineruOk: true, choice: 0 });
-    check("只有 Ollama 缺 → 只列 Ollama，指的是官网安装器",
+    check("只有 Ollama 缺 → 只列 Ollama，并打开面板的安装引导页",
       JSON.stringify(s.missing) === JSON.stringify(["ollama"])
-      && s.panel.length === 0
-      && s.notices.some((n) => n.indexOf("ollama.com") >= 0),
+      && s.panel.length === 1
+      && s.notices.some((n) => n.indexOf("偏好设置") >= 0),
       JSON.stringify(s));
 
     // ---- ⑥c 的两条 async 断言（放在这里结算，print 前）
@@ -1170,20 +1167,59 @@ if (KB) {
     "openPanel 里应调 kbAdminOpen、且不再出现 tools\\gui.py");
   check("13-kbopen.js 不再有 panelProcess / openKbViaPanel（Tk 兜底链已删）",
     !/panelProcess|openKbViaPanel/.test(openSrc), "");
-  check("19-mineruguide.js 不再调 panelProcess，也不再指向面板里的安装向导",
+  check("19-mineruguide.js 不再调 panelProcess，安装说明只指向面板那一页",
     !/panelProcess/.test(minersrc)
-    && /install-mineru\.cmd/.test(minersrc)
-    && /ollama\.com/.test(minersrc)
-    && !/面板里那个安装引导/.test(minersrc)
-    && !/安装引导在管理面板里/.test(minersrc), "");
+    && /偏好设置/.test(minersrc)
+    && /可选组件安装引导/.test(minersrc)
+    && /openPanel/.test(minersrc), "");
   check("工具栏按钮与条目右键仍指向 openPanel()（入口没删，只是换实现）",
     /registerToolbarButton/.test(src) && /self\.openPanel\(\)/.test(src), "");
-  // 磁盘断言：退役件必须没了；保留件必须还在（4-service.vbs 是线3 的回退路径）
+  // 磁盘断言：退役件必须没了（老 HTTP 服务整条链）
   const root = path.join(PLUGIN, "..");
   check("tools/gui.py 已删除（W4）", !fs.existsSync(path.join(root, "tools", "gui.py")));
   check("tools/panels 目录已删除（W4）", !fs.existsSync(path.join(root, "tools", "panels")));
   check("scripts/0-panel.vbs 已删除（W4）",
     !fs.existsSync(path.join(root, "scripts", "0-panel.vbs")));
+  check("online/localserver.py 已删除（老 HTTP 服务）",
+    !fs.existsSync(path.join(root, "online", "localserver.py")));
+  check("scripts/4-service.vbs & autostart-service.vbs & _kbtools.vbs 已删除",
+    !fs.existsSync(path.join(root, "scripts", "4-service.vbs"))
+    && !fs.existsSync(path.join(root, "scripts", "autostart-service.vbs"))
+    && !fs.existsSync(path.join(root, "scripts", "_kbtools.vbs")));
+  check("业务库 online/kbops.py 在，且不再监听端口",
+    (function () {
+      const p = path.join(root, "online", "kbops.py");
+      if (!fs.existsSync(p)) return false;
+      const s = fs.readFileSync(p, "utf8");
+      return !/HTTPServer|BaseHTTPRequestHandler|service-token/.test(s);
+    })(), "");
+  // HTTP 客户端（request / baseURL）必须彻底消失
+  check("插件里没有 baseURL() / request() 这条 HTTP 通道",
+    !/\bbaseURL:\s*function/.test(src) && !/\brequest:\s*async\s*function/.test(src));
+  check("面板页里不再出现 8765 / taskPollHttp / autoStartService",
+    (function () {
+      const dir = path.join(PLUGIN, "content", "admin-pages");
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith(".js")) continue;
+        const s = fs.readFileSync(path.join(dir, f), "utf8");
+        if (/8765|taskPollHttp|autoStartService/.test(s)) return false;
+      }
+      return true;
+    })(), "");
+  check("插件源码里没有老的 HTTP 任务队列 / 服务开关",
+    !/zotero-kb\.taskPollHttp|zotero-kb\.autoStartService/.test(src)
+    && !/self\.request\("GET", "\/task"\)/.test(src));
+  check("老 HTTP 服务端代码没有留下 service-token.txt 的生成逻辑",
+    (function () {
+      for (const rel of ["online", "offline"]) {
+        for (const f of fs.readdirSync(path.join(root, rel))) {
+          if (!f.endsWith(".py")) continue;
+          const s = fs.readFileSync(path.join(root, rel, f), "utf8");
+          if (/service-token\.txt/.test(s) && !/不再生成|已删除|老库/.test(s)) return false;
+        }
+      }
+      return true;
+    })(), "");
   // ⚠ W4 真机踩到的回归：projectRoot() 原来靠"tools\gui.py 在不在"探测项目根，
   //   删掉 gui.py 后四个探测档全落空 → 引擎起不来（真机现象：`找不到引擎或 Python`）。
   //   这条把它钉住：判据必须是**仍然存在**的标记文件。
@@ -1194,14 +1230,6 @@ if (KB) {
     /_looksLikeProjectRoot/.test(p2)
     && /online[\\\/]engine\.py/.test(p2)
     && !/_exists\([^)]*gui\.py/.test(p2));
-  check("localserver 的项目根标记也换成 online\\engine.py（键名 panel/has_panel 保留）",
-    (function () {
-      const ls = fs.readFileSync(path.join(root, "online", "localserver.py"), "utf8");
-      return /os\.path\.join\(root, "online", "engine\.py"\)/.test(ls)
-             && !/os\.path\.join\(root, "tools", "gui\.py"\)/.test(ls);
-    })(), "");
-  check("scripts/4-service.vbs **仍在**（线3 的回退路径，不许删）",
-    fs.existsSync(path.join(root, "scripts", "4-service.vbs")));
 }
 
 // ============ 管理面板：「刷新」必须真刷新（2026-10-16 修的既有 bug）============

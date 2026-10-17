@@ -164,7 +164,7 @@ def audit_privacy():
 
     # 运行期密钥文件必须被 .gitignore 排除
     gi = read(os.path.join(ROOT, ".gitignore"))
-    must_ignore = ["llm-config.json", "service-token.txt", "bridge-token.txt",
+    must_ignore = ["llm-config.json", "bridge-token.txt",
                    "zotero-api-key.txt", "index.db", ".venv", "*.xpi"]
     missing = [x for x in must_ignore if x not in gi]
     check(f".gitignore 覆盖运行期密钥与产物（{len(must_ignore)} 项）",
@@ -448,10 +448,15 @@ def audit_install():
               not bad_pkgs, f"{bad_pkgs}")
 
     for f in ("scripts/install-env.cmd", "scripts/install-env.ps1",
-              "scripts/_kbtools.vbs",
-              "scripts/1-convert.cmd", "scripts/4-service.vbs"):
+              "scripts/1-convert.cmd"):
         check(f"安装/运行脚本存在：{os.path.basename(f)}",
               os.path.exists(os.path.join(ROOT, f)))
+    # 2026-10：老 HTTP 服务那条链（4-service / autostart / _kbtools）已整体删除，
+    # 它们**不许再回来**（回退入口留着等于服务没真退役）。
+    for f in ("scripts/4-service.vbs", "scripts/autostart-service.vbs",
+              "scripts/_kbtools.vbs", "online/localserver.py"):
+        check(f"退役件已删除：{f}",
+              not os.path.exists(os.path.join(ROOT, f)))
     # W4（2026-10-14）：Tk 面板已退役 —— 它的启动脚本必须**不存在**，
     # 否则就是"删代码但留了能把它拉起来的入口"（那等于没退役）。
     check("Tk 面板启动脚本 0-panel.vbs 已删除（W4）",
@@ -493,12 +498,11 @@ def audit_install():
 # 为什么会有例外：Windows PowerShell 5.1 读 **无 BOM** 的 .ps1 时会按 ANSI 解码，
 # 里面成片的中文字符串会全部变乱码、甚至直接报语法错 ——
 # 所以 **含中文的 .ps1 必须带 BOM**，不是脏。
-# 2026-10-08：install-mineru / install-autostart / sync-skill / fetch-pdf 四个脚本
+# 2026-10-08：install-mineru / sync-skill / fetch-pdf 三个脚本
 # 当初漏了 BOM，在 PS 5.1 下根本跑不起来（MinerU 安装就是因此失败），一并登记。
 BOM_ALLOWED = {
     "scripts/install-env.ps1",
     "scripts/install-mineru.ps1",
-    "scripts/install-autostart.ps1",
     "scripts/sync-skill.ps1",
     "skills/zotero-acquire/tools/fetch-pdf.ps1",
 }

@@ -352,7 +352,7 @@ def main() -> int:
             problems.append(f"缺 {fn}")
 
     internal = ["handleNewItem", "askApply", "applySuggestion", "ensureCollection",
-                "request", "healthCheck", "registerNotifier",
+                "healthCheck", "registerNotifier",
                 "writeStatusFile", "onNotify", "waitJob", "suggestFor", "buildMeta",
                 "notify", "registerWeightColumn", "refreshWeights",
                 "unregisterWeightColumn", "startTaskPolling", "stopTaskPolling",
@@ -533,7 +533,7 @@ def main() -> int:
     # 正则只取到 .扩展名为止 —— 否则会把 url(...) 后面的 `)` 一起吞进来。
     bsrc = open(os.path.join(PLUGIN, "bootstrap.js"), encoding="utf-8").read()
     # 两路都收：
-    #   ① `rootURI + "..."` 这种**直接拼接**的写法（图标、settings.xhtml…）；
+    #   ① `rootURI + "..."` 这种**直接拼接**的写法（图标、面板页…）；
     #   ② 任何以 `content/` 开头的字符串字面量 —— 自建列那个页面是
     #      `base + "content/kbview.html"`（base 是 rootURI 的局部变量），
     #      按 ① 那种模式扫不到，会变成"代码引用了、包里没有、还不报"。

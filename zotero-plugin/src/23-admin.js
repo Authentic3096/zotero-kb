@@ -148,7 +148,7 @@ Object.assign(ZoteroKB, {
   KB_ADMIN_ROUTES: {
     // 页面顶部那句话（admin.js::boot 用 /health）与状态卡
     "GET /health": { method: "kb.health", from: "query" },
-    // 知识库位置：老 HTTP 服务停着也要能用（原来只有 8765 上那条）
+    // 知识库位置（引擎 kb.location）
     "GET /kb-location": { method: "kb.location", from: "query" },
     "POST /kb-location": { method: "kb.locationMigrate", from: "body" },
     "GET /status": { method: "kb.status", from: "query" },
@@ -225,7 +225,7 @@ Object.assign(ZoteroKB, {
     "POST /classify": { method: "ai.classify", from: "body" },
     "POST /apply-suggestion": { method: "ai.apply", from: "body" },
     "POST /maintain": { method: "maintain.run", from: "body" },
-    // 「偏好设置」页的「立即同步一次」（引擎复用 localserver 的同步实现）。
+    // 「偏好设置」页的「立即同步一次」（引擎复用 kbops 的同步实现）。
     "POST /kb-sync": { method: "kb.sync", from: "body" },
     // PDF 解析
     "GET /mineru-status": { method: "mineru.status", from: "query" },
@@ -237,6 +237,9 @@ Object.assign(ZoteroKB, {
     "POST /typefix": { method: "meta.typefixOne", from: "body" },
     "POST /mineru/parse": { method: "mineru.parse", from: "body" },
     "POST /mineru/clear": { method: "mineru.clear", from: "body" },
+    // 2026-10：面板「偏好设置」里的**真安装**入口（长任务；输出进 job.log）。
+    "POST /mineru/install": { method: "mineru.install", from: "body" },
+    "POST /ollama/pull": { method: "ollama.pull", from: "body" },
     // 损坏查询
     "GET /quality-stats": { method: "quality.stats", from: "query" },
     "POST /quality-scan": { method: "quality.scan", from: "body" },
@@ -818,6 +821,8 @@ Object.assign(ZoteroKB, {
     "POST /plugin-prefs": "kbAdminHostPrefsSet",
     // 打开知识库目录（面板里只有宿主能碰文件系统）。
     "POST /open-path": "kbAdminHostOpenPath",
+    // 打开外部链接（安装引导里的官网下载页；只允许 http/https）。
+    "POST /open-url": "kbAdminHostOpenUrl",
     // 「重启引擎」真的停掉子进程（不再走引擎的占位方法）。
     "POST /service/restart": "kbAdminHostServiceRestart",
   },
@@ -1105,13 +1110,11 @@ Object.assign(ZoteroKB, {
     createMissing: { key: "zotero-kb.createMissing", type: "bool" },
     filterBareModels: { key: "zotero-kb.filterBareModels", type: "bool" },
     kbviewLevel: { key: "zotero-kb.kbviewLevel", type: "string" },
-    kbviewFont: { key: "zotero-kb.kbviewFont", type: "int", min: 10, max: 24 },
+    kbviewFont: { key: "zotero-kb.kbviewFont", type: "int", min: 10, max: 20 },
     syncEnabled: { key: "zotero-kb.syncEnabled", type: "bool" },
     syncMode: { key: "zotero-kb.syncMode", type: "string" },
     syncTarget: { key: "zotero-kb.syncTarget", type: "string" },
     autoTaskPoll: { key: "zotero-kb.autoTaskPoll", type: "bool" },
-    taskPollHttp: { key: "zotero-kb.taskPollHttp", type: "bool" },
-    autoStartService: { key: "zotero-kb.autoStartService", type: "bool" },
     mailboxDir: { key: "zotero-kb.mailboxDir", type: "string" },
   },
 
@@ -1182,6 +1185,22 @@ Object.assign(ZoteroKB, {
       } catch (e) {
         throw new Error("写 " + spec.key + " 失败：" + e);
       }
+      // 字号改完让**已经开着的侧栏**立刻换字号（不用重新打开/切条目）。
+      if (name === "kbviewFont") {
+        try {
+          const m = self.kbviewMap && self.kbviewMap();
+          if (m) {
+            m.forEach(function (host) {
+              [host && host.read, host && host.lib].forEach(function (dock) {
+                if (dock && dock.open) {
+                  try { self.kbviewSend(dock, { type: "font", font: val }); }
+                  catch (e2) { /* 某一列发不出去不影响别的 */ }
+                }
+              });
+            });
+          }
+        } catch (e3) { /* 面板不该因为侧栏没开而保存失败 */ }
+      }
     }
     if (!touched) throw new Error("没有可写入的偏好项");
     return { ok: true, touched: touched };
@@ -1196,6 +1215,14 @@ Object.assign(ZoteroKB, {
     if (!f.exists()) throw new Error("路径不存在：" + p);
     f.reveal();
     return { ok: true, path: p };
+  },
+
+  /** `POST /open-url` —— 用系统默认浏览器打开一个 http(s) 链接（安装官网用）。 */
+  kbAdminHostOpenUrl: function (body) {
+    const url = String((body && body.url) || "").trim();
+    if (!/^https?:\/\//i.test(url)) throw new Error("只允许 http(s) 链接");
+    Zotero.launchURL(url);
+    return { ok: true, url: url };
   },
 
   /**

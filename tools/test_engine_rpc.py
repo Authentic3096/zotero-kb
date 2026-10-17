@@ -9,7 +9,7 @@
   · jobs.list 是列表；jobs.get 缺 id / 不存在 → ok:false；
   · kb.digest 缺 key → ok:false；
   · **长任务协议（派发即返回）**：kb.digest 一个不存在的 key（digest 在"找 MinerU
-    产物"那一步就返回，一次模型都不调，见 localserver.self_test [5c] 的同一招）——
+    产物"那一步就返回，一次模型都不调，见旧的 HTTP 自检 [5c] 的同一招）——
     应当**立刻**收到 ok、data 里 `job` 是 `{id}`，再用 `jobs.get` 轮询到结局；
     kb.reindex 与它共用 `_job_dispatch`（这里只测参数校验，不真派全库构建）；
   · 不存在的 method、坏 JSON 行 → 回 ok:false，**引擎不退出**（后面 ping 还能通）；
@@ -237,7 +237,7 @@ def main() -> int:
         # "派发即返回 {job:{id}}"。所以这里的判据是：**响应立刻回来**、
         # data 里给得出 job id、之后 jobs.get 能查到这个 job（并且它最终会 done）。
         # ⚠ 用一个不存在的 key（digest 在"找 MinerU 产物"那一步就返回、一次模型
-        #   都不调，见 localserver.self_test [5c] 的同一招），不给真库派活。
+        #   都不调，见旧的 HTTP 自检 [5c] 的同一招），不给真库派活。
         print("\n[8] 长任务协议（kb.digest 派发即返回 + 轮询 /jobs）")
         _t0 = time.time()
         r, events = send("kb.digest", {"key": "ZZZZZZZZ"}, timeout=60)
@@ -523,9 +523,13 @@ def main() -> int:
               str(d.get("error"))[:52])
         r, _ = send("llm.test", {"provider": "openai", "model": ""})
         d = r.get("data") or {}
-        check("llm.test 外部 API 但没给模型 id → 直接报出来（不发请求）",
+        # ⚠ 这条依赖"本机 llm-config.json 里没存模型"这个前提：存了的话空 model
+        #   会回落成配置里的模型，于是报的是"没有 api_key"（同样是**坏输入直接挡住、
+        #   不发网络请求**）。两种情况都算这条断言通过；别把测试写死成某一句文案。
+        check("llm.test 外部 API 缺模型/缺 Key → 坏输入直接报出来（不发请求）",
               bool(r.get("ok")) and d.get("ok") is False
-              and "模型 id" in str(d.get("error")),
+              and ("模型 id" in str(d.get("error"))
+                   or "api_key" in str(d.get("error"))),
               str(d.get("error"))[:52])
         r, _ = send("llm.test", {"provider": "ollama"}, timeout=60)
         d = r.get("data") or {}
@@ -815,7 +819,7 @@ def main() -> int:
               f"{len(citems)} 条")
         # **口径闸门**：节数必须来自 `meta.ai_outline:<key>`（读端看的），
         # 不是数 `views/*.outline.md` 文件个数 —— 本机 94 篇有 meta、只有 50 个文件，
-        # 按文件数会让 44 篇有纲要的显示成 ✗（老 bug 的取证见 localserver 的
+        # 按文件数会让 44 篇有纲要的显示成 ✗（老 bug 的取证见旧的 HTTP 自检的
         # _outline_meta_counts 注释）。
         n_meta = int(d.get("with_outline") or 0)
         n_file = int(d.get("with_outline_file") or 0)

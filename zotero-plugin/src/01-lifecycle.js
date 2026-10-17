@@ -15,8 +15,6 @@ Object.assign(ZoteroKB, {
     // Ollama 收尾：只有"标记文件在"（= 是我们拉起来的）才关。
     // 放在最前面 —— Zotero 关闭时留给 shutdown 的时间有限，先做要紧的。
     try { self.ollamaOnShutdown(); } catch (e) { /* ignore */ }
-    // 本地服务同理：只关我们自己拉起的那一个（随弃随关）
-    try { self.serverOnShutdown(); } catch (e) { /* ignore */ }
     try {
       if (Zotero.ZoteroKB === self) delete Zotero.ZoteroKB;
     } catch (e) { /* ignore */ }

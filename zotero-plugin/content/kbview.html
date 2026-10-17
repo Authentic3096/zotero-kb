@@ -47,13 +47,7 @@
   <div id="kbv-root" class="kbv-root">
     <header class="kbv-bar">
       <select id="kbv-level" class="kbv-sel" title="显示知识库的哪一级"></select>
-      <select id="kbv-font" class="kbv-sel" title="正文字号">
-        <option value="12">小</option>
-        <option value="13">标准</option>
-        <option value="15">较大</option>
-        <option value="17">大</option>
-        <option value="20">特大</option>
-      </select>
+      <!-- 正文字号没有挡位选择：唯一来源是面板「偏好设置 → 侧栏」里的数值（px）。 -->
       <button id="kbv-draft" class="kbv-btn" type="button" hidden
               title="导出整份正文为 edits 下的草稿文件（供外部编辑器修改）">导出草稿</button>
       <button id="kbv-reload" class="kbv-btn" type="button"

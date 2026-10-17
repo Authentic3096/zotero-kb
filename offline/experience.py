@@ -457,7 +457,7 @@ def row_view(row: dict) -> dict:
 META_WORK_WORDS = (
     "文本源", "ft-cache", "全文缓存", "缓存", "切片", "索引", "索引库", "嵌入",
     "bm25", "rrf", "页眉", "页脚", "字符偏移", "位移", "解析器", "版面",
-    "pymupdf", "pdf2zh", "babeldoc", "localserver", "service-token",
+    "pymupdf", "pdf2zh", "babeldoc", "kbops",
     "manifest", "xpi", "venv", "pip", "插件", "打包", "侧载", "面板",
     "知识库自己", "zotero-kb", "kb_search", "kb_item", "kb_fulltext",
     "kb_experience", "kb_weight", "kb_reindex", "kb_stats", "mcp",

@@ -538,3 +538,13 @@ dialog[open] > :not(h2):not(.actions) {
    「显示层级：」就会折成两行（2026-10-17 偏好设置页截图抓到）。 */
 .row > .sel { flex: 0 0 auto; }
 .sel-cap { white-space: nowrap; }
+
+/* 偏好设置页的安装输出区（MinerU / Ollama）：只读、可滚动、逐行追加。 */
+.prefs-out {
+  margin: 4px 0 0; padding: 8px; max-height: 220px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius); white-space: pre-wrap;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: var(--fs-mono); color: var(--subtle);
+}
+.prefs-out:empty { display: none; }

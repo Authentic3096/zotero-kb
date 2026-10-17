@@ -189,7 +189,7 @@ DSH 里试了某篇文献的方法
 
 ② 派发（勾完就抓，不再二次确认）
    kb_acquire(wait=False) ──写文件──> <知识库>\mailbox\requests\
-                                          ↓ 插件轮询信箱领取（旧 HTTP 队列是兜底）
+                                          ↓ 插件轮询信箱领取（唯一任务通道）
    DSH 侧轮询 kb_acquire_progress ←── 作业进度（每篇一个任务，粒度到"第 2/4 篇"）
 
 ③ Zotero 进程内（**关键：网络身份与 resolver 都在这里**）
@@ -663,7 +663,7 @@ llama-3.3-70b      → https://api.groq.com/openai/v1
 | **写摘要与要点** | 2~3 句概括 + 方法名 + 关键词，只出建议不写库 |
 | **分类去重** | 中英文分类是否同一个交给模型 —— 嵌入模型跨语言几乎没区分力（`「机器学习模型」↔"machine learning model"` 只有 0.518，落在无关词噪声区） |
 | **分节纲要** | 逐节写 2~4 句 + 3~6 条关键点（`offline/digest.py`，见 B17） |
-| **元数据兜底** | 规则优先、纯规则时秒回；只有规则抽不到字段才调模型，所以做成同步接口（`localserver.py:431-441`） |
+| **元数据兜底** | 规则优先、纯规则时秒回；只有规则抽不到字段才调模型，所以做成同步接口（`kbops.py` 的 `do_metafill`） |
 | **从会话里抽经验** | 先关键词粗筛，再让模型抽成结构化条目，**只进待确认区**（见 B2） |
 
 **绝不交给小模型**：判断某个方法有没有效果（需要真实实验反馈，小模型会一本正经
@@ -682,54 +682,22 @@ base_url 是否要带 `/v1`、连不上谁）（`judge.py:379-404`）。
 
 13 个工具与 4 个资源见本文档第八节。
 
-#### B6. 本地 HTTP 服务（插件 ↔ Python 的旧通道）
+#### B6. 任务通道与「旧 HTTP 服务」的沿革
 
-`online/localserver.py`，`ThreadingHTTPServer` 只 bind **127.0.0.1**，默认端口 **8765**。
+> **2026-10 起：引擎为 stdio 子进程，无端口、无服务。** 老的
+> `127.0.0.1:8765` 服务（`online/localserver.py`、token 机制、
+> `scripts\4-service.vbs` / 自启脚本、`service-token.txt`）已**代码级整体删除**，
+> 业务实现搬进 `online/kbops.py`（纯库，不监听端口、不生成 token、不认识 HTTP），
+> 引擎与测试直接 import 它。
 
-> **这个常驻服务已停用**：管理面板走 `online/engine.py`（stdio JSON-RPC）、
-> 任务通道走 `<知识库>\mailbox\` 文件信箱。但是**代码一个字没删** ——
-> `localserver.py` 里的业务实现仍是引擎与 MCP 的复用来源，
-> 而 `localserver.py --test`（115 项）自带**进程内**测试服务、不需要 8765 在监听。
-> 需要时可以用 `scripts\4-service.vbs` 把它起回来。
->
-> **2026-10-16（用户拍板"HTTP 噪音一起清"）：插件在正常运行下不再碰 8765。**
-> 具体：① `05-server.js::healthCheck` 删掉"老 HTTP `/health` 兜底"（那是
-> `plugin-status.json.lastRequestError` 的来源）；② `12-dsh.js` 与
-> `19-mineruguide.js` 里几处启动/派活路径的 `/health`·`/mineru-check` 改成只走
-> 引擎桥；③ `prefs.js` 的 `autoStartService` 与 `taskPollHttp` 默认改成 **false**
-> （8765 的"自动拉起"与"每 2 秒轮询 /task"变成**显式 opt-in**，手动入口仍是
-> `scripts\4-service.vbs`）。剩下的 `self.request(...)` 都是**按需的"桥失败才
-> 兜底"**（不是定时/启动路径），见 `05-server.js::request` 的说明。
-
-**token 机制**：优先环境变量 `KB_SERVICE_TOKEN`，否则读 `<知识库>\service-token.txt`，
-文件不存在就生成并写入磁盘；按文件 mtime 缓存，**换了 token 不必重启服务**
-（`localserver.py:87-122`）。校验用 `secrets.compare_digest` 定时比较（`:2034-2040`）。
-
-> **一处值得抄的安全设计**：`GET /` 与 `/health` 免 token，并顺手把 token 回给调用方
-> （方便插件自动配置）；但请求若带 `Origin`/`Referer`（只有浏览器会发）就**拒发 token** ——
-> 挡住"恶意网页 fetch localhost 偷 token"。Zotero 插件用自带 HTTP 封装、不带 Origin，
-> 正常通过（`localserver.py:2055-2090`）。
-
-**任务队列**是"能在 Zotero 里执行一段 JS"的通道：只监听本机、必须带 token、
-任务只留最近 30 条且**不写入磁盘**（`localserver.py:55-67`）。
-`kind` 有 `js / cmd / acquire / attach`；领取是原子的 `pending → running`
-并记 `fetched_by`（`:174-207`）。
-
-
-服务还带**库变化监听**：每 20 秒看一次，发现新条目就切片并生成分类建议，
-写进 `<知识库>\pending-suggestions.json`（`localserver.py:1859-1879`）。
-`POST /shutdown` 用事件位 + 看门狗退出，刻意不用 `taskkill pythonw.exe`
-—— 那会连管理面板和用户脚本一起杀掉（`:2519-2558`）。
-
-**对照页（浏览器里那个兜底页）已经没有了** —— `online/docpage.py` / `online/docpage.html`
-与那一组 GET 端点（`/doc`、`/doc-text`、`/doc-raw`、`/doc-page.png`、`/kb-image`）
-都已删除，请求它们返回 404。对照改由阅读器右侧那一列承担
-（与条目窗格列**共用** `content/kbview.html`，见 §B14）。
+**任务通道只剩文件信箱**（`online/taskbox.py`）：派发方往
+`<知识库>\mailbox\requests\` 写一个 JSON，插件轮询领取（**移动**到 `claimed\`，
+rename 原子 → 只可能执行一次），跑完把结果写进 `results\<id>.json`。
+没有端口、没有 token；Zotero 关着时任务静静躺在 `requests\` 里。
 
 **`/doc-edit` 一族（GET 元信息 + POST 保存/恢复）仍要保留**：它是**正文修订层**的
 入口，阅读器列 / 条目窗格列的「改这一页」都走它（唯一写路径是 `offline/edits.py`，
-保存后轮询 `/jobs/<id>`）—— 删了就废掉整个编辑功能。当前调用走**引擎桥**
-（`doc.get` / `doc.save`，与这两个端点同一份实现），老 HTTP 只是兜底。
+保存后轮询 job）。现在只经**引擎桥**（`doc.get` / `doc.save`），没有 HTTP 兜底。
 
 #### B7. Zotero 插件的几个关键机制
 
@@ -844,12 +812,13 @@ provider 只做 O(1) 查表（`src/16-weightcol.js` 的 `registerWeightColumn`�
 也指向同一个面板）。三层分工：
 
 - **页面**：`zotero-plugin/content/admin.html` + `admin.js` + `admin.css` +
-  `content/admin-pages/*.js`（一页一个文件、按 `order` 排成 10 页）；
+  `content/admin-pages/*.js`（一页一个文件、按 `order` 排成 11 页）；
 - **宿主半**：`zotero-plugin/src/23-admin.js`（开窗 / 桥 / 路由表 / 超时 / 引擎生命周期）；
 - **引擎**：`online/engine.py`（stdio JSON-RPC，**无端口、无 token、不常驻**）。
 
-管理面板的 10 页按 `order` 排成：**知识库结构 · 经验库 · 分类建议 · 运行环境 ·
-PDF 解析 · 损坏查询 · 元数据 · 分节纲要 · 高级 · 提示词**。页面只画自己那一页、
+管理面板的 11 页按 `order` 排成：**知识库结构 · PDF 解析 · 分节纲要 · 经验库 ·
+元数据 · 分类建议 · 损坏查询 · 运行环境 · 偏好设置 · 高级 · 提示词**
+（看库 → 正文管线 → 数据质量 → 设置 → 工具）。页面只画自己那一页、
 数据一律经宿主半取（页面**不直接**向本机发请求）；一页一文件，改一页不动别人。
 
 日常维护集中在「高级」页：**索引重建**（`POST /reindex`，增量 / 全量两条）与
@@ -1327,10 +1296,11 @@ Zotero key 命名，路径由知识库目录推算出来）。
 │   ├── searcher.py                  混合检索 + 经验查询（唯一读库入口）
 │   ├── server.py                    MCP 服务器（13 工具 + 4 资源）
 │   ├── engine.py                    无端口引擎（管理面板用；stdio JSON-RPC）
+│   ├── kbops.py                     业务实现库（无端口；引擎与测试共用）
 │   ├── taskbox.py                   文件信箱任务通道（<知识库>\mailbox\）
 │   ├── query.py                     中文分词 / 查询改写 / 覆盖率
 │   ├── acquire.py / papermeta.py    把 DOI 交给 Zotero 抓 / 给 DOI 补元数据
-│   └── localserver.py               旧 HTTP 服务（:8765；已停用，回退件 scripts\4-service.vbs）
+│   └── (旧 HTTP 服务 localserver.py 已于 2026-10 删除)
 ├── tools\                           管理工具（自检、升级、打包、诊断…）
 │   ├── test_engine_rpc.py           无端口引擎的 RPC 自检
 │   ├── build_bootstrap.py           把 src\*.js 拼成 bootstrap.js
@@ -1338,7 +1308,7 @@ Zotero key 命名，路径由知识库目录推算出来）。
 ├── zotero-plugin\                   Zotero 插件源码 + 诊断脚本
 │   ├── src\*.js                     按功能拆的源码（26 个文件）
 │   ├── content\kbview.{html,css,js}     侧栏页面（条目窗格列 + 阅读器对照列共用）
-│   ├── content\admin.{html,js,css} + admin-pages\*.js   管理面板页面（一页一个文件，共 10 页）
+│   ├── content\admin.{html,js,css} + admin-pages\*.js   管理面板页面（一页一个文件，共 11 页）
 │   ├── content\vendor\              原样引入的第三方库（markdown-it / KaTeX，含 LICENSE 与字体）
 │   └── bootstrap.js                 生成物（xpi 里装的是它，别直接改）
 ├── bundle\                          接入 DSH 的 MCP bundle
@@ -1406,7 +1376,6 @@ CI 里的 `build_bootstrap.py --check`、`check_plugin.py` 的第一项、
 | 5 | 装 Zotero 插件（**必须完全重启 Zotero**） | 文献列表出现「知识库权重」列 |
 | 6 | 跑 `python tools\test_engine_rpc.py`（引擎 RPC 自检） | 退出码 0 |
 | 7 | （可选）装 DSH 侧收件箱 bundle | 往信箱丢个 json，看 results 出结果 |
-| 8 | **（只在要复现旧 HTTP 通道时）** 跑 `scripts\4-service.vbs` 起本地服务 | `http://127.0.0.1:8765/health` |
 
 **常见错误**：
 - DSH 的 patch 层是**覆盖**语义，新增条目必须写在 `- insert:` 里
@@ -1457,9 +1426,9 @@ AI 的产出（摘要、纲要、建议）只落在知识库目录或会话目�
 | 「知识库」侧栏 | 自建一列独占条目窗格（rail 最下面一个图标 → 开/关） | 打开条目右侧栏看 |
 | 阅读器对照列 | 左 PDF 右正文、同一个窗口；**入口只有 rail 图标**（工具栏那个重复的「对照」按钮 2026-10-16 已删）；停在正在读的那一页（翻页**不**跟随）；KaTeX 排版；按块编辑 | 打开 PDF → 从右侧 rail 打开知识库列 |
 | 公式就地纠错 | 右键公式 → 编辑区 → 应用（只改这一条并重切重向量） | 打开 PDF 右键一块公式 |
-| 管理面板 | Zotero 内一个窗口，10 页；与引擎之间**无端口、无 token、不常驻** | 工具菜单 →「知识库管理…」逐页走 |
+| 管理面板 | Zotero 内一个窗口，11 页；与引擎之间**无端口、无 token、不常驻** | 工具菜单 →「知识库管理…」逐页走 |
 | 条目生命周期 | 归档 / 还原 / 彻底删 + 对账巡检（父子结构一并快照/还原） | `offline\maintain.py reconcile` |
-| 旧 HTTP 通道 | 已停用；`--test` 自带**进程内**服务，不需要 8765 在监听 | `python online\localserver.py --test` |
+| 旧 HTTP 通道 | **已删除**（2026-10，代码与脚本一起）；任务走文件信箱 | 见 §B6 |
 | DSH 侧接入 | 文件信箱版可用 | 往信箱丢 json → DSH 对话里出现 |
 | 提示词注册表 | 话术可看可改可还原 | 面板「提示词」页 |
 
@@ -1501,7 +1470,6 @@ AI 的产出（摘要、纲要、建议）只落在知识库目录或会话目�
 | `python tools\check_kb_levels.py` | 分级清单在 Python（`offline\kbviews.py`）与 JS（`src\13-kbopen.js`）两侧一致 |
 | `python tools\check_api_presets.py` | 服务商地址表的唯一来源（`judge.py`）；设置窗格下线后它退化成"只核对服务端" |
 | `python tools\make_updates_json.py --check` | `updates.json` 与 manifest 版本一致 |
-| `python online\localserver.py --test` | 旧 HTTP 服务端点自检（自带进程内服务，不需要 8765 在监听） |
 
 `tests\` 下的测试在本机跑（需要真实知识库），不随仓库发布。
 

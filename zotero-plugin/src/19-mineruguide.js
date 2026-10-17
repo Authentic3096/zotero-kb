@@ -4,9 +4,10 @@
  * ## 规矩
  *
  *   · 插件**首次启动**、且**没检测到**某个可选组件时，弹**一次**对话框：
- *     「看安装方法」/「以后再说」。
- *   · 「看安装方法」弹一条提示，直接写清去哪装、怎么装（MinerU 用项目里的
- *     `scripts\install-mineru.cmd`；Ollama 用官网安装器）。
+ *     「打开面板去装」/「以后再说」。
+ *   · 「打开面板去装」打开管理面板；真正的安装按钮在
+ *     「偏好设置 → 可选组件安装引导」（MinerU 开始安装 / Ollama 拉取推荐模型）。
+ *     这里不再重复安装说明（两处必然漂移）。
  *   · 无论选哪个都记 `optionalGuideDone`，不再打扰；已经装齐的用户一次都不弹。
  *
  * ## 为什么先本地看一眼、再问服务
@@ -24,10 +25,9 @@
  *
  * ## 本文件只做"首启引导"
  *
- * 早期那套图形化安装向导（说明代价 → 体检 → 后台安装）随旧的 Tk 面板一起退役，
- * 那时它是 `tools/panels/*_guide.py`。现在**没有任何一键安装按钮**：面板的
- * 「运行环境」页看八个位置与模型配置、「PDF 解析」页跑解析，安装本身靠上面那两条路。
- * 所以这里**不许**再把用户指向"面板里的安装向导"。
+ * 真正的安装动作在管理面板「偏好设置 → 可选组件安装引导」：MinerU 跑项目里的
+ * `scripts\install-mineru.ps1`、Ollama 打开官网下载页 / `ollama pull`。
+ * 这里只负责**告诉用户去哪**并打开面板，不再各写一份安装说明。
  */
 Object.assign(ZoteroKB, {
 
@@ -126,7 +126,7 @@ Object.assign(ZoteroKB, {
 
   /**
    * 弹对话框。`missing` 是缺的组件名数组（"mineru" / "ollama"）。
-   * 返回 0 =「看安装方法」，1 =「以后再说」。
+   * 返回 0 =「打开面板去装」，1 =「以后再说」。
    *
    * 为什么用 `Services.prompt.confirmEx` 而不是自绘窗口：它是**同步**的、
    * 两个按钮的文案都能自定义，而且不需要额外 xhtml。
@@ -141,16 +141,17 @@ Object.assign(ZoteroKB, {
       + "\n\n不装完全不影响现有功能：\n"
       + "  · 不装 MinerU：正文仍用 Zotero 缓存 + PyMuPDF 解析；\n"
       + "  · 不装 Ollama：在面板「运行环境 → 模型配置」里改成用 API（DeepSeek 等）即可。\n\n"
-      + "要看怎么装吗？\n"
-      + "  · MinerU：双击项目里的 scripts\\install-mineru.cmd；\n"
-      + "  · Ollama：到 ollama.com 下 Windows 安装器。";
+      + "要打开管理面板去装吗？\n"
+      + "  面板 →「偏好设置」→「可选组件安装引导」：\n"
+      + "  · MinerU 有「开始安装」（装到项目内 .mineru\\）；\n"
+      + "  · Ollama 有「打开官网下载页」和「拉取推荐模型」。";
     try {
       const ps = Services.prompt;
       const flags = ps.BUTTON_POS_0 * ps.BUTTON_TITLE_IS_STRING
         + ps.BUTTON_POS_1 * ps.BUTTON_TITLE_IS_STRING;
       const win = (Zotero.getMainWindow && Zotero.getMainWindow()) || null;
       return ps.confirmEx(win, "知识库：可选组件（不装也能用）", body, flags,
-                          "看安装方法", "以后再说", null, null, {});
+                          "打开面板去装", "以后再说", null, null, {});
     } catch (e) {
       Zotero.debug("[zotero-kb] 弹可选组件引导失败：" + e);
       return 1;
@@ -159,29 +160,19 @@ Object.assign(ZoteroKB, {
 
 
   /**
-   * 「看安装方法」：弹一条提示，直接写清**去哪装、怎么装**。
-   * `which` = "mineru" | "ollama"。
+   * 「打开面板去装」：打开管理面板（安装按钮在「偏好设置」页）。
    *
-   * ⚠ 这里**不能**把用户指向"面板里的安装向导" —— 那套图形化向导随旧的 Tk 面板
-   * 一起退役了；现在面板的「运行环境」/「PDF 解析」页只负责**看状态与跑解析**，
-   * 没有一键安装按钮。所以这里给的是真能照着做的两条路。
-   * 返回 false 让调用方知道"没自动打开"。
+   * ⚠ 这里不重复安装步骤 —— 面板里那两块是唯一实现（MinerU 跑
+   *   scripts\install-mineru.ps1；Ollama 打开官网 / ollama pull）。
+   * 返回 false 让调用方知道"没有自动安装"。
    */
   openOptionalGuide: function (which) {
     var self = ZoteroKB;
-    const isOllama = (which === "ollama");
-    const how = isOllama
-      ? ("到 ollama.com/download 下 Windows 安装器装上（按用户安装，不需要管理员），\n"
-         + "再拉一个模型：ollama pull qwen3:4b-instruct。\n"
-         + "装完在面板「运行环境」页能看到它被认出来，"
-         + "「模型配置」那一栏就能选它。")
-      : ("双击项目里的 scripts\\install-mineru.cmd"
-         + "（加 -WithVlm 会连 VLM 档一起装），或在命令行跑：\n"
-         + "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\install-mineru.ps1\n"
-         + "装完在面板「运行环境」页会显示已认到，「PDF 解析」页可以开始解析。");
+    try { if (self.openPanel) self.openPanel(); } catch (e) { /* 面板打不开也不影响提示 */ }
     try {
-      self.notify("装 " + (isOllama ? "Ollama" : "MinerU") + "（可选组件）",
-        how + "\n\n面板里的对应页只负责看状态、跑解析，没有一键安装按钮。",
+      self.notify("装 " + (which === "ollama" ? "Ollama" : "MinerU") + "（可选组件）",
+        "已打开管理面板：到「偏好设置 → 可选组件安装引导」点安装。\n"
+        + "（MinerU 会装到项目内 .mineru\\；Ollama 会打开官网下载页 / 拉取推荐模型。）",
         null, false);
     } catch (e) { /* 提示失败不影响调用方 */ }
     return false;

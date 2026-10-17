@@ -117,25 +117,18 @@ ZoteroKB.kbFormulaStart = function (event) {
     url += "&rects=" + encodeURIComponent(JSON.stringify(info.rects));
   }
   self.writeStatusFile({ kbFormulaLast: "定位 " + info.key + " p" + info.page });
-  // W3 线2.5（2026-10-14）：桥优先（`formula.target`，与 HTTP `GET /formula-target`
-  // 同一份实现：rects 走查询串、是 JSON 字符串），拿不到再退回老 HTTP。
-  const ask = (async function () {
-    try { return await self.kbAdminHostRoute("GET", url); }
-    catch (e0) {
-      Zotero.debug("[zotero-kb] 引擎桥定位公式失败（退回 HTTP）：" + e0);
-      return await self.request("GET", url);
-    }
-  })();
+  // 只走引擎桥（`formula.target`：rects 走查询串、是 JSON 字符串）。
+  const ask = self.kbAdminHostRoute("GET", url);
   ask.then(function (res) {
     if (!res || res.ok !== true) {
       self.kbFormulaAlert("没找到可改的公式："
-        + ((res && (res.error || res.why)) || "本机服务没返回原因"));
+        + ((res && (res.error || res.why)) || "引擎没返回原因"));
       return;
     }
     if (!self.kbviewIsOpen(win, "reader")) self.kbviewOpen(win, "reader");
     self.kbFormulaSendWhenReady(win, res, 0);
   }).catch(function (e2) {
-    self.kbFormulaAlert("连本机服务失败：" + e2);
+    self.kbFormulaAlert("引擎没有响应：" + e2);
   });
 };
 
@@ -171,17 +164,11 @@ ZoteroKB.kbFormulaApply = function (win, kind, msg) {
   const back = function (payload) {
     if (dock) self.kbviewSend(dock, payload);
   };
-  // W3 线2.5（2026-10-14）：桥优先（`formula.apply`，**写路径**：写回该页第 ordinal 条
-  // $$…$$ 并复用 doc.save 的重切重向量 —— 与 HTTP `POST /formula-apply` 同一份实现）。
+  // 只走引擎桥（`formula.apply`，**写路径**：写回该页第 ordinal 条 $$…$$，
+  // 并复用 doc.save 的重切重向量）。
   const payload = { key: msg.key, page: msg.page, latex: msg.latex,
                     ordinal: msg.ordinal, old_latex: msg.old_latex };
-  const send = (async function () {
-    try { return await self.kbAdminHostRoute("POST", "/formula-apply", payload); }
-    catch (e0) {
-      Zotero.debug("[zotero-kb] 引擎桥写回公式失败（退回 HTTP）：" + e0);
-      return await self.request("POST", "/formula-apply", payload);
-    }
-  })();
+  const send = self.kbAdminHostRoute("POST", "/formula-apply", payload);
   send.then(function (res) {
     if (!res || res.error) {
       back({ type: "formulaResult", ok: false,
@@ -200,15 +187,9 @@ ZoteroKB.kbFormulaMathType = function (win, kind, msg) {
   var self = ZoteroKB;
   const host = self.kbviewHost(win, false);
   const dock = host ? (kind === "reader" ? host.read : host.lib) : null;
-  // W3 线2.5（2026-10-14）：桥优先（`formula.mathtype`：本机放剪贴板 + 起 MathType），
-  // 失败退回老 HTTP。`dry_run` 只在自检里用，正常路径不传。
-  const askMt = (async function () {
-    try { return await self.kbAdminHostRoute("POST", "/formula-mathtype", { latex: msg.latex || "" }); }
-    catch (e0) {
-      Zotero.debug("[zotero-kb] 引擎桥起 MathType 失败（退回 HTTP）：" + e0);
-      return await self.request("POST", "/formula-mathtype", { latex: msg.latex || "" });
-    }
-  })();
+  // 只走引擎桥（`formula.mathtype`：本机放剪贴板 + 起 MathType）。
+  const askMt = self.kbAdminHostRoute("POST", "/formula-mathtype",
+                                      { latex: msg.latex || "" });
   askMt
     .then(function (res) {
       if (dock) {
@@ -231,13 +212,8 @@ ZoteroKB.kbFormulaMathType = function (win, kind, msg) {
 ZoteroKB.kbFormulaWaitJob = function (win, kind, jobId, tries) {
   var self = ZoteroKB;
   if (!jobId) { self.kbviewPush(win, kind, null); return; }
-  // W3 线2.5：轮询也走桥（`jobs.get`，与 HTTP `GET /jobs/<id>` 同形），失败退回 HTTP。
-  const poll = (async function () {
-    try { return await self.kbAdminHostRoute("GET", "/jobs/" + encodeURIComponent(jobId)); }
-    catch (e0) {
-      return await self.request("GET", "/jobs/" + encodeURIComponent(jobId));
-    }
-  })();
+  // 轮询也走桥（`jobs.get`）。
+  const poll = self.kbAdminHostRoute("GET", "/jobs/" + encodeURIComponent(jobId));
   poll.then(function (j) {
     const st = String((j && j.state) || "");
     if (st === "done" || st === "failed" || st === "cancelled" || tries > 120) {

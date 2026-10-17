@@ -106,14 +106,8 @@ Object.assign(ZoteroKB, {
   /**
    * 给一篇/几篇**派一次建索引**，返回 job id（拿不到就返回空串）。
    *
-   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kb.reindex`），拿不到再退回
-   * 老 HTTP —— 过渡期两条都必须能用，桥不需要那个常驻 8765。
-   *
-   * ⚠ **两条通道的"派发回执"形状不一样，这里必须归一化**（踩点）：
-   *   · 桥 `kb.reindex` → `{job:{id:"job-…"}, id:"job-…"}`（契约形状，job 是对象）
-   *   · HTTP `POST /reindex` → `{job:"job-…", state:"running"}`（job 是**字符串**）
-   *   直接照抄老写法 `res.job` 走桥会拿到一个对象，再拿去拼
-   *   `GET /jobs/<object>` 就是一条注定失败的请求（而且报错看不出是这个原因）。
+   * 只走宿主半的引擎桥（`kb.reindex`）。派发回执是契约形状
+   * `{job:{id:"job-…"}, id:"job-…"}`（job 是对象，不是字符串）。
    */
   reindexOne: async function (keys) {
     var self = ZoteroKB;
@@ -121,17 +115,10 @@ Object.assign(ZoteroKB, {
     try {
       res = await self.kbAdminHostRoute("POST", "/reindex", { keys: keys });
     } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥派建索引失败（退回 HTTP）：" + e);
+      Zotero.debug("[zotero-kb] 引擎桥派建索引失败：" + e);
+      return "";
     }
     const flat = (r) => (r && ((r.job && r.job.id) || r.job || r.id)) || "";
-    if (!flat(res)) {
-      try {
-        res = await self.request("POST", "/reindex", { keys: keys });
-      } catch (e) {
-        Zotero.debug("[zotero-kb] 派建索引失败：" + e);
-        return "";
-      }
-    }
     return String(flat(res) || "");
   },
 
@@ -145,14 +132,8 @@ Object.assign(ZoteroKB, {
       // （这里已经踩过一次 Zotero.setInterval / Zotero.setTimeout 不存在的坑）。
       await new Promise((r) => setTimeout(r, 1000));
       try {
-        let job = null;
-        // W3 线2.5：桥优先（`jobs.get` 与 HTTP `GET /jobs/<id>` **同形**：
-        // 都走 LS.do_jobs_get），拿不到再退回 HTTP。
-        try {
-          job = await self.kbAdminHostRoute("GET", "/jobs/" + jobId);
-        } catch (e) {
-          job = await self.request("GET", "/jobs/" + jobId);
-        }
+        // 只走引擎桥（`jobs.get`）。
+        const job = await self.kbAdminHostRoute("GET", "/jobs/" + jobId);
         if (job && (job.state === "done" || job.state === "failed")) return job;
       } catch (e) {
         return null;

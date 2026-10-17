@@ -21,7 +21,6 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 import time
 
@@ -37,7 +36,7 @@ OPTIONAL_DIRS = [".cache", "profile-backup"]
 DB_FILES = ["index.db", "index.db-wal", "index.db-shm"]
 # 配置/状态文件
 CONF_FILES = ["MANIFEST.json", "taxonomy-plan.json", "pending-suggestions.json",
-              "service-token.txt", "zotero-api-key.txt", "bridge-token.txt",
+              "zotero-api-key.txt", "bridge-token.txt",
               "watch-baseline.json", "plugin-status.json", "llm-config.json"]
 
 
@@ -71,20 +70,6 @@ def _configured_kb_dir(S) -> str:
 
 def mb(x: int) -> str:
     return f"{x / 1048576:.1f} MB"
-
-
-def running_server_pids() -> list[int]:
-    """找出正在跑的知识库服务进程（迁移前必须停）。"""
-    try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "Get-CimInstance Win32_Process -Filter \"Name='python.exe' OR "
-             "Name='pythonw.exe'\" | Where-Object { $_.CommandLine -match "
-             "'localserver.py' } | Select-Object -ExpandProperty ProcessId"],
-            capture_output=True, text=True, timeout=30)
-        return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
-    except Exception:  # noqa: BLE001
-        return []
 
 
 def main() -> int:
@@ -151,18 +136,12 @@ def main() -> int:
         print(f"  [XX] {old} 里没有 index.db —— 这不像知识库目录，停下来。")
         return 1
 
-    # ---- 检查服务是否在跑
-    pids = running_server_pids()
-    if pids:
-        print(f"  [!!] 知识库服务正在运行（PID {pids}）")
-        print("       迁移前必须停掉它 —— 否则 WAL 里的新数据会丢。")
-        print("       停：任务管理器结束那些进程，或跑 scripts\\4-service.vbs 的相反操作")
-        print("       （管理面板「分类/标签」页也有服务状态）")
-        if not args.apply:
-            print("\n  （干跑模式，继续说明会发生什么）")
-        else:
-            print("\n  [XX] 已中止。请先停服务再重跑。")
-            return 1
+    # ---- 迁移前要确保没有进程在写库
+    print("  [!!] 迁移前请**完全退出 Zotero**（引擎是它的子进程，会占着 index.db）。")
+    if not args.apply:
+        print("      （干跑模式，继续说明会发生什么）")
+    else:
+        print("      确认 Zotero 已退出后再跑 --apply。")
 
     # ---- 目标检查
     if os.path.exists(new):
@@ -281,8 +260,7 @@ def main() -> int:
     print(f"  备份：{backup_root}")
     print()
     print("  接下来：")
-    print("   1) 重启 Zotero（管理面板的引擎随它起落；"
-          "只有还在跑旧 HTTP 服务时才需要 scripts\\4-service.vbs）")
+    print("   1) 重启 Zotero（管理面板的引擎随它起落）")
     print("   2) 跑 python offline\\maintain.py check 看它认不认新位置")
     print("   3) 跑一次检索确认可用（面板「高级」页试搜一下）")
     print("   4) 都正常了，再自己决定要不要删旧目录和备份")

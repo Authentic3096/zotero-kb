@@ -650,7 +650,7 @@ def classify_item(item_meta: dict, categories: list[dict] | None = None,
           报的错和用户填的完全对不上。
       显式传参之后，"本次用哪套配置"就是确定的。
 
-    ⚠ 这份逻辑原本只写在 `online/localserver.py` 的 do_classify_one 里。
+    ⚠ 这份逻辑原本只写在 `online/kbops.py` 的 do_classify_one 里。
        抽出到这里是因为管理面板也要用 —— 两份实现必然漂移，提示词一改就不同步。
        改动时请只改这里，不要在两处各写一份。
     """

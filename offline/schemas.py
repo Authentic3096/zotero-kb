@@ -1335,8 +1335,6 @@ def env_source_items(sources: dict | None = None) -> list:
         if key == "kb_dir" and not ok:
             # 知识库可能还没建 —— 这一项"找不到"不是故障，面板要能说清
             row["note"] = "这一项可以指向还不存在的目录（第一次建库会创建它）"
-        if key == "mathtype":
-            row["note"] = "可选：不装也能手改 LaTeX；装了则「用 MathType 编辑」可用"
         rows.append(row)
     return rows
 

@@ -79,7 +79,7 @@
   KBAdmin.page({
     id: "advanced",
     title: "高级",
-    order: 90,
+    order: 100,
 
     async render(host, ctx) {
       const el = ctx.el;

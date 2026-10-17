@@ -68,11 +68,8 @@ KB_FILE_SPEC = [
      "file", "✓ 可删，下次构建重写"),
     ("llm-config.json", "模型配置（provider / 模型名 / API Key）。"
                         "含密钥，别分享出去", "file", "△ 删了要重新配模型"),
-    ("service-token.txt", "本机服务与 Zotero 插件之间的通行证"
-                          "（自动生成，跟模型 key 无关）", "file",
-     "△ 删了插件要重新握手"),
-    ("bridge-token.txt", "知识库与 DSH 之间的通行证（同上，自动生成）",
-     "file", "△ 同上"),
+    ("bridge-token.txt", "知识库与 DSH 之间的通行证（自动生成）",
+     "file", "△ 删了要重新握手"),
     ("zotero-api-key.txt", "连 Zotero 本地 API 用的授权码"
                            "（分类重整时申请的那次）", "file",
      "△ 删了要重新授权"),

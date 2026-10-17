@@ -373,7 +373,7 @@
   KBAdmin.page({
     id: "experience",
     title: "经验库",
-    order: 20,
+    order: 40,
 
     async render(host, ctx) {
       const el = ctx.el;

@@ -39,19 +39,11 @@ Object.assign(ZoteroKB, {
         self.notify("正在检查条目类型与标题…", "这一篇是网页类型但挂着 PDF", null, false);
       } catch (e) { /* ignore */ }
       try {
-        // W3 线2.5（2026-10-14）：桥优先（`meta.typefixOne` = HTTP `POST /typefix`
-        // **同一份同步实现**，只出建议、不写库），失败退回老 HTTP。
-        try {
-          tf = await self.kbAdminHostRoute("POST", "/typefix",
-                                           { key: item.key, use_network: true });
-        } catch (e0) {
-          Zotero.debug("[zotero-kb] 引擎桥类型检查失败（退回 HTTP）：" + e0);
-          tf = await self.request("POST", "/typefix",
-                                  { key: item.key, use_network: true });
-        }
-      } catch (e) {
-        // 检查失败不能挡住原本的补全功能 —— 记一行，继续走下面的字段建议
-        Zotero.debug("[zotero-kb] 类型/标题检查失败：" + e);
+        // 只走引擎桥（`meta.typefixOne`，同步实现、只出建议不写库）。
+        tf = await self.kbAdminHostRoute("POST", "/typefix",
+                                         { key: item.key, use_network: true });
+      } catch (e0) {
+        Zotero.debug("[zotero-kb] 引擎桥类型检查失败：" + e0);
         tf = null;
       }
     }
@@ -84,18 +76,10 @@ Object.assign(ZoteroKB, {
 
     let res;
     try {
-      // 这个请求可能真的要调本地模型（规则没抽到字段时），所以可能几十秒；
-      // request() 的超时是 120 秒。等的时候弹的是进度窗（非模态），不卡界面。
-      // W3 线2.5（2026-10-14）：桥优先（`meta.fillOne` = HTTP `POST /metafill`
-      // **同一份同步实现**，只出建议、不写库），失败退回老 HTTP。
-      try {
-        res = await self.kbAdminHostRoute("POST", "/metafill",
-                                          { key: item.key, use_model: true });
-      } catch (e0) {
-        Zotero.debug("[zotero-kb] 引擎桥补元数据失败（退回 HTTP）：" + e0);
-        res = await self.request("POST", "/metafill",
-                                 { key: item.key, use_model: true });
-      }
+      // 这个请求可能真的要调本地模型（规则没抽到字段时），所以可能几十秒。
+      // 只走引擎桥（`meta.fillOne`，同步实现、只出建议不写库）。
+      res = await self.kbAdminHostRoute("POST", "/metafill",
+                                        { key: item.key, use_model: true });
     } catch (e) {
       this.notify("补全建议失败", String((e && e.message) || e), null, true);
       return;

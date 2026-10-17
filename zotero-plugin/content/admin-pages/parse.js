@@ -109,7 +109,7 @@
   KBAdmin.page({
     id: "parse",
     title: "PDF 解析",
-    order: 50,
+    order: 20,
 
     async render(host, ctx) {
       const el = ctx.el;

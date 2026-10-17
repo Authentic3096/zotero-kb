@@ -204,23 +204,14 @@ Object.assign(ZoteroKB, {
     return "outline";
   },
 
-  /** 字号（px，只作用于这一列）。12~20，默认 13。 */
+  /** 字号（px，只作用于这一列）。唯一来源是面板「偏好设置」写的 pref。10~20，默认 13。 */
   kbviewFont: function () {
     var self = ZoteroKB;
     try {
       const v = parseInt(self.getPref(self.PREFS.kbviewFont, 13), 10);
-      if (v >= 10 && v <= 24) return v;
+      if (v >= 10 && v <= 20) return v;
     } catch (e) { /* ignore */ }
     return 13;
-  },
-
-  setKbviewFont: function (px) {
-    var self = ZoteroKB;
-    try {
-      const v = parseInt(px, 10);
-      // ⚠ 写 pref 用 Zotero.Prefs.set：插件里**没有** setPref 这个包装
-      if (v >= 10 && v <= 24) Zotero.Prefs.set(self.PREFS.kbviewFont, v);
-    } catch (e) { /* ignore */ }
   },
 
   setKbviewLevel: function (id) {
@@ -869,11 +860,6 @@ Object.assign(ZoteroKB, {
       self.kbviewPush(win, kind, msg.level);
       return;
     }
-    if (t === "setFont") {
-      self.setKbviewFont(msg.font);
-      self.kbviewPush(win, kind, null);
-      return;
-    }
     if (t === "openPath") {
       try { self.openKbPath(msg.path, "知识库文件"); }
       catch (e) { Zotero.debug("[zotero-kb] 打开文件失败：" + e); }
@@ -1055,15 +1041,10 @@ Object.assign(ZoteroKB, {
       out.order = order;
       out.md = "";                      // 逐页时整份 md 不必再传（省一半体积）
       let meta = {};
-      // W3 线2.5（2026-10-14）：桥优先（`doc.get` = 与 HTTP `GET /doc-edit` **同一份**
-      // 只读状态），拿不到再退回老 HTTP —— 失败了都一样当空（页面照样渲染）。
+      // 只走引擎桥（`doc.get`，只读状态）；失败当空（页面照样渲染）。
       try {
-        try {
-          meta = await self.kbAdminHostRoute("GET",
-            "/doc-edit?key=" + encodeURIComponent(out.key));
-        } catch (e0) {
-          meta = await self.request("GET", "/doc-edit?key=" + encodeURIComponent(out.key));
-        }
+        meta = await self.kbAdminHostRoute("GET",
+          "/doc-edit?key=" + encodeURIComponent(out.key));
       } catch (e9) { meta = {}; }
       out.edited = (meta && meta.edited) || [];
       out.stale = (meta && meta.stale) || [];
@@ -1200,15 +1181,9 @@ Object.assign(ZoteroKB, {
     if (!item) return false;
     self.kbviewHint(win, kind, "正在导出草稿…");
     try {
-      // W3 线2.5：桥优先（`doc.save` = HTTP `POST /doc-edit` 同一份实现），失败退回老 HTTP。
-      let r = null;
-      try {
-        r = await self.kbAdminHostRoute("POST", "/doc-edit",
-                                        { key: item.key, action: "draft" });
-      } catch (e0) {
-        Zotero.debug("[zotero-kb] 引擎桥导草稿失败（退回 HTTP）：" + e0);
-        r = await self.request("POST", "/doc-edit", { key: item.key, action: "draft" });
-      }
+      // 只走引擎桥（`doc.save`）。
+      const r = await self.kbAdminHostRoute("POST", "/doc-edit",
+                                            { key: item.key, action: "draft" });
       if (r && r.path) {
         self.kbviewHint(win, kind, "草稿已写出：" + r.path);
         try { self.openKbPath(r.path, "正文草稿"); } catch (e) { /* 打不开不影响导出 */ }
@@ -1675,8 +1650,8 @@ Object.assign(ZoteroKB, {
     if (!jobId) return {};
     for (var i = 0; i < 240; i++) {
       var job = {};
-      try { job = await self.request("GET", "/jobs/" + encodeURIComponent(jobId)); }
-      catch (e) { return {}; }
+      job = await self.kbJobGet(jobId);
+      if (!job) return {};
       if (onTick) onTick(job);
       if (job && job.state && job.state !== "running") return job;
       await new Promise(function (r) { setTimeout(r, 1500); });
@@ -1694,20 +1669,15 @@ Object.assign(ZoteroKB, {
     var note = onStatus || function () {};
     note("正在重建切片…");
     var res = null;
-    // W3 线2.5（2026-10-14）：桥优先（`doc.save`，**写路径**：保存某一页的修订并派一次
-    // 单篇重建 —— 与 HTTP `POST /doc-edit` 同一份实现），失败退回老 HTTP。
+    // 只走引擎桥（`doc.save`，**写路径**：保存某一页的修订并派一次单篇重建）。
     try {
-      try { res = await self.kbAdminHostRoute("POST", "/doc-edit", body); }
-      catch (e0) {
-        Zotero.debug("[zotero-kb] 引擎桥保存正文失败（退回 HTTP）：" + e0);
-        res = await self.request("POST", "/doc-edit", body);
-      }
+      res = await self.kbAdminHostRoute("POST", "/doc-edit", body);
     } catch (e) {
       note("请求失败：" + ((e && e.message) ? e.message : e));
       return false;
     }
     if (!res || !res.job) {
-      note("服务没有返回任务：" + JSON.stringify(res == null ? {} : res).slice(0, 120));
+      note("引擎没有返回任务：" + JSON.stringify(res == null ? {} : res).slice(0, 120));
       return false;
     }
     var done = await self.kbviewWaitJob(res.job, function (j) {

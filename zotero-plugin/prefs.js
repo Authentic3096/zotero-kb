@@ -13,23 +13,15 @@ pref("extensions.zotero.zotero-kb.filterBareModels", true);
 pref("extensions.zotero.zotero-kb.autoProcess", true);
 pref("extensions.zotero.zotero-kb.categories", "");
 pref("extensions.zotero.zotero-kb.createMissing", true);
-// 是否允许插件轮询本地服务领取"在 Zotero 里执行 JS"的任务。
+// 是否允许插件轮询文件信箱领取"在 Zotero 里执行 JS"的任务。
 // 这是给自动调试/自动验证用的能力；不想开就设为 false，核心功能不受影响。
 pref("extensions.zotero.zotero-kb.autoTaskPoll", true);
-// ---- 任务通道（W3 线2，2026-10-13）：文件信箱 + 老 HTTP 队列
-// 信箱目录：留空 = <知识库目录>\mailbox（正路）。只有在"知识库目录偏偏拿不到"
+// ---- 任务通道（W3 线2，2026-10-13）：**只有文件信箱**
+// 信箱目录：留空 = <知识库目录>\mailbox。只有在"知识库目录偏偏拿不到"
 // 时才需要手填一个别的可写目录。
+// （老 HTTP 队列与 8765 的 pref 已于 2026-10 随服务代码一起删除。）
 pref("extensions.zotero.zotero-kb.mailboxDir", "");
-// 是否还去消费**老的 HTTP 队列**（GET /task + POST /task/result）。
-// ⚠ 2026-10-16 起默认 **false**：信箱（正路）已经跑通，这条 HTTP 兜底是每 2 秒
-// 一次、8765 退役后必然失败的请求（状态文件里连接错误的来源）。要旧通道就显式设 true。
-pref("extensions.zotero.zotero-kb.taskPollHttp", false);
-// W3 线3（2026-10-14）：是否**自动拉起**本机服务 8765（Zotero 启动时）。
-// ⚠ 2026-10-16 起默认 **false**：8765 已退役，插件全部走引擎桥 + 文件信箱。
-// 这是一条**回退能力**，不是常态：想恢复自动拉起 → 显式设 true；
-// 只想手动起一次 → 跑 scripts\4-service.vbs。
-pref("extensions.zotero.zotero-kb.autoStartService", false);
-// 知识库目录位置：由插件从服务端 /health 自动记住（不用手填）。
+// 知识库目录位置：由插件从引擎 kb.health 自动记住（不用手填）。
 pref("extensions.zotero.zotero-kb.kbDir", "");
 // 知识库同步（可选，默认关闭）。
 // ⚠ 不是用 Zotero 自带同步 —— 它的文件同步只覆盖有附件条目的文件，

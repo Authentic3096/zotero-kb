@@ -64,7 +64,7 @@
   KBAdmin.page({
     id: "env",
     title: "运行环境",
-    order: 40,
+    order: 80,
 
     async render(host, ctx) {
       const el = ctx.el;

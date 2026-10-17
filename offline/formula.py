@@ -6,7 +6,7 @@
 （MathType 的 Cut and Copy Preferences 设成 TeX -- LaTeX 后，复制出来就是 LaTeX）。
 本模块只负责三件事：
   1. 把用户选中的区域对应到某一条公式（**定位**）；
-  2. 把新 LaTeX 写回**该页**的修订层（**回写**由 online/localserver 走既有 /doc-edit）；
+  2. 把新 LaTeX 写回**该页**的修订层（**回写**由引擎走既有 doc.save）；
   3. 裁一块预览图给对话框看。
 
 ## 坐标口径（2026-10-12 真机实测定死，别再猜）

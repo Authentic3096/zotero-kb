@@ -41,7 +41,7 @@
   KBAdmin.page({
     id: "prefs",
     title: "偏好设置",
-    order: 45,
+    order: 90,
 
     async render(host, ctx) {
       const el = ctx.el;
@@ -119,11 +119,14 @@
       // ================================================================ 卡片 2：侧栏「知识库」
       const levelSel = ctx.select("显示层级", LEVELS, "outline",
                                   function (v) { save("kbviewLevel", v); });
-      const fontIn = el("input", { type: "number", min: "10", max: "24",
+      const fontIn = el("input", { type: "number", min: "10", max: "20",
                                    class: "prefs-num" });
       fontIn.addEventListener("change", function () {
         const n = parseInt(fontIn.value, 10);
-        if (isFinite(n)) save("kbviewFont", n);
+        if (!isFinite(n)) { fontIn.value = String(state.values.kbviewFont || 13); return; }
+        const clamped = Math.max(10, Math.min(20, n));
+        fontIn.value = String(clamped);
+        save("kbviewFont", clamped);
       });
       refs.kbviewFont = fontIn;
       host.appendChild(el("div", { class: "card" }, [
@@ -138,7 +141,7 @@
         el("div", { class: "row" }, [
           el("span", { text: "正文字号（px）" }),
           fontIn,
-          el("span", { class: "faint", text: "10–24；默认 13" }),
+          el("span", { class: "faint", text: "10–20；默认 13" }),
         ]),
       ]));
 
@@ -288,25 +291,224 @@
           text: "默认放在 Zotero 数据目录下的 zotero-kb\\，重装 / 换机只要同步 Zotero 那一份。" }),
       ]));
 
-      // ================================================================ 卡片 5：可选组件引导
-      const guideStatus = el("div", { class: "faint", text: "" });
+      // ================================================================ 卡片 5：可选组件（真安装）
+      //
+      // 2026-10-18：这两块不再只是"提示怎么装"，而是**直接能装**：
+      //   · MinerU → 引擎跑仓库里的 scripts\install-mineru.ps1（装到项目内 .mineru\）；
+      //   · Ollama → 没装就打开官网下载页；装了但缺模型就 ollama pull 推荐模型。
+      // 安装/拉取都是引擎的**长任务**（输出逐行进 job.log），面板轮询显示。
+      const RECOMMENDED_OLLAMA = "qwen3:4b-instruct";
+
+      function outBox() {
+        const box = el("pre", { class: "prefs-out" });
+        box.textContent = "";
+        return box;
+      }
+      function baseModel(name) {
+        return String(name || "").replace(/-\d+k$/i, "");
+      }
+      function tailLines(job) {
+        const log = Array.isArray(job && job.log) ? job.log : [];
+        return log.slice(-200).map(String).join("\n");
+      }
+
+      // ---- Ollama
+      const ollamaStatus = el("div", { class: "faint", text: "正在检测 Ollama…" });
+      const ollamaOut = outBox();
+      const ollamaPageBtn = el("button", {
+        class: "btn btn-subtle", text: "打开官网下载页",
+        title: "用系统默认浏览器打开 ollama.com/download",
+        on: { click: function () { openUrl("https://ollama.com/download/windows"); } },
+      });
+      const ollamaPullBtn = el("button", {
+        class: "btn btn-primary", text: "拉取推荐模型",
+        title: "运行 ollama pull " + RECOMMENDED_OLLAMA + "（下载量不小，输出见下方）",
+        on: { click: function () { runInstall("ollama"); } },
+      });
+      const ollamaCheckBtn = el("button", {
+        class: "btn btn-subtle", text: "重新检测",
+        on: { click: function () { refreshOllama(); } },
+      });
       host.appendChild(el("div", { class: "card" }, [
         el("div", { class: "row" }, [
-          el("strong", { text: "可选组件安装引导" }),
-          el("span", { class: "faint", text: "MinerU / Ollama 的首次提示" }),
+          el("strong", { text: "Ollama（本地模型）" }),
+          el("span", { class: "faint", text: "可选；不装也可以用外部 API" }),
         ]),
         el("div", { class: "sep" }),
-        el("div", { class: "row" }, [
-          el("button", {
-            class: "btn btn-subtle", text: "下次启动重新检查",
-            title: "把「已经问过」的标记清掉；下次启动时如果组件仍缺，会再提示一次",
-            on: { click: function () { resetGuides(); } },
-          }),
-        ]),
-        guideStatus,
-        el("div", { class: "faint",
-          text: "只影响「要不要再提示」；已经装好的组件不会重复安装。" }),
+        ollamaStatus,
+        el("div", { class: "row" }, [ollamaPageBtn, ollamaPullBtn, ollamaCheckBtn]),
+        ollamaOut,
       ]));
+
+      // ---- MinerU
+      const mineruStatus = el("div", { class: "faint", text: "正在检测 MinerU…" });
+      const mineruOut = outBox();
+      const mineruInstallBtn = el("button", {
+        class: "btn btn-primary", text: "开始安装",
+        title: "下载 uv → 建 .mineru\\.venv → 装 mineru[torch] → 下模型（几 GB，可能要几分钟）",
+        on: { click: function () { runInstall("mineru", false); } },
+      });
+      const mineruReinstallBtn = el("button", {
+        class: "btn btn-subtle", text: "重新安装",
+        title: "用 -Force 重建 .mineru\\.venv（已装时想修环境再用）",
+        on: { click: function () { runInstall("mineru", true); } },
+      });
+      const mineruCheckBtn = el("button", {
+        class: "btn btn-subtle", text: "重新检测",
+        on: { click: function () { refreshMineru(); } },
+      });
+      host.appendChild(el("div", { class: "card" }, [
+        el("div", { class: "row" }, [
+          el("strong", { text: "MinerU（PDF 解析）" }),
+          el("span", { class: "faint", text: "可选；装在项目内 .mineru\\，删目录即卸载" }),
+        ]),
+        el("div", { class: "sep" }),
+        mineruStatus,
+        el("div", { class: "row" }, [mineruInstallBtn, mineruReinstallBtn, mineruCheckBtn]),
+        mineruOut,
+      ]));
+
+      const guideStatus = el("div", { class: "faint", text: "" });
+      host.appendChild(el("div", { class: "row" }, [
+        el("button", {
+          class: "btn btn-subtle", text: "下次启动重新提示",
+          title: "把「已经问过」的标记清掉；下次启动时如果组件仍缺，会再提示一次",
+          on: { click: function () { resetGuides(); } },
+        }),
+        el("span", { class: "faint",
+                     text: "只影响「要不要再提示」；点上面的安装按钮才会真的安装。" }),
+      ]));
+      host.appendChild(guideStatus);
+
+      function setEnabled(btns, on) {
+        (btns || []).forEach(function (b) { b.disabled = !on; });
+      }
+
+      async function refreshOllama() {
+        ollamaStatus.className = "faint";
+        ollamaStatus.textContent = "正在检测 Ollama…";
+        setEnabled([ollamaPullBtn], false);
+        let info = {};
+        let dir = "";
+        try {
+          const h = await KBAdmin.get("/health");
+          info = (h && h.ollama_info) || {};
+          dir = String((h && h.ollama) || "");
+        } catch (e) {
+          ollamaStatus.className = "note note-warn";
+          ollamaStatus.textContent = "读不到引擎状态：" + msgOf(e);
+          return;
+        }
+        if (!info.exists && !dir) {
+          ollamaStatus.className = "note note-warn";
+          ollamaStatus.textContent = "未安装。点「打开官网下载页」装好后再回来点「重新检测」。";
+          return;
+        }
+        if (info.api_up === false) {
+          ollamaStatus.className = "note note-warn";
+          ollamaStatus.textContent = "已安装，但 Ollama 没在运行 —— 从开始菜单 / 托盘启动它，再点「重新检测」。";
+          return;
+        }
+        let models = [];
+        try {
+          const m = await KBAdmin.get("/models");
+          models = (m && m.models) || [];
+        } catch (e) { models = []; }
+        const names = models.map(function (x) { return String(x.name || ""); });
+        const has = names.some(function (n) { return baseModel(n) === RECOMMENDED_OLLAMA; });
+        if (has) {
+          const hit = names.filter(function (n) {
+            return baseModel(n) === RECOMMENDED_OLLAMA;
+          });
+          ollamaStatus.className = "note note-ok";
+          ollamaStatus.textContent = "已可用（" + hit.join(" / ") + "）。";
+        } else {
+          ollamaStatus.className = "note note-warn";
+          ollamaStatus.textContent = "已安装，但没有推荐模型 " + RECOMMENDED_OLLAMA
+            + " —— 点「拉取推荐模型」。";
+          setEnabled([ollamaPullBtn], true);
+        }
+      }
+
+      async function refreshMineru() {
+        mineruStatus.className = "faint";
+        mineruStatus.textContent = "正在检测 MinerU…（第一次可能要十几秒）";
+        setEnabled([mineruInstallBtn], false);
+        try {
+          // 用 checkRaw 的 force=1：安装刚结束时 probe 自带的 60s 缓存会装作"还没装"，
+          // 这里必须强制重探；它也比 /mineru-status（要扫全库产物）快得多。
+          const p = (await KBAdmin.get("/mineru-check?force=1", null, 90000)) || {};
+          if (p.ok) {
+            mineruStatus.className = "note note-ok";
+            mineruStatus.textContent = "已可用" + (p.exe ? "（" + p.exe + "）" : "")
+              + (p.version ? "　·　" + p.version : "");
+          } else if (p.exe) {
+            mineruStatus.className = "note note-warn";
+            mineruStatus.textContent = "装是装了，但没能跑起来：" + (p.why || "没说明原因")
+              + "　可以点「重新安装」。";
+          } else {
+            mineruStatus.className = "note note-warn";
+            mineruStatus.textContent = "未安装。" + (p.why ? "（" + p.why + "）" : "")
+              + "　点「开始安装」。";
+            setEnabled([mineruInstallBtn], true);
+          }
+        } catch (e) {
+          mineruStatus.className = "note note-err";
+          mineruStatus.textContent = "检测失败：" + msgOf(e);
+        }
+      }
+
+      async function openUrl(url) {
+        try { await KBAdmin.post("/open-url", { url: url }); }
+        catch (e) { ollamaStatus.className = "note note-err";
+                    ollamaStatus.textContent = "打开链接失败：" + msgOf(e); }
+      }
+
+      async function runInstall(kind, force) {
+        const isMineru = kind === "mineru";
+        const out = isMineru ? mineruOut : ollamaOut;
+        const status = isMineru ? mineruStatus : ollamaStatus;
+        out.textContent = "正在派发…\n";
+        out.scrollTop = out.scrollHeight;
+        status.className = "faint";
+        status.textContent = isMineru ? "正在安装 MinerU…（面板不会卡住，可切到别的页）"
+                                      : "正在拉取模型…";
+        setEnabled([ollamaPullBtn, mineruInstallBtn, mineruReinstallBtn], false);
+        try {
+          const job = await ctx.runTask({
+            submit: function () {
+              return KBAdmin.post(isMineru ? "/mineru/install" : "/ollama/pull",
+                                  isMineru ? { force: !!force }
+                                           : { model: RECOMMENDED_OLLAMA });
+            },
+            interval: 1500,
+            onTick: function (j) {
+              const t = tailLines(j);
+              out.textContent = (t || "运行中…") + "\n";
+              out.scrollTop = out.scrollHeight;
+              const log = Array.isArray(j && j.log) ? j.log : [];
+              if (log.length) ctx.logAuto("[" + kind + "] " + String(log[log.length - 1]));
+            },
+          });
+          const res = (job && job.result) || {};
+          out.textContent += "\n" + (res.ok ? "✓ 完成" : "✗ 失败")
+            + (res.exit_code != null ? "（exit=" + res.exit_code + "）" : "") + "\n"
+            + String(res.output_tail || "");
+          out.scrollTop = out.scrollHeight;
+          status.className = res.ok ? "note note-ok" : "note note-err";
+          status.textContent = res.ok ? "✓ 完成，正在重新检测…"
+                                      : "✗ 失败：看下方输出（也可以点「重新检测」看现状）";
+          if (res.ok) await (isMineru ? refreshMineru() : refreshOllama());
+        } catch (e) {
+          out.textContent += "\n✗ " + msgOf(e);
+          status.className = "note note-err";
+          status.textContent = "✗ " + msgOf(e);
+        } finally {
+          setEnabled([ollamaPullBtn, mineruInstallBtn, mineruReinstallBtn], true);
+          if (isMineru) refreshMineru(); else refreshOllama();
+        }
+      }
+
       async function resetGuides() {
         try {
           await KBAdmin.post("/plugin-prefs", { resetGuides: true });
@@ -317,6 +519,8 @@
           guideStatus.textContent = "✗ 重置失败：" + msgOf(e);
         }
       }
+      refreshOllama();
+      refreshMineru();
 
       // ================================================================ 卡片 6：高级（排查用）
       const mailIn = textInput("mailboxDir", "留空 = <知识库目录>\\mailbox");
@@ -328,11 +532,7 @@
         el("div", { class: "sep" }),
         el("div", { class: "pref-list" }, [
           checkbox("autoTaskPoll", "允许插件领取「在 Zotero 里执行 JS」的任务",
-                   "（自动调试用；默认开）"),
-          checkbox("taskPollHttp", "还去消费老的 HTTP 任务队列",
-                   "（8765 已退役，默认关；只在手动起服务时用）"),
-          checkbox("autoStartService", "Zotero 启动时自动拉起 8765",
-                   "（回退能力，默认关）"),
+                   "（文件信箱；自动调试用，默认开）"),
         ]),
         el("div", { class: "row" }, [
           el("span", { text: "任务信箱目录" }),
@@ -355,7 +555,7 @@
       function applyValues() {
         const v = state.values || {};
         ["autoProcess", "acquireAutoClassify", "acquireConfirm", "createMissing",
-         "syncEnabled", "autoTaskPoll", "taskPollHttp", "autoStartService"]
+         "syncEnabled", "autoTaskPoll"]
           .forEach(function (name) {
             if (refs[name]) refs[name].checked = v[name] === true;
           });

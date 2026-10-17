@@ -185,12 +185,9 @@ Object.assign(ZoteroKB, {
   /**
    * 拉取全量权重映射填进内存缓存（供同步的 dataProvider 查表）。
    *
-   * W3 线2.5（2026-10-13）：**优先走宿主半的引擎桥**（`kbAdminHostRoute("GET","/weights")`
-   * → 引擎 `kb.weightsMap`），拿不到就**退回老 HTTP** —— 过渡期两条都必须能用。
-   * 为什么先桥后 HTTP：桥不需要那个常驻 8765 服务（引擎按需拉起、随 Zotero 退出），
-   * 这正是"去掉常驻服务"要的效果；而 HTTP 兜底保证在引擎起不来时列表还有数。
-   * ⚠ 引擎那边**必须**是全量映射（每篇都有基础权重）。用 `advanced.weightList`
-   *   （只列有经验的几篇）会让其余全空白 —— 老实现就踩过这个坑。
+   * 只走宿主半的引擎桥（`GET /weights` → 引擎 `kb.weightsMap`）；拿不到就先补一次
+   * `healthCheck`（拉起引擎）再试一次。⚠ 引擎那边**必须**是全量映射（每篇都有
+   * 基础权重）。用 `advanced.weightList`（只列有经验的几篇）会让其余全空白。
    */
   refreshWeights: async function () {
     var self = ZoteroKB;
@@ -198,17 +195,13 @@ Object.assign(ZoteroKB, {
     try {
       res = await self.kbAdminHostRoute("GET", "/weights");
     } catch (e) {
-      Zotero.debug("[zotero-kb] 引擎桥取权重失败（退回 HTTP）：" + e);
+      Zotero.debug("[zotero-kb] 引擎桥取权重失败：" + e);
     }
     if (!res || !res.weights) {
+      // 拿不到（引擎刚起、还没就绪）→ 补问一次 healthCheck（拉起引擎），再试一次。
+      await this.healthCheck();
       try {
-        res = await this.request("GET", "/weights");
-        if (!res || !res.weights) {
-          // 拿不到（引擎刚起、还没就绪）→ 补问一次 healthCheck（问引擎桥的 kb.health），
-          // 再试一次。
-          await this.healthCheck();
-          res = await this.request("GET", "/weights");
-        }
+        res = await self.kbAdminHostRoute("GET", "/weights");
       } catch (e) {
         Zotero.debug("[zotero-kb] 拉权重失败：" + e);
       }

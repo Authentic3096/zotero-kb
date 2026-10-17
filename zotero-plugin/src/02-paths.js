@@ -320,16 +320,4 @@ Object.assign(ZoteroKB, {
   ollamaFlagPath: function () {
     return this.kbDir() + "\\ollama-owned-by-zotero.flag";
   },
-
-
-  /**
-   * 本地服务（:8765）的归属标记。
-   *
-   * 和 Ollama 用的是同一套思路：**标记文件在 = 是我们拉起来的**，
-   * 关 Zotero 时就顺手关掉；标记不在 = 本来就在跑（用户手动开的、
-   * 或开机自启拉起的），绝不去碰它。
-   */
-  serverFlagPath: function () {
-    return this.kbDir() + "\\server-owned-by-zotero.flag";
-  },
 });

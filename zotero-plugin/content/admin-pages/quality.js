@@ -60,7 +60,7 @@
   KBAdmin.page({
     id: "quality",
     title: "损坏查询",
-    order: 60,
+    order: 70,
 
     async render(host, ctx) {
       const el = ctx.el;

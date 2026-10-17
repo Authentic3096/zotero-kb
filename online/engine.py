@@ -3,10 +3,9 @@
     python online/engine.py          # 由宿主（Zotero 插件）用管道拉起
 
 为什么要有它（范围 B 第一波，见开发说明）：用户的第一诉求是
-**不要监听端口**（不想在本机开任何 TCP 监听）。原来的常驻 HTTP 服务
-（online/localserver.py，127.0.0.1:8765）改成"宿主拉起子进程、用管道说话"：
-**无端口、无 token、不常驻、不自启** —— Zotero 在跑时引擎是它的子进程、
-随 Zotero 退出；Zotero 关着时引擎只活在外部启动器里。
+**不要监听端口**（不想在本机开任何 TCP 监听）。2026-10 起老的常驻 HTTP 服务
+（127.0.0.1:8765）及其代码已**整体删除**：引擎改由宿主按需拉起，
+父子进程用 stdin/stdout 说话 —— **无端口、无 token、不常驻、不自启**。
 
 协议（NDJSON：一行一条 JSON，强制 UTF-8）
     请求   {"id":1,"method":"kb.status","params":{...}}
@@ -31,12 +30,12 @@
   都会永久卡住、连它起的子进程都跑不起来 —— 这是 `kb.search` 卡死的真根因
   （2026-10-13 查明；复现脚本在该次会话目录的 `repro_engine_hang.py`）。
 
-业务**一律不重写**：全部复用 online/localserver.py 里的既有实现
+业务**一律不重写**：全部复用 online/kbops.py 里的既有实现
 （health_payload / do_status / do_reindex / do_digest / do_jobs_list /
 start_reindex_job / start_digest_job …）与 offline/*.py 里已有的实现
 （experience / prompts / learn / digest / kbviews / metafill / typefix）。
-localserver 那边只做了"把逻辑提成模块级函数"的搬运，**HTTP 行为一个字没改**
-—— 切换之前旧服务照常能用，那是验证新通道的手段。
+`kbops.py` 只是把业务逻辑提成模块级函数，**不监听端口、不生成 token、
+不认识 HTTP** —— 老服务删掉之后它是纯库。
 
 W2 批次 A（2026-10-13）新增的方法表（契约见开发说明）：
     experience.list / experience.get / experience.save / experience.delete /
@@ -200,7 +199,7 @@ ROOT = os.path.dirname(HERE)     # 仓库根（offline/ online/ tools/ 的上一
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-import localserver as LS         # noqa: E402 —— 业务实现唯一来源（它会自己把 offline/ 加进 sys.path）
+import kbops as LS              # noqa: E402 —— 业务实现唯一来源（它会自己把 offline/ 加进 sys.path）
 import schemas as S              # noqa: E402 —— 时间戳 / 目录大小 / 人读大小只有它那一份实现
 
 ENGINE_VERSION = "1.0"
@@ -265,7 +264,7 @@ def _m_kb_location(params: dict) -> dict:
 def _m_kb_location_migrate(params: dict) -> dict:
     """`POST /kb-location {migrate_to}`：迁移知识库（复制 + 备份 + 校验）。
 
-    直接调 `localserver._migrate_kb`（实现只有那一份）—— 老 HTTP 服务停着也能用，
+    直接调 `kbops._migrate_kb`（实现只有那一份）—— 老 HTTP 服务停着也能用，
     这正是把这条路搬进引擎的原因。迁移期间会阻塞，时间由库大小决定。
     """
     target = str(params.get("migrate_to") or "").strip()
@@ -527,7 +526,7 @@ def _m_digest(params: dict) -> dict:
 #   · 失败一律 ok:false + 中文原因（坏输入不许弄死引擎）；
 #   · 长任务先回 {job:{id}}，之后 GET /jobs/<id> 轮询。
 #
-# ⚠ 业务**一律不重写**：能用 localserver 的模块级函数（do_* / _safe_llm_config /
+# ⚠ 业务**一律不重写**：能用 kbops 的模块级函数（do_* / _safe_llm_config /
 #   env_report / _outline_*）就用它；offline/*.py 里已有的实现（experience /
 #   prompts / learn / digest / kbviews / schemas）直接用。这里只做
 #   **参数校验 + 形状翻译**两件事。
@@ -983,7 +982,7 @@ def _m_learn_scan(params: dict) -> dict:
 def _outline_rows() -> list:
     """全库纲要清单（items + meta.ai_outline + views 文件）的**原始行**。
 
-    口径照 Tk 面板 `tab_outline.py::refresh_outline_list`（也照 localserver 里
+    口径照 Tk 面板 `tab_outline.py::refresh_outline_list`（也照 kbops 里
     那套 `_outline_meta_counts` / `_outline_file_keys` 的判据）：
       · sections 按 **meta** 数（读端读的就是它），不是按 views 里的文件；
       · has_file  是人读的那份 `views/<key>.outline.md` 在不在；
@@ -1298,7 +1297,7 @@ def _env_rejected(sources: dict) -> list:
 def _m_env_check(params: dict) -> dict:
     """运行环境诊断（四个位置 + 来源 + 被否掉的高优先档）。
 
-    业务直接复用 `localserver.env_report()`（那是"该改哪一个框"的唯一实现）。
+    业务直接复用 `kbops.env_report()`（那是"该改哪一个框"的唯一实现）。
     """
     rep = LS.env_report()
     return {"ok": bool(rep.get("ok")), "items": _env_items(rep),
@@ -1356,7 +1355,7 @@ def _m_env_save(params: dict) -> dict:
 def _m_llm_config(params: dict) -> dict:
     """当前模型配置（**不含 api_key 明文**）→ 契约要的扁平形状。
 
-    复用 `localserver._safe_llm_config()`（它负责"只露 has_key / key_tail"），
+    复用 `kbops._safe_llm_config()`（它负责"只露 has_key / key_tail"），
     这里只把嵌套里的字段摊平。没配的给空串，页面不用判 undefined。
 
     2026-10-13 多给一个 `services`（`[{key, base_url}]`，来自
@@ -1421,7 +1420,7 @@ def _m_llm_save(params: dict) -> dict:
 
 
 def _m_llm_models(params: dict) -> dict:
-    """本机 Ollama 有哪些模型（复用 localserver.do_models，HTTP 与引擎同一份）。"""
+    """本机 Ollama 有哪些模型（复用 kbops.do_models，HTTP 与引擎同一份）。"""
     return LS.do_models()
 
 
@@ -1792,8 +1791,8 @@ def _m_service_restart(params: dict) -> dict:
 def _m_kb_sync(params: dict) -> dict:
     """把知识库同步到别处（用户可选功能，默认关闭）。
 
-    复用 `online/localserver.py` 里同一份实现（`_sync_to_folder` / `_sync_by_command`），
-    不再另写一套 —— 这是 8765 退役后补到引擎上的最后一条 HTTP 端点。
+    复用 `online/kbops.py` 里同一份实现（`_sync_to_folder` / `_sync_by_command`），
+    不再另写一套 —— 这条原来在旧 HTTP 服务上，服务删除后业务搬到了这里。
     """
     import schemas as S
     mode = str((params or {}).get("mode") or "none").strip()
@@ -1809,6 +1808,102 @@ def _m_kb_sync(params: dict) -> dict:
     if not res.get("ok"):
         raise RpcError(str(res.get("error") or "同步失败"))
     return res
+
+
+def _stream_run(cmd: list, cwd: str, progress=None, timeout: float = 3600.0) -> tuple:
+    """跑一个**会输出很多行**的子进程，把每行交给 progress（job.log）。
+
+    返回 `(exit_code, output_tail)`。只用于安装/拉模型这类"用户要看得见在动"的
+    动作；普通短命令仍走 `procrun`。Windows 上不弹控制台。
+    """
+    import subprocess
+    flags = 0x08000000 if os.name == "nt" else 0
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace",
+                            creationflags=flags)
+    tail: list[str] = []
+    started = time.time()
+    try:
+        for line in proc.stdout:
+            text = str(line).rstrip("\r\n")
+            # 去掉 ollama / pip 的终端控制序列（否则面板输出区里全是乱码）
+            text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text).strip()
+            if not text:
+                continue
+            tail.append(text)
+            if len(tail) > 200:
+                del tail[:100]
+            if progress:
+                try:
+                    progress(text[:400])
+                except Exception:      # noqa: BLE001
+                    pass
+            if time.time() - started > timeout:
+                proc.kill()
+                tail.append(f"（超过 {int(timeout)} 秒，已中止）")
+                break
+        proc.wait(timeout=30)
+    finally:
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+        except Exception:              # noqa: BLE001
+            pass
+    return proc.returncode, "\n".join(tail[-60:])
+
+
+def _job_install_mineru(force: bool = False, progress=None) -> dict:
+    """跑仓库里的 `scripts/install-mineru.ps1`（装到项目内 `.mineru\\`）。"""
+    import schemas as S
+    root = str(S.PROJECT_ROOT)
+    script = os.path.join(root, "scripts", "install-mineru.ps1")
+    if not os.path.exists(script):
+        raise RuntimeError("找不到安装脚本：" + script)
+    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+           "-File", script]
+    if force:
+        cmd.append("-Force")
+    code, tail = _stream_run(cmd, root, progress=progress, timeout=7200)
+    return {"ok": code in (0, 2), "exit_code": code,
+            "cuda": code == 0, "output_tail": tail}
+
+
+def _m_mineru_install(params: dict) -> dict:
+    """`POST /mineru/install {force?}` → 长任务（安装脚本的输出进 job.log）。"""
+    force = bool((params or {}).get("force"))
+    jid = LS.start_job("安装 MinerU" + ("（强制重建）" if force else ""),
+                       _job_install_mineru, force, progress=True)
+    return {"job": {"id": jid}, "id": jid, "state": "running"}
+
+
+def _job_ollama_pull(model: str, progress=None) -> dict:
+    """`ollama pull <model>`（装好的 Ollama 自己下载模型，输出进 job.log）。"""
+    import shutil
+    import schemas as S
+    exe = ""
+    try:
+        exe = str(S.resolve_ollama() or "").strip()
+    except Exception:              # noqa: BLE001
+        exe = ""
+    if not exe or not os.path.exists(exe):
+        exe = shutil.which("ollama") or ""
+    if not exe:
+        raise RuntimeError("找不到 ollama.exe：先安装 Ollama（面板「偏好设置」可以打开下载页）")
+    code, tail = _stream_run([exe, "pull", model], str(S.PROJECT_ROOT),
+                             progress=progress, timeout=3600)
+    return {"ok": code == 0, "exit_code": code, "model": model,
+            "output_tail": tail}
+
+
+def _m_ollama_pull(params: dict) -> dict:
+    """`POST /ollama/pull {model?}` → 长任务（默认拉推荐模型）。"""
+    model = str((params or {}).get("model") or "qwen3:4b-instruct").strip()
+    if not model:
+        raise RpcError("需要 model")
+    jid = LS.start_job("拉取 Ollama 模型 " + model, _job_ollama_pull,
+                       model, progress=True)
+    return {"job": {"id": jid}, "id": jid, "state": "running"}
 
 
 # ---------------------------------------------------------------- 提示词
@@ -1886,7 +1981,7 @@ def _m_prompts_probe(params: dict) -> dict:
 #   · **`output` 类返回是一份"原样文本"**（契约硬口径 1）—— 不解析成结构化
 #     字段：解析必然随输出漂移，页面只把它放进等宽只读区。
 #
-# 业务同样**一律不重写**：能调 localserver 的模块级函数（do_set_weight /
+# 业务同样**一律不重写**：能调 kbops 的模块级函数（do_set_weight /
 # do_classify_one / start_job）就调；能调 offline/*.py 里的实现（mineru /
 # check_chunks / repair_chunks / judge / schemas / searcher）就调；那些"在 Tk
 # 面板里就是一个脚本"的动作（kb_admin.py / zotero_sync.py / maintain.py /
@@ -2125,7 +2220,7 @@ def _m_ai_summarize(params: dict) -> dict:
 def _m_ai_classify(params: dict) -> dict:
     """给一篇生成分类建议 → `{key, category, tags[], reason, raw?}`。
 
-    **复用** `localserver.do_classify_one`（它转发到 `judge.classify_item`，
+    **复用** `kbops.do_classify_one`（它转发到 `judge.classify_item`，
     与 Tk 面板 `judge.py classify`、插件弹窗是同一份提示词）。
     区别只在于 HTTP 的 `/classify` 收的是插件发来的 `item`（新文献还没入库），
     而这里收的是 **key** —— 所以由引擎从索引库把 title/abstract/tags 读出来，
@@ -2651,7 +2746,7 @@ def _m_kb_search(params: dict) -> dict:
 def _m_kb_weight(params: dict) -> dict:
     """写一条条目的权重（标重点 / 取消重点 / 人工分 / 备注）。
 
-    **复用** `localserver.do_set_weight`（实现只有 `experience.set_weight`
+    **复用** `kbops.do_set_weight`（实现只有 `experience.set_weight`
     一份；它只动人工字段，不碰经验统计）。
     """
     key = str(params.get("key") or "").strip()
@@ -3157,6 +3252,8 @@ METHODS = {
     "llm.discover": _m_llm_discover,
     "service.restart": _m_service_restart,
     "kb.sync": _m_kb_sync,
+    "mineru.install": _m_mineru_install,
+    "ollama.pull": _m_ollama_pull,
     "prompts.list": _m_prompts_list,
     "prompts.save": _m_prompts_save,
     "prompts.probe": _m_prompts_probe,

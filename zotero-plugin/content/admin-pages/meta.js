@@ -54,7 +54,7 @@
   KBAdmin.page({
     id: "meta",
     title: "元数据",
-    order: 70,
+    order: 50,
 
     async render(host, ctx) {
       const el = ctx.el;

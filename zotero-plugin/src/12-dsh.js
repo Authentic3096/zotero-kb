@@ -103,15 +103,11 @@ Object.assign(ZoteroKB, {
       let info = {};
       // 知识库根路径从**引擎桥**取，而不是写死 —— 这样知识库以后
       // 迁到别处（比如 Zotero 数据目录）这里不用改。
-      // ⚠ 2026-10-16：原来这里发的是老 HTTP `GET /health`（127.0.0.1:8765）。
-      //   8765 已退役，那条请求平时必然失败（正是 plugin-status.json 里
-      //   `lastRequestError` 的来源）。现在改走**引擎桥的同名接口**
-      //   （`kb.health`，与 healthCheck 取的是同一份数据），拿不到就用
-      //   `self.kbDir()` 这个缓存值兜底（下面 kbDir 初值就是它）。
+      // 拿不到就用 `self.kbDir()` 这个缓存值兜底（下面 kbDir 初值就是它）。
       let kbDir = self.kbDir();      // 缓存值兜底，下面再用 /health 校正
       try {
-        // W3 线2.5：走**共用**的 kbItemInfo（桥优先、退回 HTTP；见 05-server.js）。
-        // ⚠ 它可能回 null（两条通道都失败）——那时只有 Zotero 元数据可发，
+        // 走**共用**的 kbItemInfo（只走引擎桥；见 05-server.js）。
+        // ⚠ 它可能回 null（引擎没起来）——那时只有 Zotero 元数据可发，
         //   下面的 `info[k]` 查不到就落到「这篇还没进知识库」那句，行为可接受。
         const r = await self.kbItemInfo(keys);
         for (const x of (r && r.items) || []) info[x.key] = x;
