@@ -504,6 +504,7 @@ BOM_ALLOWED = {
     "scripts/install-env.ps1",
     "scripts/install-mineru.ps1",
     "scripts/sync-skill.ps1",
+    "scripts/update.ps1",
     "skills/zotero-acquire/tools/fetch-pdf.ps1",
 }
 

@@ -178,6 +178,11 @@ if ($code -ne 0) {
     exit 1
 }
 Ok ("依赖装好（{0:N0} 秒）" -f $sw.Elapsed.TotalSeconds)
+# 记下 requirements 的指纹：scripts\update.cmd 用它判断是否需要重装依赖
+try {
+    $reqHash = (Get-FileHash $Req -Algorithm SHA256).Hash.ToLower()
+    Set-Content -Path (Join-Path $Venv "requirements.sha256") -Value $reqHash -Encoding ASCII
+} catch { Warn "写依赖指纹失败（不影响使用）" }
 
 # ---------------------------------------------------------------- 4. 验证
 Say ""
@@ -247,15 +252,16 @@ except Exception as e:
     }
 }
 
-# ---------------------------------------------------------------- 6. 生成 DSH 接入配置
+# ---------------------------------------------------------------- 6. 生成 DSH 接入配置（可选）
 #
-# DSH 的 bundle 配置里 command/args 必须是**绝对路径**，所以仓库里放的是
-# 带占位符的模板（bundle\cordis.patch.yml.tmpl），这里按本机实际情况生成。
-# 不做这一步，别人克隆下来接不进 DSH；而提交一份硬编码路径就是泄露目录结构。
+# 源码包里有 bundle\cordis.patch.yml.tmpl 与 tools\gen_bundle_config.py，
+# 这里按本机实际路径生成。便携包只带运行必需文件，没有这一套 —— 跳过即可，
+# 不影响知识库本身；想接 DSH 的用户按 QUICKSTART「MCP 工具」一节配置。
 Say ""
-Say "[6/6] 生成 DSH 接入配置"
+Say "[6/6] 生成 DSH 接入配置（可选）"
 $gen = Join-Path $Root "tools\gen_bundle_config.py"
-if (Test-Path $gen) {
+$tmpl = Join-Path $Root "bundle\cordis.patch.yml.tmpl"
+if ((Test-Path $gen) -and (Test-Path $tmpl)) {
     $gres = Invoke-Native -Exe $Py -ArgList @("-X", "utf8", $gen) -Quiet
     if ($gres.Code -eq 0) {
         Ok "已生成 bundle\cordis.patch.yml"
@@ -264,7 +270,7 @@ if (Test-Path $gen) {
         $gres.Lines | ForEach-Object { Say "       $_" }
     }
 } else {
-    Warn "找不到 tools\gen_bundle_config.py，跳过"
+    Say "       便携包不含 DSH 接入组件，跳过（知识库本身不受影响）" "DarkGray"
 }
 
 # ---------------------------------------------------------------- 收尾
@@ -277,12 +283,11 @@ Say "  接下来："
 Say "    1) 构建知识库     双击 scripts\1-convert.cmd"
 Say "    2) 打开管理面板   双击 工具菜单 →「知识库管理…」"
 Say "    3) 装 Zotero 插件 工具 → 插件 → 齿轮 → Install Plugin From File…"
-Say "         （.xpi 在哪：管理面板「高级 → 插件安装」里点「打包插件 xpi」生成）"
+Say "         （.xpi 在 zotero-plugin\ 下；源码包也可在面板「高级」页打包）"
 Say ""
-Say "  想接进 DSH（让 AI 能检索你的文献）的话："
-Say "    见 README 的「接入 DSH」一节，里面有一条命令。"
+Say "  想接 AI（MCP）或装 Skill：见 QUICKSTART.md 的「接 AI」一节。"
 Say ""
 Say "  如果 .venv 不在项目目录里（比如你挪过它），"
-Say "  到 Zotero 设置 →「文献知识库」→「运行环境」把 Python 路径填上即可，"
+Say "  到 Zotero → 工具 →「知识库管理…」→「运行环境」把 Python 路径填上即可，"
 Say "  不用改任何代码。"
 Say ""

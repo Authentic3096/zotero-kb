@@ -58,6 +58,19 @@ jobs:
       - name: 发布前综合审计（隐私 / 写死路径 / 安装可用性）
         run: python tools/audit_release.py
 
+      # 普通用户用的便携运行包：运行代码 + 脚本 + Skill + xpi。
+      # 必须在 check_plugin.py 之后，否则包里没有刚打出来的 xpi。
+      - name: 构建便携运行包
+        run: python tools/pack_portable.py
+
+      - name: 生成 SHA256SUMS.txt
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum zotero-kb-*-win64.zip > SHA256SUMS.txt
+          sha256sum ../zotero-plugin/zotero-kb-*.xpi | sed 's#  .*/#  #' >> SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
       # tag 与 manifest 版本必须一致 —— 不一致直接失败，宁可发不出去，
       # 也不要发一个 update_link 指向不存在附件的清单
       - name: 生成 updates.json
@@ -96,7 +109,7 @@ jobs:
 
       # 幂等：Release 已存在就只覆盖附件。为什么需要 —— 发布中途失败（比如
       # 上传到一半网络断了）时，重跑必须能接着走完，而不是卡在"已存在"上报错。
-      - name: 发 Release（xpi 作为附件）
+      - name: 发 Release（xpi + 便携包 + 校验和）
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -104,11 +117,16 @@ jobs:
           TAG="${{ steps.t.outputs.tag }}"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG 已存在 —— 覆盖附件"
-            gh release upload "$TAG" zotero-plugin/zotero-kb-*.xpi --clobber
+            gh release upload "$TAG" \
+              zotero-plugin/zotero-kb-*.xpi \
+              dist/zotero-kb-*-win64.zip \
+              dist/SHA256SUMS.txt --clobber
           else
             echo "新建 Release $TAG"
             gh release create "$TAG" \
               zotero-plugin/zotero-kb-*.xpi \
+              dist/zotero-kb-*-win64.zip \
+              dist/SHA256SUMS.txt \
               --title "$TAG" \
               --notes-file /tmp/notes.md
           fi

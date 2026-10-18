@@ -38,6 +38,8 @@ __pycache__/
 .mineru/
 
 # ---- 构建产物 ----
+# 便携运行包（tools/pack_portable.py 生成，只作 Release 附件，不进版本库）
+dist/
 zotero-plugin/*.xpi
 zotero-plugin/*.bak-iife
 

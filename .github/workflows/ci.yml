@@ -39,6 +39,10 @@ jobs:
       - name: 发布前综合审计（隐私 / 写死路径 / 安装可用性）
         run: python tools/audit_release.py
 
+      # 便携包打包自检：入口 import 闭包、排除项、版本一致、zip 自检
+      - name: 便携包打包自检
+        run: python tools/pack_portable.py
+
       # 守住最隐蔽的一种发版事故：改了版本号却没更新 updates.json
       - name: updates.json 与 manifest 版本是否一致
         run: python tools/make_updates_json.py --check

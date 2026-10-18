@@ -3,8 +3,8 @@
     "zotero-kb@authentic3096.github.io": {
       "updates": [
         {
-          "version": "2.0.6",
-          "update_link": "https://github.com/Authentic3096/zotero-kb/releases/download/v2.0.6/zotero-kb-2.0.6.xpi",
+          "version": "2.0.7",
+          "update_link": "https://github.com/Authentic3096/zotero-kb/releases/download/v2.0.7/zotero-kb-2.0.7.xpi",
           "applications": {
             "zotero": {
               "strict_min_version": "6.999",

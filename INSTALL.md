@@ -4,7 +4,7 @@
 
 > 这份文档假设你**从没装过**。每一步都写了"应该看到什么"，
 > 卡住时能对上号。**技术原理、设计取舍与各功能的详细用法**见
-> [`ARCHITECTURE.md`](ARCHITECTURE.md)。
+> [`ARCHITECTURE.md`](https://github.com/Authentic3096/zotero-kb/blob/main/ARCHITECTURE.md)（在源码仓库里；便携包不含这份文档）。
 
 ---
 
@@ -81,21 +81,27 @@ Python 负责解析 PDF、建索引、调模型。
 
 ### 第 0 步：拿到项目
 
-两种方式任选，都解压/检出到**路径里没有中文和空格**的目录：
-
-A. 下载 zip（不用装 git）
+普通用户下载 **便携运行包** 就够了（不用装 git，也不用下整个源码）：
 
 [Releases](https://github.com/Authentic3096/zotero-kb/releases) → 最新版的
-`Source code (zip)` → 解压到 `D:\zotero-kb\`。
+`zotero-kb-<版本>-win64.zip` → 解压到**路径里没有中文和空格**的目录，
+例如 `C:\zotero-kb\`。
 
-B. git 克隆（想跟着更新走就用这个）
+包里已经含：运行代码（`offline\` / `online\` / `tools\`）、`scripts\`、
+`requirements.txt`、两份 Skill，以及 `zotero-plugin\zotero-kb-<版本>.xpi`。
+
+**只有要改代码 / 自己构建时才用源码**：
+
+A. 下载源码 zip：Release 里的 `Source code (zip)`
+
+B. git 克隆：
 
 ```powershell
-git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
+git clone https://github.com/Authentic3096/zotero-kb.git C:\zotero-kb
 ```
 
 > 不要把项目放在 `C:\Program Files\` 下面 —— 那里写文件需要管理员权限。
-> 放在你的用户目录或 D 盘根下都行。
+> 放在你的用户目录或数据盘根下都行。
 
 ### 第 1 步：一键装 Python 环境
 
@@ -110,18 +116,18 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 | 3/6 | 装依赖（约 270 MB，走阿里云镜像） | 1~5 分钟 |
 | 4/6 | 验证依赖是否齐全 | 5 秒 |
 | 5/6 | 下载嵌入模型（约 90 MB，走国内镜像） | 1~3 分钟 |
-| 6/6 | 生成 DSH 接入配置 | 1 秒 |
+| 6/6 | （可选）生成 DSH 接入配置 —— 源码包会做；便携包跳过 | 1 秒 |
 
 **跑完应该看到**：
 
 ```
-[6/6] 生成 DSH 接入配置
-  [OK] 已生成 bundle\cordis.patch.yml
-
 ============================================================
   装好了
 ============================================================
 ```
+
+（源码包会多一行「已生成 bundle\cordis.patch.yml」；便携包在第 6 步会提示
+“不含 DSH 接入组件，跳过”，**不影响知识库本身**。）
 
 **如果哪一步失败**，脚本会明确说是哪步、以及建议怎么做。
 最常见的是网络问题 —— 重跑一次通常就好（已下载的部分会复用）。
@@ -156,15 +162,15 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 
 **装的就是打包好的 xpi，不用自己编译**：
 
-1. 打开 [Releases](https://github.com/Authentic3096/zotero-kb/releases)，
-   下载最新版的 **`zotero-kb-<版本>.xpi`**（Release 附件里的那个；不是
-   `Source code (zip)`，那是给要改代码的人用的）；
+1. 便携包里已经带了：`<项目目录>\zotero-plugin\zotero-kb-<版本>.xpi`。
+   如果你只下了独立 xpi，也可以在 [Releases](https://github.com/Authentic3096/zotero-kb/releases)
+   的附件里找同版本的 `zotero-kb-<版本>.xpi`（不是 `Source code (zip)`）；
 2. Zotero → 工具 → 插件 → 右上角齿轮 → **Install Plugin From File…** →
-   选中刚下的 `zotero-kb-<版本>.xpi`；
+   选中这个 `zotero-kb-<版本>.xpi`；
 3. **装完必须完全退出 Zotero 再打开**（关窗口不算）。
 
 > 自己改代码时才需要打包：管理面板 → 「高级」页 → 「打包插件 xpi」，
-> 生成的 `.xpi` 在 `zotero-plugin\` 目录下（细节见 [`ARCHITECTURE.md`](ARCHITECTURE.md)
+> 生成的 `.xpi` 在 `zotero-plugin\` 目录下（细节见 [`ARCHITECTURE.md`](https://github.com/Authentic3096/zotero-kb/blob/main/ARCHITECTURE.md)
 > 末尾的「开发与维护」）。
 
 > 为什么：插件代码只在加载时读一次。**运行中更新插件不会重跑 `startup()`** ——
@@ -183,6 +189,7 @@ git clone https://github.com/Authentic3096/zotero-kb.git D:\zotero-kb
 |---|---|
 | Zotero 弹出「有可用更新」 | 直接点更新，然后**完全重启 Zotero** |
 | **没有任何提示**（多数国内网络就是这样） | 去 [Releases](https://github.com/Authentic3096/zotero-kb/releases) 下最新的 `zotero-kb-<版本>.xpi`，按上面「再安装」那两步装一遍 —— 覆盖安装、配置和知识库都不动 |
+| **便携包本身要升级**（脚本 / 运行代码） | 下载新的 `zotero-kb-<新版本>-win64.zip` → 解压到新文件夹 → 运行 `scripts\update.cmd`，按提示输入旧项目目录。`.venv`、知识库数据与 Zotero 设置都保留；再用新包里的 xpi 覆盖安装并重启 Zotero |
 
 > 想确认自己现在装的是哪一版：Zotero → 工具 → 插件 → 看「Zotero 文献知识库」
 > 后面的版本号；设置页最下面「插件版本」也会报当前版本。
@@ -806,21 +813,22 @@ ollama create qwen3:4b-instruct-24k -f qwen3-4b-instruct-24k.Modelfile
 
 ## 6. 让 AI 直接检索你的文献（可选）
 
-装了 [DSH](https://github.com/deepseek-ai/deepseek-harness) 的话，可以用一条命令接进去：
+这一节有两件事，分开看：**MCP 工具**（模型真正调用的能力）和 **Skill**
+（告诉模型什么时候用、怎么用）。装不装都不影响知识库本身。
 
-```powershell
-dsh plugin --profile desktop add "link:<项目目录>/bundle"
-```
+### 6.1 MCP 工具（任何支持 MCP 的客户端）
 
-例如项目在 `C:\zotero-kb`：
+知识库自带一个 **stdio MCP 服务器**：`online\server.py`。在客户端的 MCP 配置里
+新增一个 stdio 服务器：
 
-```powershell
-dsh plugin --profile desktop add "link:C:/zotero-kb/bundle"
-```
+| 配置项 | 填什么 |
+|---|---|
+| 命令 | `<项目目录>\.venv\Scripts\python.exe` |
+| 参数 | `-X utf8 <项目目录>\online\server.py` |
+| 工作目录 | `<项目目录>`（建议填） |
+| 环境变量 | `PYTHONUTF8=1`、`PYTHONIOENCODING=utf-8` |
 
-> 注意路径用**正斜杠**。
-
-然后**重启 DSH**。接好之后，AI 就能直接调用这些工具：
+它暴露这些工具：
 
 | 工具 | 用途 |
 |---|---|
@@ -831,16 +839,15 @@ dsh plugin --profile desktop add "link:C:/zotero-kb/bundle"
 | `kb_reindex` | 补抽刚导入的文献 |
 | `kb_stats` | 看库状态 |
 
-验证接好了：
+验证接好了：在客户端里问一句「我库里关于 X 的文献」，应该看到它调用
+`kb_search`（而不是拿文件工具去翻 Zotero 数据目录）。
 
-```powershell
-dsh --profile desktop plugin ls      # 应该看到 dsh-bundle-zotero-kb
-```
-
-> 改路径或换机器后要重新生成接入配置：
-> `python tools\gen_bundle_config.py`
-> （那份配置里必须是**绝对路径**，所以是按本机生成的；
-> `install-env.cmd` 装环境时会自动跑这一步。）
+> 不同客户端（DSH、Claude Desktop、其他支持 MCP 的 agent）的配置写法看各自文档；
+> 这个 MCP 服务器本身与客户端无关。
+>
+> **DSH 用户**：源码包里另带一个 `bundle\`，可用
+> `dsh plugin --profile desktop add "link:<项目目录>/bundle"` 一步接好；
+> 便携包没有 `bundle\`，按上面的通用 stdio 配置接即可。
 
 ### 6.2 装上配套的 Skill（推荐）
 
@@ -848,15 +855,16 @@ dsh --profile desktop plugin ls      # 应该看到 dsh-bundle-zotero-kb
 再装一个 **Skill**，AI 才知道**什么时候该用它们、用完该做什么** ——
 否则它可能明明该查文献却在瞎猜，或者用完不记经验（那样知识库永远不会变准）。
 
-项目里带了三份，都在 `skills\` 下：
+项目里带了两份，都在 `skills\` 下：
 
 | Skill | 作用 | 装给谁 |
 |---|---|---|
 | `zotero-kb` | 教 AI **怎么用这个知识库**：先搜后读、按页取正文、用完必须记经验、只读不写 Zotero | 使用者（大多数人只需要这个） |
-| `zotero-acquire` | 教 AI **怎么找新文献**：搜 → 核 DOI → 列候选表让你挑 → 用 `kb_acquire` 交给 Zotero 抓；含"用已有权限 / 绕过付费墙 "的边界 | 想让它帮你补文献的人 |
-| `zotero-plugin-dev` | 教 AI **怎么写/改 Zotero 插件**：30 多条实测踩过的坑（manifest 字段、沙箱 API 边界、自定义列、xpi 打包…） | 想改插件的人 |
+| `zotero-acquire` | 教 AI **怎么找新文献**：搜 → 核 DOI → 列候选表让你挑 → 用 `kb_acquire` 交给 Zotero 抓；含“用已有权限 / 绕过付费墙”的边界 | 想让它帮你补文献的人 |
 
-**装法**：把对应目录复制到 DSH 的用户级 skills 目录。
+> 插件开发用的 `zotero-plugin-dev` 只是开发工具，**不随发布提供**，也不放进知识库项目的 `skills\`。
+
+**装法**：把对应目录复制到 agent 的 skill 目录。**以 DSH 为例**：
 
 ```powershell
 # 使用知识库（推荐都装这个）
@@ -866,26 +874,23 @@ Copy-Item -Recurse -Force "<项目目录>\skills\zotero-kb" `
 # 找新文献（配合 kb_acquire 用）
 Copy-Item -Recurse -Force "<项目目录>\skills\zotero-acquire" `
     "$env:USERPROFILE\.dsh\skills\zotero-acquire"
-
-# 想改插件的话，再装这个
-Copy-Item -Recurse -Force "<项目目录>\skills\zotero-plugin-dev" `
-    "$env:USERPROFILE\.dsh\skills\zotero-plugin-dev"
 ```
 
-**然后新开一个 DSH 会话**（Skill 在会话启动时加载，当前会话不会自动生效）。
+其他 agent 把同样的目录复制到它文档里约定的 skill / instructions 目录即可。
+**然后新开一个会话**（Skill 在会话启动时加载，当前会话不会自动生效）。
 
 验证：新会话里问一句「我库里关于 X 的文献」，看它是否用了 `kb_search`
 （而不是拿文件工具去翻 Zotero 数据目录）。
 
 > **改了 `SKILL.md` 之后要重新复制一次** —— 用户级 skills 目录是**复制**
 > 而不是软链接，不会自动同步。项目里有个现成的脚本做这件事：
-> `powershell -File scripts\sync-skill.ps1`（它同时同步两份）。
+> `powershell -File scripts\sync-skill.ps1`（它默认同步到 DSH 的用户级目录）。
 
-**为什么"记经验"这条特别重要**：
+**为什么“记经验”这条特别重要**：
 
 知识库的排序靠的是**你的使用记录**（哪篇的方法有效、哪篇试过没用）。
 AI 每次用完某篇的方法就 `kb_experience_add` 记一条，下次检索那篇就会
-往前排 —— 这是它"越用越准"的**唯一**机制。不装 Skill 的话，
+往前排 —— 这是它“越用越准”的**唯一**机制。不装 Skill 的话，
 AI 不会主动做这件事，知识库就只是个普通的全文检索。
 
 ---
@@ -1084,7 +1089,7 @@ Python 装在哪了？我机器上没有 Python
 
 想让检索更准
 → ① 记经验（最有效）；② 标重点；③ 换更强的嵌入模型（见
-[`ARCHITECTURE.md`](ARCHITECTURE.md) 的「后续可做」）。
+[`ARCHITECTURE.md`](https://github.com/Authentic3096/zotero-kb/blob/main/ARCHITECTURE.md) 的「后续可做」）。
 
 ### 性能
 
@@ -1129,9 +1134,9 @@ Zotero 自己的数据库**从头到尾没被改过**（本项目的读取是只
     content\kbview.*                条目右侧栏 / 阅读器对照列那份页面
     content\vendor\                 原样引入的第三方库（markdown-it / KaTeX）
     bootstrap.js                    由 src\ 生成的（xpi 里装的是它）
-  bundle\                           接 DSH 用的（配置按本机生成）
-  skills\                           配套 Skill（复制到 ~\.dsh\skills\）
-  docs\                             版本发布说明
+  bundle\                           接 DSH 用的（配置按本机生成；便携包不含）
+  skills\                           配套 Skill（复制到 ~\.dsh\skills\ / 各 agent 的 skill 目录）
+  docs\                             版本发布说明（便携包不含，见 Release 说明）
   .venv\                            Python 依赖（约 270 MB）
   .tools\uv.exe                     环境管理器
 
