@@ -10,9 +10,9 @@
 
 第 ⑤ 步的经验会回流到第 ④ 步：下次检索时「验证过有效」的文献自动排在前面。
 
-**当前版本 2.0.7。** 普通用户下载 **便携运行包**即可（运行代码、脚本、Skill 与
+**当前版本 2.0.8。** 普通用户下载 **便携运行包**即可（运行代码、脚本、Skill 与
 插件 xpi 都在包里），不用再下整个源码；2.0 把管理面板搬进了 Zotero、并去掉了常驻的
-本地 HTTP 服务（**不再监听任何端口**）。升级前请读 [发布说明](docs/RELEASE-2.0.7.md)。
+本地 HTTP 服务（**不再监听任何端口**）。升级前请读 [发布说明](docs/RELEASE-2.0.8.md)。
 
 ## 能做什么
 
@@ -108,19 +108,24 @@ Zotero 自带的「设置 → 文献知识库」窗格在 2.0.4 已下线，不�
 下载最新版的 `zotero-kb-<版本>-win64.zip`（运行代码、脚本、两份 Skill 和插件 xpi 都在包里），
 解压到**路径里没有中文和空格**的目录，例如 `C:\zotero-kb`。
 
-```powershell
-cd C:\zotero-kb
+**顺序：先装插件，再装环境，最后在面板里建库。**
 
-# 1. 一键装 Python 环境（本机没装 Python 也行，它会自己下载一个）
-.\scripts\install-env.cmd
-
-# 2. 建知识库
-.\scripts\1-convert.cmd
-
-# 3. 装 Zotero 插件：Zotero → 工具 → 插件 → 右上角齿轮 →
-#    Install Plugin From File… → 选 zotero-plugin\zotero-kb-<版本>.xpi
-#    → 完全退出 Zotero 再打开
-```
+1. **先装 Zotero 插件**：Zotero → 工具 → 插件 → 右上角齿轮 →
+   **Install Plugin From File…** → 选 `zotero-plugin\zotero-kb-<版本>.xpi` →
+   **完全退出 Zotero 再打开**。
+2. **装 Python 环境**（只装前置依赖，不建库）：
+   ```powershell
+   cd C:\zotero-kb
+   .\scripts\install-env.cmd
+   ```
+3. **首次建库**：Zotero → 工具 →「知识库管理…」→ **高级** →
+   **「索引重建」→「全部重建」**，等运行日志跑完。
+4. **可选组件**：管理面板 →「偏好设置」→「可选组件安装引导」，
+   按需装 Ollama / MinerU；**不装也能用基础功能**。
+   首次建库用上面的「全部重建」；「PDF 解析 → 全库重解析」只是装 MinerU 后
+   切换正文来源，**不是首次建库的必需步骤**。
+5. **接 AI（可选）**：MCP 按客户端配置接入；Skill 复制到 agent 的 skill 目录
+   （DSH 示例 `~/.dsh/skills`）。
 
 一页版见 [QUICKSTART.md](QUICKSTART.md)；完整步骤（验证、日常使用、常见问题、卸载）
 见 [INSTALL.md](INSTALL.md)。源码包只给开发者（要改代码、自己构建 xpi 时用）。
@@ -134,15 +139,15 @@ MathType 也可选（用于公式的可视化排版；不装照样能手改 LaTe
 ## 文档
 
 > 便携包里只带本文件、`INSTALL.md`、`QUICKSTART.md`、`LICENSE` 与
-> `docs/RELEASE-2.0.7.md`；`ARCHITECTURE.md` 的链接指向源码仓库（GitHub），
+> `docs/RELEASE-2.0.8.md`；`ARCHITECTURE.md` 的链接指向源码仓库（GitHub），
 > 便携包里没有这份设计文档。
 
 | 文档 | 讲什么 |
 |---|---|
 | [QUICKSTART.md](QUICKSTART.md) | 一页版：普通用户 5 步安装、3 步升级、MCP 与 Skill 怎么接 |
-| [INSTALL.md](INSTALL.md) | 从零装到能用：安装四步、验证、日常使用、目录层级、常见问题、卸载 |
+| [INSTALL.md](INSTALL.md) | 从零装到能用：安装五步、验证、日常使用、目录层级、常见问题、卸载 |
 | [ARCHITECTURE.md](https://github.com/Authentic3096/zotero-kb/blob/main/ARCHITECTURE.md) | 架构与设计：三块怎么分工、五条链路、正文从哪来、检索怎么算分、各功能的实现与用法、边界、开发与维护 |
-| [docs/RELEASE-2.0.7.md](docs/RELEASE-2.0.7.md) | 2.0.7 的对外说明：这一版改了什么、怎么装/升 |
+| [docs/RELEASE-2.0.8.md](docs/RELEASE-2.0.8.md) | 2.0.8 的对外说明：这一版改了什么、怎么装/升 |
 
 ## 许可证
 

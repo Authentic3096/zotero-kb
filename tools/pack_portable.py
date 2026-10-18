@@ -64,7 +64,7 @@ ROOT_FILES = (
     "VERSION",
     "LICENSE",
     # README 顶部链接了这一份；只多收这一个小文件，其余 docs/ 仍不进包。
-    "docs/RELEASE-2.0.7.md",
+    "docs/RELEASE-2.0.8.md",
 )
 
 SKILL_DIRS = ("skills/zotero-kb", "skills/zotero-acquire")
@@ -251,7 +251,7 @@ def check_import_closure(selected: set[str]) -> None:
 
 
 # docs/ 整体不进包，只允许 README 直接链接的这一份发布说明。
-ALLOWED_DOC_FILES = {"docs/release-2.0.7.md"}
+ALLOWED_DOC_FILES = {"docs/release-2.0.8.md"}
 
 
 def check_paths(allowed_xpi: str) -> None:
